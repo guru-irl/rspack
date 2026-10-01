@@ -107,15 +107,8 @@ impl PassExt for ModuleIdsPass {
     // Merge IDs assigned by reviveModules and beforeModuleIds before running module ID plugins,
     // so every plugin sees them as reserved IDs. Plugins that reset global IDs retain this
     // preserved subset.
-    {
-      let mut mutations = compilation.incremental.mutations_write();
-      for (module, id) in preserved_module_ids_artifact.iter() {
-        if ChunkGraph::set_module_id(&mut module_ids_artifact, *module, id.clone())
-          && let Some(mutations) = &mut mutations
-        {
-          mutations.add(Mutation::ModuleSetId { module: *module });
-        }
-      }
+    for (module, id) in preserved_module_ids_artifact.iter() {
+      ChunkGraph::set_module_id(&mut module_ids_artifact, *module, id.clone());
     }
 
     compilation
@@ -146,6 +139,26 @@ impl PassExt for ModuleIdsPass {
         .call(compilation, &module_ids_artifact)
         .await
         .map_err(|e| e.wrap_err("caused by plugins in Compilation.hooks.recordModules"))?;
+    }
+    // Diff the final effective IDs, not temporary assignments or cleared allocation
+    // state. This must precede CreateModuleHashesPass: its chunk-graph mutation
+    // selector is memoized and includes changed-ID modules and their referencers.
+    if let Some(mut mutations) = compilation.incremental.mutations_write() {
+      for (module, id) in module_ids_artifact.iter() {
+        if compilation
+          .module_ids_diff_artifact
+          .previous_ids
+          .get(module)
+          != Some(id)
+        {
+          mutations.add(Mutation::ModuleSetId { module: *module });
+        }
+      }
+    }
+    if compilation.incremental.enabled() {
+      // Keep a separate comparison snapshot because global ID plugins may discard
+      // the recovered allocation map on the next compilation.
+      compilation.module_ids_diff_artifact.previous_ids = (*module_ids_artifact).clone();
     }
     compilation.module_ids_artifact = module_ids_artifact.into();
     compilation.extend_diagnostics(diagnostics);

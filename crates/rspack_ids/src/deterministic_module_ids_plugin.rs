@@ -69,7 +69,7 @@ async fn module_ids(
   diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<()> {
   if let Some(diagnostic) = compilation.incremental.disable_passes(
-    IncrementalPasses::MODULE_IDS | IncrementalPasses::MODULES_HASHES,
+    IncrementalPasses::MODULE_IDS,
     "DeterministicModuleIdsPlugin (optimization.moduleIds = \"deterministic\")",
     "it requires calculating the id of all the modules, which is a global effect",
   ) {
