@@ -123,7 +123,7 @@ release binding 可以通过 `logger` layer 记录这些 INFO span。DEBUG 和 T
 分析存储耗时时，需要注意：
 
 - `Storage::FileSystem::save` 和 `Cache::Context::save_storage` 是同步操作，只记录将后台写入加入队列的耗时，不包含实际写入。
-- 队列中的写入会记录为 `Storage::DB::save`、`Storage::Pack::save` 和 `Storage::Pack::flush`。最后的 `Storage::FileSystem::flush` 会在编译器关闭时等待队列中的任务完成。
+- 队列中的写入会记录为 `Storage::DB::save`、`Storage::Pack::save`、`Storage::Pack::flush` 和 `Storage::Transaction::commit`。最后的 `Storage::FileSystem::flush` 会在编译器关闭时等待队列中的任务完成。
 - `Storage::Pack::flush` 记录的是 writer flush，不是 `fsync`，也不代表数据已持久化到磁盘。
 
 直接使用 `@rspack/core` 时，应在创建编译器前注册 tracing，并等待 `compiler.close(callback)` 完成后再调用 `rspack.experiments.globalTrace.cleanup()`，确保后台缓存写入先于 trace 清理完成。JavaScript 记录（`target: "javascript"`）不受原生过滤条件影响，因此仍可能出现在这次采集中。
