@@ -31,6 +31,9 @@ export default {
 				);
 			};
 			assert(cold.packFiles > 0, "persistent cache must actually write packs");
+			assert(cold.coldPackFiles > 0, "fixture must write cold packs");
+			assert(cold.builtModules > 0, "cold build must build modules");
+			assert.equal(warm.builtModules, 0, "warm build must recover all modules");
 			// Positive control: this INFO span exists before the new instrumentation.
 			requireSpan(
 				cold,
@@ -76,6 +79,21 @@ export default {
 				"rspack_storage::filesystem::db::bucket::pack"
 			);
 			requireSpan(warm, "Storage::DB::load", "rspack_storage::filesystem::db");
+			// Hot-pack loads already have a DB parent. Require it on every load
+			// so a spawned cold-pack load cannot hide behind that positive control.
+			for (const [capture, name, parent] of [
+				[warm, "Storage::Pack::load", "Storage::DB::load"],
+				[cold, "Storage::Pack::save", "Storage::DB::save"]
+			]) {
+				const packs = capture.closes.filter(row => row.name === name);
+				assert(packs.length > 0, `must observe ${name}`);
+				assert(
+					packs.every(row => row.parents.includes(parent)),
+					`${name} must remain under ${parent}; parents: ${JSON.stringify(
+						packs.map(row => row.parents)
+					)}; cold built=${cold.builtModules}, warm built=${warm.builtModules}, cold packs=${cold.coldPackFiles}`
+				);
+			}
 			for (const [name, target] of [
 				[
 					"Cache::Occasion::Make::ModuleGraph",
@@ -104,7 +122,7 @@ export default {
 				);
 			}
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
 		}
 	}
 };

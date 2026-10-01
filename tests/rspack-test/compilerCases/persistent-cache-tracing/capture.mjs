@@ -7,12 +7,14 @@ export default async function capture(root, filter, label) {
 	fs.mkdirSync(src, { recursive: true });
 	const sources = {
 		"index.js":
-			'import { a } from "./a.js";\nimport { b } from "./b.js";\nconsole.log(a + b);\n',
+			'import { a } from "./a.js";\nimport { b } from "./b.js";\nimport { large } from "./large.js";\nconsole.log(a + b, large);\n',
 		"a.js":
 			'import { shared } from "./shared.js";\nexport const a = shared + 1;\n',
 		"b.js":
 			'import { shared } from "./shared.js";\nexport const b = shared + 2;\n',
-		"shared.js": "export const shared = 3;\n"
+		"shared.js": "export const shared = 3;\n",
+		// Exceed the storage pack limit so recovery must spawn cold-pack loads.
+		"large.js": `export const large = "${"x".repeat(600 * 1024)}";\n`
 	};
 	// Preserve source mtimes so the second process exercises disk-cache recovery.
 	for (const [name, content] of Object.entries(sources)) {
@@ -21,6 +23,7 @@ export default async function capture(root, filter, label) {
 	}
 
 	const traceFile = path.join(root, `${label}.jsonl`);
+	let builtModules;
 	try {
 		await rspack.experiments.globalTrace.register(filter, "logger", traceFile);
 		const compiler = rspack({
@@ -28,6 +31,7 @@ export default async function capture(root, filter, label) {
 			entry: "./index.js",
 			mode: "development",
 			devtool: "source-map",
+			optimization: { minimize: true },
 			experiments: { newCache: false },
 			cache: {
 				type: "persistent",
@@ -47,6 +51,8 @@ export default async function capture(root, filter, label) {
 							new Error(stats.toString({ all: false, errors: true }))
 						);
 					}
+					const { modules } = stats.toJson({ all: false, modules: true });
+					builtModules = modules.filter(module => module.built).length;
 					resolve();
 				});
 			});
@@ -68,9 +74,16 @@ export default async function capture(root, filter, label) {
 			record =>
 				record.fields?.message === "close" && record.target !== "javascript"
 		)
-		.map(record => ({ name: record.span.name, target: record.target }));
-	const packFiles = fs
+		.map(record => ({
+			name: record.span.name,
+			target: record.target,
+			parents: (record.spans ?? []).map(span => span.name)
+		}));
+	const packs = fs
 		.readdirSync(path.join(root, "cache"), { recursive: true })
-		.filter(file => file.endsWith(".pack")).length;
-	return { closes, packFiles };
+		.filter(file => file.endsWith(".pack"));
+	const coldPackFiles = packs.filter(
+		file => path.basename(file) !== "0.pack"
+	).length;
+	return { closes, packFiles: packs.length, coldPackFiles, builtModules };
 }

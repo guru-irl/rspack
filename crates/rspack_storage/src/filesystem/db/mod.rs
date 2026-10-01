@@ -12,6 +12,7 @@ use std::{
 use rspack_parallel::TryFutureConsumer;
 use rustc_hash::FxHashMap as HashMap;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 
 use self::{bucket::Bucket, transaction::Transaction};
 use super::ScopeFileSystem;
@@ -131,6 +132,7 @@ impl DB {
               .await?;
             Ok::<_, Error>((bucket_name, bucket, affacted_files))
           }
+          .in_current_span()
         })
         .try_fut_consume(|(bucket_name, bucket, affacted_files)| {
           let (added_pack, removed_pack) = affacted_files;

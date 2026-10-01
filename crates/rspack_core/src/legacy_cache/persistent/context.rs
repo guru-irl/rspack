@@ -347,7 +347,7 @@ impl CacheContext {
   ///
   /// The write completes asynchronously; call [`CacheContext::flush_storage`]
   /// to wait for it.
-  #[tracing::instrument(name = "Cache::Context::save_storage", level = "info", skip_all)]
+  #[tracing::instrument("Cache::Context::save_storage", level = "info", skip_all)]
   pub fn save_storage(&mut self) {
     if self.readonly {
       return;
@@ -361,7 +361,7 @@ impl CacheContext {
   /// Waits for all background storage writes to complete.
   ///
   /// Must be called before process exit to avoid losing buffered data.
-  #[tracing::instrument(name = "Cache::Context::flush_storage", level = "info", skip_all)]
+  #[tracing::instrument("Cache::Context::flush_storage", level = "info", skip_all)]
   pub async fn flush_storage(&self) {
     let start = self.logger().time("flush persistent cache to disk");
     self.storage.flush().await;
