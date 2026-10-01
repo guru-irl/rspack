@@ -12,6 +12,7 @@ import type { Callback } from '@rspack/lite-tapable';
 import type { Compilation, Compiler } from '.';
 import { Stats } from '.';
 import type { WatchOptions } from './config';
+import { flushFileSystemDependencies } from './FileSystemDependencies';
 import type { FileSystemInfoEntry, Watcher } from './util/fs';
 import { markInternalCallback } from './util/watchTimeInfo';
 
@@ -364,6 +365,12 @@ export class Watching {
 
   // Fold a finished compilation's file/context/missing deltas into the accumulator.
   #accumulateWatchDeps(compilation: Compilation): void {
+    // Plugin mutations (including done/afterDone) may still be queued when
+    // nextTick watch delivery reads the binding deltas, before microtasks run.
+    flushFileSystemDependencies(compilation.fileDependencies);
+    flushFileSystemDependencies(compilation.contextDependencies);
+    flushFileSystemDependencies(compilation.missingDependencies);
+
     const pending = (this.#pendingWatchDeps ??= {
       file: { added: new Set(), removed: new Set() },
       context: { added: new Set(), removed: new Set() },

@@ -38,11 +38,11 @@ class FileSystemDependenciesWrapper implements FileSystemDependencies {
     this.#flushScheduled = true;
     queueMicrotask(() => {
       this.#flushScheduled = false;
-      this.#flush();
+      this.__internal__flush();
     });
   }
 
-  #flush() {
+  __internal__flush() {
     if (this.#pendingAdditions.size === 0 && this.#pendingDeletions.size === 0)
       return;
     const additions = Array.from(this.#pendingAdditions);
@@ -53,19 +53,19 @@ class FileSystemDependenciesWrapper implements FileSystemDependencies {
   }
 
   #getValues() {
-    this.#flush();
+    this.__internal__flush();
     // Iterators read the shared array directly and may observe later updates.
     return this.#inner.values();
   }
 
   get size() {
-    this.#flush();
+    this.__internal__flush();
     return this.#inner.size();
   }
 
   has(value: string) {
     if (typeof value !== 'string') return false;
-    this.#flush();
+    this.__internal__flush();
     return this.#inner.has(value);
   }
 
@@ -96,7 +96,7 @@ class FileSystemDependenciesWrapper implements FileSystemDependencies {
   }
 
   clear(): void {
-    this.#flush();
+    this.__internal__flush();
     this.#inner.clear();
   }
 
@@ -157,6 +157,15 @@ for (const name of [
         return method.call(new Set(this.values()), other);
       },
     });
+  }
+}
+
+// Flush queued writes before internal binding reads without materializing values.
+export function flushFileSystemDependencies(
+  dependencies: FileSystemDependencies,
+): void {
+  if (dependencies instanceof FileSystemDependenciesWrapper) {
+    dependencies.__internal__flush();
   }
 }
 
