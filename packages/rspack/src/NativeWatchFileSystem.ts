@@ -67,6 +67,9 @@ class NativeWatcherShim extends EventEmitter {
   }
 }
 
+// Private capability shared only with Watching; not part of WatchFileSystem.
+const needsFullWatchDependencies = Symbol('needsFullWatchDependencies');
+
 export default class NativeWatchFileSystem implements WatchFileSystem {
   #inner: binding.NativeWatcher | undefined;
   #isFirstWatch = true;
@@ -81,6 +84,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
 
   constructor(inputFileSystem: InputFileSystem) {
     this.#inputFileSystem = inputFileSystem;
+  }
+
+  get [needsFullWatchDependencies](): boolean {
+    return this.#isFirstWatch;
   }
 
   // Backward-compatible accessor: lets plugins that reach for the underlying
@@ -349,4 +356,19 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       ];
     }
   }
+}
+
+// Capture the built-in implementation so replacing even the prototype's watch
+// method opts out. Wrappers may inspect/retain full membership, not just deltas.
+const nativeWatch = NativeWatchFileSystem.prototype.watch;
+
+// Assumes the internal formatWatchDependencies method preserves delta semantics.
+export function requiresFullWatchDependencies(
+  watchFileSystem: WatchFileSystem | null,
+): boolean {
+  return (
+    !(watchFileSystem instanceof NativeWatchFileSystem) ||
+    watchFileSystem.watch !== nativeWatch ||
+    watchFileSystem[needsFullWatchDependencies]
+  );
 }
