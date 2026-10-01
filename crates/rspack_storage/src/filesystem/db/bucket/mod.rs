@@ -5,6 +5,7 @@ mod pack;
 use pack::{PackGenerator, PackId, PackIdAlloc};
 use rspack_parallel::TryFutureConsumer;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use tracing::Instrument;
 
 use self::{meta::Meta, pack::Pack};
 use super::ScopeFileSystem;
@@ -78,6 +79,7 @@ impl Bucket {
           }
           Ok(pack)
         }
+        .in_current_span()
       })
       .try_fut_consume(|pack| result.extend(pack.data()))
       .await?;
@@ -142,6 +144,7 @@ impl Bucket {
           let index = pack.save(&fs, pack_id).await?;
           Ok::<_, Error>((pack_id, pack, index))
         }
+        .in_current_span()
       })
       .try_fut_consume(|(pack_id, pack, index)| {
         if pack_id == PackIdAlloc::HOT_PACK_ID {

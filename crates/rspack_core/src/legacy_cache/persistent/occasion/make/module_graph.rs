@@ -52,84 +52,86 @@ pub fn save_module_graph(
 
   // save module_graph
   let saved_count = AtomicUsize::new(0);
-  need_update_modules
-    .par_iter()
-    .map(|identifier| {
-      let mgm = mg
-        .module_graph_module_by_identifier(identifier)
-        .expect("should have mgm");
-      let module = mg
-        .module_by_identifier(identifier)
-        .expect("should have module");
-      let blocks = module
-        .get_blocks()
-        .par_iter()
-        .map(|block_id| {
-          mg.block_ref_by_id(block_id)
-            .expect("should have block")
-            .into()
-        })
-        .collect::<Vec<_>>();
-      let dependencies = mgm
-        .all_dependencies()
-        .par_iter()
-        .map(|dep_id| {
-          (
-            mg.dependency_ref_by_id(dep_id).into(),
-            mg.get_parent_block(dep_id).map(Into::into),
-            factorization_artifact.get_by_owner(dep_id).map(Into::into),
-          )
-        })
-        .collect::<Vec<_>>();
-      let connections = mgm
-        .outgoing_connections()
-        .par_iter()
-        .map(|connection_id| {
-          mg.connection_by_id(connection_id)
-            .expect("should have connection")
-            .into()
-        })
-        .collect::<Vec<_>>();
-      let lazy_info = module_to_lazy_make
-        .get_lazy_dependencies(identifier)
-        .map(|lazy_deps| lazy_deps.into());
-      let mut node = Node {
-        mgm: mgm.into(),
-        module: module.into(),
-        dependencies,
-        connections,
-        blocks,
-        lazy_info,
-      };
-      match codec.encode(&node) {
-        Ok(bytes) => (identifier.as_bytes().to_vec(), bytes),
-        Err(err) if err.to_string().contains("unsupported field") => {
-          tracing::warn!("to bytes failed {:?}", err);
-          // try use alternatives
-          node.module = TempModule::transform_from(node.module);
-          node.dependencies = node
-            .dependencies
-            .into_iter()
-            .map(|(dep, _, factorize_info)| {
-              (TempDependency::transform_from(dep), None, factorize_info)
-            })
-            .collect();
-          node.blocks = vec![];
-          if let Ok(bytes) = codec.encode(&node) {
-            (identifier.as_bytes().to_vec(), bytes)
-          } else {
-            panic!("alternatives serialize failed")
+  tracing::info_span!("Cache::Occasion::Make::ModuleGraph::serialize").in_scope(|| {
+    need_update_modules
+      .par_iter()
+      .map(|identifier| {
+        let mgm = mg
+          .module_graph_module_by_identifier(identifier)
+          .expect("should have mgm");
+        let module = mg
+          .module_by_identifier(identifier)
+          .expect("should have module");
+        let blocks = module
+          .get_blocks()
+          .par_iter()
+          .map(|block_id| {
+            mg.block_ref_by_id(block_id)
+              .expect("should have block")
+              .into()
+          })
+          .collect::<Vec<_>>();
+        let dependencies = mgm
+          .all_dependencies()
+          .par_iter()
+          .map(|dep_id| {
+            (
+              mg.dependency_ref_by_id(dep_id).into(),
+              mg.get_parent_block(dep_id).map(Into::into),
+              factorization_artifact.get_by_owner(dep_id).map(Into::into),
+            )
+          })
+          .collect::<Vec<_>>();
+        let connections = mgm
+          .outgoing_connections()
+          .par_iter()
+          .map(|connection_id| {
+            mg.connection_by_id(connection_id)
+              .expect("should have connection")
+              .into()
+          })
+          .collect::<Vec<_>>();
+        let lazy_info = module_to_lazy_make
+          .get_lazy_dependencies(identifier)
+          .map(|lazy_deps| lazy_deps.into());
+        let mut node = Node {
+          mgm: mgm.into(),
+          module: module.into(),
+          dependencies,
+          connections,
+          blocks,
+          lazy_info,
+        };
+        match codec.encode(&node) {
+          Ok(bytes) => (identifier.as_bytes().to_vec(), bytes),
+          Err(err) if err.to_string().contains("unsupported field") => {
+            tracing::warn!("to bytes failed {:?}", err);
+            // try use alternatives
+            node.module = TempModule::transform_from(node.module);
+            node.dependencies = node
+              .dependencies
+              .into_iter()
+              .map(|(dep, _, factorize_info)| {
+                (TempDependency::transform_from(dep), None, factorize_info)
+              })
+              .collect();
+            node.blocks = vec![];
+            if let Ok(bytes) = codec.encode(&node) {
+              (identifier.as_bytes().to_vec(), bytes)
+            } else {
+              panic!("alternatives serialize failed")
+            }
+          }
+          Err(_) => {
+            panic!("unexpected module graph serialize failed")
           }
         }
-        Err(_) => {
-          panic!("unexpected module graph serialize failed")
-        }
-      }
-    })
-    .consume(|(id, bytes)| {
-      storage.set(SCOPE, id, bytes);
-      saved_count.fetch_add(1, Ordering::Relaxed);
-    });
+      })
+      .consume(|(id, bytes)| {
+        storage.set(SCOPE, id, bytes);
+        saved_count.fetch_add(1, Ordering::Relaxed);
+      });
+  });
 
   tracing::debug!("save {} modules", saved_count.load(Ordering::Relaxed));
 }
@@ -148,57 +150,59 @@ pub async fn recovery_module_graph(
   let mut mg = ModuleGraph::default();
   let mut factorization_artifact = FactorizationArtifact::default();
   let mut module_to_lazy_make = ModuleToLazyMake::default();
-  storage
-    .load(SCOPE)
-    .await?
-    .into_par_iter()
-    .map(|(_, v)| {
-      codec
-        .decode::<Node>(&v)
-        .expect("unexpected module graph deserialize failed")
-    })
-    .with_max_len(1)
-    .consume(|node| {
-      let mgm = node.mgm.into_owned();
-      let module = node.module.into_owned();
-      for (index_in_block, (dep, parent_block, factorize_info)) in
-        node.dependencies.into_iter().enumerate()
-      {
-        let dep = dep.into_owned();
-        mg.set_parents(
-          *dep.id(),
-          DependencyParents {
-            block: parent_block.map(|b| b.into_owned()),
-            module: module.identifier(),
-            index_in_block,
-          },
-        );
-        mg.add_dependency_ref(dep);
-        if let Some(factorize_info) = factorize_info {
-          factorization_artifact.insert(factorize_info.into_owned());
+  let items = storage.load(SCOPE).await?;
+  tracing::info_span!("Cache::Occasion::Make::ModuleGraph::deserialize").in_scope(|| {
+    items
+      .into_par_iter()
+      .map(|(_, v)| {
+        codec
+          .decode::<Node>(&v)
+          .expect("unexpected module graph deserialize failed")
+      })
+      .with_max_len(1)
+      .consume(|node| {
+        let mgm = node.mgm.into_owned();
+        let module = node.module.into_owned();
+        for (index_in_block, (dep, parent_block, factorize_info)) in
+          node.dependencies.into_iter().enumerate()
+        {
+          let dep = dep.into_owned();
+          mg.set_parents(
+            *dep.id(),
+            DependencyParents {
+              block: parent_block.map(|b| b.into_owned()),
+              module: module.identifier(),
+              index_in_block,
+            },
+          );
+          mg.add_dependency_ref(dep);
+          if let Some(factorize_info) = factorize_info {
+            factorization_artifact.insert(factorize_info.into_owned());
+          }
         }
-      }
-      for con in node.connections {
-        let con = con.into_owned();
-        need_check_dep.push((con.id, *con.module_identifier()));
-        mg.cache_recovery_connection(con);
-      }
-      let mut blocks = node
-        .blocks
-        .into_iter()
-        .map(OwnedOrRef::into_owned)
-        .collect::<Vec<_>>();
-      while let Some(block) = blocks.pop() {
-        blocks.extend(block.get_block_refs().iter().cloned());
-        mg.add_block(block);
-      }
-      if let Some(lazy_info) = node.lazy_info {
-        module_to_lazy_make
-          .update_module_lazy_dependencies(module.identifier(), Some(lazy_info.into_owned()));
-      }
-      mg.add_module_graph_module(mgm);
-      mg.add_module(module);
-    });
+        for con in node.connections {
+          let con = con.into_owned();
+          need_check_dep.push((con.id, *con.module_identifier()));
+          mg.cache_recovery_connection(con);
+        }
+        let mut blocks = node
+          .blocks
+          .into_iter()
+          .map(OwnedOrRef::into_owned)
+          .collect::<Vec<_>>();
+        while let Some(block) = blocks.pop() {
+          blocks.extend(block.get_block_refs().iter().cloned());
+          mg.add_block(block);
+        }
+        if let Some(lazy_info) = node.lazy_info {
+          module_to_lazy_make
+            .update_module_lazy_dependencies(module.identifier(), Some(lazy_info.into_owned()));
+        }
+        mg.add_module_graph_module(mgm);
+        mg.add_module(module);
+      });
+  });
+
   // recovery incoming connections
   for (connection_id, module_identifier) in need_check_dep {
     let mgm = mg.module_graph_module_by_identifier_mut(&module_identifier);

@@ -134,6 +134,7 @@ impl Storage for FileSystemStorage {
     spawn_cleanup_stale_directories(self.stale_fs());
   }
 
+  #[tracing::instrument(name = "Storage::FileSystem::load", level = "info", skip_all)]
   async fn load(&self, scope: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let data = self.db.load(scope).await?;
     Ok(data)
@@ -149,6 +150,7 @@ impl Storage for FileSystemStorage {
     scope_update.insert(key.to_vec(), None);
   }
 
+  #[tracing::instrument(name = "Storage::FileSystem::save", level = "info", skip_all)]
   fn save(&mut self) {
     // Take all pending updates and clear the memory buffer
     let updates = std::mem::take(&mut self.updates);
@@ -201,6 +203,7 @@ impl Storage for FileSystemStorage {
     });
   }
 
+  #[tracing::instrument(name = "Storage::FileSystem::flush", level = "info", skip_all)]
   async fn flush(&self) {
     self.task_queue.flush().await;
   }
