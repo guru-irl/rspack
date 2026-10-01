@@ -13,6 +13,7 @@ import type { Compilation, Compiler } from '.';
 import { Stats } from '.';
 import type { WatchOptions } from './config';
 import { flushFileSystemDependencies } from './FileSystemDependencies';
+import { requiresFullWatchDependencies } from './NativeWatchFileSystem';
 import type { FileSystemInfoEntry, Watcher } from './util/fs';
 import { markInternalCallback } from './util/watchTimeInfo';
 
@@ -459,27 +460,33 @@ export class Watching {
           const pending = this.#pendingWatchDeps!;
           this.#pendingWatchDeps = undefined;
 
-          const fileDependencies = new Set([
-            ...compilation.fileDependencies,
-          ]) as unknown as Iterable<string> & {
+          // Only the unwrapped native watcher can consume deltas alone after
+          // its first registration. Capture full membership now when requested,
+          // never defer native-backed compilation access through a lazy closure.
+          const needsFullSnapshot = requiresFullWatchDependencies(
+            this.compiler.watchFileSystem,
+          );
+          const fileDependencies = new Set(
+            needsFullSnapshot ? [...compilation.fileDependencies] : [],
+          ) as unknown as Iterable<string> & {
             added?: Iterable<string>;
             removed?: Iterable<string>;
           };
           fileDependencies.added = pending.file.added;
           fileDependencies.removed = pending.file.removed;
 
-          const contextDependencies = new Set([
-            ...compilation.contextDependencies,
-          ]) as unknown as Iterable<string> & {
+          const contextDependencies = new Set(
+            needsFullSnapshot ? [...compilation.contextDependencies] : [],
+          ) as unknown as Iterable<string> & {
             added?: Iterable<string>;
             removed?: Iterable<string>;
           };
           contextDependencies.added = pending.context.added;
           contextDependencies.removed = pending.context.removed;
 
-          const missingDependencies = new Set([
-            ...compilation.missingDependencies,
-          ]) as unknown as Iterable<string> & {
+          const missingDependencies = new Set(
+            needsFullSnapshot ? [...compilation.missingDependencies] : [],
+          ) as unknown as Iterable<string> & {
             added?: Iterable<string>;
             removed?: Iterable<string>;
           };
