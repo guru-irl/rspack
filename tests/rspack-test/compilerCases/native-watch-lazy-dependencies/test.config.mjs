@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { rspack } from '@rspack/core';
 import { closeCompiler } from '@rspack/test-tools/helper/lifecycle';
@@ -24,7 +25,15 @@ function startWatch(compiler, observe = () => {}) {
   const watch = watching.watch;
   watching.watch = function (...args) {
     const result = watch.apply(this, args);
-    const delivery = observe(args);
+    let delivery;
+    try {
+      delivery = observe(args);
+    } catch (error) {
+      failure = error;
+      waiting?.reject(failure);
+      waiting = undefined;
+      return result;
+    }
     if (waiting) {
       waiting.resolve(delivery);
       waiting = undefined;
@@ -47,12 +56,7 @@ function startWatch(compiler, observe = () => {}) {
 }
 
 async function withCompiler(run, nativeWatcher = true) {
-  const scratch = path.resolve(
-    fixture,
-    '../../../../.spider/scratch/task-2/fixtures',
-  );
-  await fs.mkdir(scratch, { recursive: true });
-  const context = await fs.mkdtemp(path.join(scratch, 'watch-'));
+  const context = await fs.mkdtemp(path.join(os.tmpdir(), 'native-watch-'));
   await fs.copyFile(
     path.join(fixture, 'entry.js'),
     path.join(context, 'entry.js'),
@@ -136,16 +140,40 @@ export default [
           registrations.push(result);
           return result;
         };
-        const first = startWatch(compiler);
+        let generation = 0;
+        compiler.hooks.afterDone.tap('LateNativeDependencies', (stats) => {
+          generation++;
+          kinds.forEach((kind) => {
+            stats.compilation[`${kind}Dependencies`].add(
+              path.join(context, `late-${kind}-${generation}`),
+            );
+          });
+        });
+        const first = startWatch(compiler, (dependencies) => {
+          if (generation === 2) {
+            dependencies.forEach((snapshot) => assert.equal(snapshot.size, 0));
+          }
+        });
         await first.nextDelivery();
+        first.watching.invalidate();
+        await first.nextDelivery();
+        kinds.forEach((kind, index) => {
+          assert(
+            registrations[3 + index][0].includes(
+              path.join(context, `late-${kind}-2`),
+            ),
+            `native delta delivery must include afterDone ${kind} addition`,
+          );
+        });
         await new Promise((resolve) => first.watching.close(resolve));
         const second = startWatch(compiler);
         await second.nextDelivery();
         assert.deepEqual(counts, [
           [1, 1, 1],
+          [0, 0, 0],
           [1, 1, 1],
         ]);
-        for (const offset of [0, 3]) {
+        for (const offset of [0, 6]) {
           assert(
             registrations[offset][0].includes(path.join(context, 'entry.js')),
           );
@@ -180,7 +208,7 @@ export default [
             );
           });
         });
-        function wrappedWatch(...args) {
+        function observeSnapshots(args) {
           const snapshots = args.slice(0, 3);
           snapshots.forEach((dependencies, index) => {
             assert(dependencies instanceof Set);
@@ -195,11 +223,21 @@ export default [
           });
           assert(snapshots[0].has(path.join(context, 'entry.js')));
           retained.push(snapshots);
+        }
+        function wrappedWatch(...args) {
+          observeSnapshots(args);
           return watch.apply(native, args);
         }
         if (variant === 'method-wrapper') native.watch = wrappedWatch;
-        else compiler.watchFileSystem = { watch: wrappedWatch };
-        const session = startWatch(compiler);
+        else if (variant === 'object-wrapper')
+          compiler.watchFileSystem = { watch: wrappedWatch };
+        const session = startWatch(compiler, (args) => {
+          if (variant === 'node') {
+            assert.equal(compiler.watchFileSystem, native);
+            assert.equal(native.watch, watch);
+            observeSnapshots(args);
+          }
+        });
         await session.nextDelivery();
         for (let cycle = 0; cycle < 2; cycle++) {
           session.watching.invalidate();

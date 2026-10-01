@@ -362,6 +362,7 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
 // method opts out. Wrappers may inspect/retain full membership, not just deltas.
 const nativeWatch = NativeWatchFileSystem.prototype.watch;
 
+// Assumes the internal formatWatchDependencies method preserves delta semantics.
 export function requiresFullWatchDependencies(
   watchFileSystem: WatchFileSystem | null,
 ): boolean {
