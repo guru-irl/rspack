@@ -45,7 +45,7 @@ export default {
 - **Type:** `number`
 - **Default:** `5`
 
-Add a delay before rebuilding once the first file changed. This allows Rspack to aggregate any other changes made during this time period into one rebuild. Pass a value in milliseconds:
+Wait for a quiet period before rebuilding, restarting it after each relevant file change. Changes during this period are aggregated into one rebuild. Pass a value in milliseconds:
 
 ```js title="rspack.config.mjs"
 export default {
