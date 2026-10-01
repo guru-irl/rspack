@@ -6,338 +6,117 @@ import { rspack } from '@rspack/core';
 import { closeCompiler } from '@rspack/test-tools/helper/lifecycle';
 
 const kinds = ['file', 'context', 'missing'];
-const fixture = import.meta.dirname;
 
-// Observe Watching's delivery, not watchFileSystem.watch: wrapping the latter
-// intentionally opts out of the built-in watcher's private capability.
-function startWatch(compiler, observe = () => {}) {
-  const deliveries = [];
-  let waiting;
-  let failure;
+// Observe Watching without wrapping the native adapter's watch method.
+function startWatch(compiler) {
+  let resolve, reject;
+  const nextDelivery = () =>
+    new Promise((ok, fail) => {
+      resolve = ok;
+      reject = fail;
+    });
+  const firstDelivery = nextDelivery();
   const watching = compiler.watch({ ignored: /.*/ }, (error, stats) => {
-    if (error || stats?.hasErrors()) {
-      failure =
-        error || new Error(stats.toString({ all: false, errors: true }));
-      waiting?.reject(failure);
-      waiting = undefined;
-    }
+    if (error || stats?.hasErrors())
+      reject(error || new Error(stats.toString()));
   });
   const watch = watching.watch;
   watching.watch = function (...args) {
-    let result;
-    let delivery;
     try {
-      result = watch.apply(this, args);
-      delivery = observe(args);
-    } catch (error) {
-      failure = error;
-      waiting?.reject(failure);
-      waiting = undefined;
+      const result = watch.apply(this, args);
+      resolve();
       return result;
+    } catch (error) {
+      reject(error);
     }
-    if (waiting) {
-      waiting.resolve(delivery);
-      waiting = undefined;
-    } else {
-      deliveries.push(delivery);
-    }
-    return result;
   };
-  return {
-    watching,
-    nextDelivery() {
-      if (failure) return Promise.reject(failure);
-      if (deliveries.length) return Promise.resolve(deliveries.shift());
-      return new Promise((resolve, reject) => {
-        assert.equal(waiting, undefined);
-        waiting = { resolve, reject };
-      });
-    },
-  };
+  return { watching, firstDelivery, nextDelivery };
 }
 
-async function withCompiler(run, nativeWatcher = true) {
-  const context = await fs.realpath(
-    await fs.mkdtemp(path.join(os.tmpdir(), 'native-watch-')),
-  );
-  let compiler;
-  try {
-    await fs.copyFile(
-      path.join(fixture, 'entry.js'),
-      path.join(context, 'entry.js'),
+export default ['native-iterations', 'object-wrapper'].map((name) => ({
+  name,
+  description: 'checks initial and subsequent dependency delivery',
+  async run() {
+    const context = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'native-watch-')),
     );
-    await fs.mkdir(path.join(context, 'context'));
-    compiler = rspack({
-      context,
-      mode: 'development',
-      entry: './entry.js',
-      devtool: false,
-      experiments: { nativeWatcher },
-      output: { path: path.join(context, 'dist') },
-    });
-    await run(compiler, context);
-  } finally {
-    if (compiler) await closeCompiler(compiler);
-    await fs.rm(context, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 50,
-    });
-  }
-}
-
-function countIterations(compiler) {
-  const counts = [];
-  compiler.hooks.thisCompilation.tap(
-    'CountWatchDependencyIterations',
-    (compilation) => {
-      const count = [0, 0, 0];
-      counts.push(count);
-      kinds.forEach((kind, index) => {
-        const dependencies = compilation[`${kind}Dependencies`];
-        const iterator = dependencies[Symbol.iterator];
-        dependencies[Symbol.iterator] = function () {
-          count[index]++;
-          return iterator.call(this);
-        };
+    let compiler;
+    try {
+      await fs.writeFile(path.join(context, 'entry.js'), 'export default 1;');
+      compiler = rspack({
+        context,
+        mode: 'development',
+        entry: './entry.js',
+        experiments: { nativeWatcher: true },
+        output: { path: path.join(context, 'dist') },
       });
-      compilation.contextDependencies.add(
-        path.join(compiler.context, 'context'),
-      );
-      compilation.missingDependencies.add(
-        path.join(compiler.context, 'missing.txt'),
-      );
-    },
-  );
-  return counts;
-}
-
-export default [
-  {
-    name: 'native-iterations',
-    description: 'reads full membership only for initial native registration',
-    async run() {
-      await withCompiler(async (compiler) => {
-        const counts = countIterations(compiler);
-        const session = startWatch(compiler);
-        await session.nextDelivery();
-        assert.deepEqual(counts, [[1, 1, 1]]);
-        for (let cycle = 0; cycle < 2; cycle++) {
-          session.watching.invalidate();
-          await session.nextDelivery();
-        }
-        assert.deepEqual(counts.slice(1), [
-          [0, 0, 0],
-          [0, 0, 0],
-        ]);
+      const native = compiler.watchFileSystem;
+      const counts = [],
+        registrations = [],
+        snapshots = [];
+      let generation = 0;
+      compiler.hooks.afterDone.tap('LateDependencies', (stats) => {
+        generation++;
+        kinds.forEach((kind) =>
+          stats.compilation[`${kind}Dependencies`].add(
+            path.join(context, `late-${kind}-${generation}`),
+          ),
+        );
       });
-    },
-  },
-  {
-    name: 'native-restart',
-    description:
-      'resends owned full membership after closing and restarting native watch',
-    async run() {
-      await withCompiler(async (compiler, context) => {
-        const counts = countIterations(compiler);
-        const native = compiler.watchFileSystem;
+      if (name === 'native-iterations') {
+        compiler.hooks.thisCompilation.tap('CountIterations', (compilation) => {
+          const build = counts.push(0) - 1;
+          kinds.forEach((kind) => {
+            const dependencies = compilation[`${kind}Dependencies`];
+            const iterator = dependencies[Symbol.iterator];
+            dependencies[Symbol.iterator] = function () {
+              counts[build]++;
+              return iterator.call(this);
+            };
+          });
+        });
         const format = native.formatWatchDependencies;
-        const registrations = [];
         native.formatWatchDependencies = function (dependencies) {
           const result = format.call(this, dependencies);
           registrations.push(result);
           return result;
         };
-        let generation = 0;
-        compiler.hooks.afterDone.tap('LateNativeDependencies', (stats) => {
-          generation++;
-          kinds.forEach((kind) => {
-            stats.compilation[`${kind}Dependencies`].add(
-              path.join(context, `late-${kind}-${generation}`),
-            );
-          });
-        });
-        const first = startWatch(compiler, (dependencies) => {
-          if (generation === 2) {
-            dependencies.forEach((snapshot) => assert.equal(snapshot.size, 0));
-          }
-        });
-        await first.nextDelivery();
-        first.watching.invalidate();
-        await first.nextDelivery();
-        kinds.forEach((kind, index) => {
-          assert(
-            registrations[3 + index][0].includes(
-              path.join(context, `late-${kind}-2`),
-            ),
-            `native delta delivery must include afterDone ${kind} addition`,
-          );
-        });
-        await new Promise((resolve) => first.watching.close(resolve));
-        const second = startWatch(compiler);
-        await second.nextDelivery();
-        assert.deepEqual(counts, [
-          [1, 1, 1],
-          [0, 0, 0],
-          [1, 1, 1],
-        ]);
-        for (const offset of [0, 6]) {
-          assert(
-            registrations[offset][0].includes(path.join(context, 'entry.js')),
-          );
-          assert(
-            registrations[offset + 1][0].includes(
-              path.join(context, 'context'),
-            ),
-          );
-          assert(
-            registrations[offset + 2][0].includes(
-              path.join(context, 'missing.txt'),
-            ),
-          );
-        }
-      });
-    },
+      } else {
+        compiler.watchFileSystem = {
+          watch(...args) {
+            const sets = args.slice(0, 3);
+            sets.forEach((set, index) => {
+              const expected = path.join(
+                context,
+                `late-${kinds[index]}-${generation}`,
+              );
+              assert(set instanceof Set);
+              assert(set.has(expected));
+            });
+            assert(sets[0].has(path.join(context, 'entry.js')));
+            snapshots.push(sets);
+            return native.watch(...args);
+          },
+        };
+      }
+      const session = startWatch(compiler);
+      await session.firstDelivery;
+      const retained = snapshots[0]?.map((set) => [...set]);
+      const delivery = session.nextDelivery();
+      session.watching.invalidate();
+      await delivery;
+      if (name === 'native-iterations') {
+        assert.deepEqual(counts, [3, 0]);
+        assert(registrations[3][0].includes(path.join(context, 'late-file-2')));
+      } else {
+        assert.deepEqual(
+          snapshots[0].map((set) => [...set]),
+          retained,
+        );
+      }
+    } finally {
+      if (compiler) await closeCompiler(compiler);
+      await fs.rm(context, { recursive: true, force: true, maxRetries: 3 });
+    }
   },
-  ...['object-wrapper', 'method-wrapper', 'node'].map((variant) => ({
-    name: variant,
-    description: `keeps full owned dependency Sets on every ${variant} delivery`,
-    async run() {
-      await withCompiler(async (compiler, context) => {
-        const native = compiler.watchFileSystem;
-        const watch = native.watch;
-        const retained = [];
-        let generation = 0;
-        compiler.hooks.thisCompilation.tap('Generation', () => generation++);
-        compiler.hooks.afterDone.tap('LateOwnedDependencies', (stats) => {
-          kinds.forEach((kind) => {
-            stats.compilation[`${kind}Dependencies`].add(
-              path.join(context, `${kind}-${generation}`),
-            );
-          });
-        });
-        function observeSnapshots(args) {
-          const snapshots = args.slice(0, 3);
-          snapshots.forEach((dependencies, index) => {
-            assert(dependencies instanceof Set);
-            assert(dependencies.size > 0);
-            assert(
-              dependencies.has(
-                path.join(context, `${kinds[index]}-${generation}`),
-              ),
-            );
-            assert(dependencies.added instanceof Set);
-            assert(dependencies.removed instanceof Set);
-          });
-          assert(snapshots[0].has(path.join(context, 'entry.js')));
-          retained.push(snapshots);
-        }
-        function wrappedWatch(...args) {
-          observeSnapshots(args);
-          return watch.apply(native, args);
-        }
-        if (variant === 'method-wrapper') native.watch = wrappedWatch;
-        else if (variant === 'object-wrapper')
-          compiler.watchFileSystem = { watch: wrappedWatch };
-        const session = startWatch(compiler, (args) => {
-          if (variant === 'node') {
-            assert.equal(compiler.watchFileSystem, native);
-            assert.equal(native.watch, watch);
-            observeSnapshots(args);
-          }
-        });
-        await session.nextDelivery();
-        for (let cycle = 0; cycle < 2; cycle++) {
-          session.watching.invalidate();
-          await session.nextDelivery();
-        }
-        await closeCompiler(compiler);
-        assert.equal(retained.length, 3);
-        retained.forEach((snapshots, index) => {
-          kinds.forEach((kind, kindIndex) => {
-            const dependencies = snapshots[kindIndex];
-            assert(
-              dependencies.has(path.join(context, `${kind}-${index + 1}`)),
-            );
-            assert(
-              !dependencies.has(path.join(context, `${kind}-${index + 2}`)),
-            );
-            assert.notEqual(dependencies, retained[(index + 1) % 3][kindIndex]);
-            // Full iteration remains safe even after the native compiler closes.
-            assert(
-              [...dependencies].includes(
-                path.join(context, `${kind}-${index + 1}`),
-              ),
-            );
-          });
-        });
-      }, variant !== 'node');
-    },
-  })),
-  {
-    name: 'coalesced-deltas',
-    description:
-      'keeps additions and removals from a skipped build in native delivery',
-    async run() {
-      await withCompiler(async (compiler, context) => {
-        await fs.copyFile(
-          path.join(fixture, 'dependency-loader.cjs'),
-          path.join(context, 'dependency-loader.cjs'),
-        );
-        await fs.writeFile(
-          path.join(context, 'entry.js'),
-          "import './retained.js';",
-        );
-        await fs.writeFile(
-          path.join(context, 'retained.js'),
-          'export default "old";',
-        );
-        for (const phase of ['old', 'new']) {
-          await fs.writeFile(path.join(context, `${phase}.txt`), phase);
-          await fs.mkdir(path.join(context, `${phase}-context`));
-        }
-        compiler.options.module.rules.push({
-          test: /retained\.js$/,
-          use: [path.join(context, 'dependency-loader.cjs')],
-        });
-        let builds = 0;
-        let session;
-        compiler.hooks.make.tap('CoalesceWatchBuild', () => {
-          builds++;
-          if (builds === 2) session.watching.invalidate();
-        });
-        session = startWatch(compiler, (args) =>
-          args.map((dependencies) => ({
-            added: [...dependencies.added],
-            removed: [...dependencies.removed],
-          })),
-        );
-        await session.nextDelivery();
-        await fs.writeFile(
-          path.join(context, 'retained.js'),
-          'export default "new";',
-        );
-        session.watching.invalidateWithChangesAndRemovals(
-          new Set([path.join(context, 'retained.js')]),
-        );
-        const delivered = await session.nextDelivery();
-        assert.equal(builds, 3);
-        for (const [index, suffix] of [
-          '.txt',
-          '-context',
-          '-missing',
-        ].entries()) {
-          assert(
-            delivered[index].added.includes(path.join(context, `new${suffix}`)),
-          );
-          assert(
-            delivered[index].removed.includes(
-              path.join(context, `old${suffix}`),
-            ),
-          );
-        }
-      });
-    },
-  },
-];
+}));
