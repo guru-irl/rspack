@@ -12,6 +12,8 @@ import type { Callback } from '@rspack/lite-tapable';
 import type { Compilation, Compiler } from '.';
 import { Stats } from '.';
 import type { WatchOptions } from './config';
+import { flushFileSystemDependencies } from './FileSystemDependencies';
+import { requiresFullWatchDependencies } from './NativeWatchFileSystem';
 import type { FileSystemInfoEntry, Watcher } from './util/fs';
 import { markInternalCallback } from './util/watchTimeInfo';
 
@@ -364,6 +366,12 @@ export class Watching {
 
   // Fold a finished compilation's file/context/missing deltas into the accumulator.
   #accumulateWatchDeps(compilation: Compilation): void {
+    // Plugin mutations (including done/afterDone) may still be queued when
+    // nextTick watch delivery reads the binding deltas, before microtasks run.
+    flushFileSystemDependencies(compilation.fileDependencies);
+    flushFileSystemDependencies(compilation.contextDependencies);
+    flushFileSystemDependencies(compilation.missingDependencies);
+
     const pending = (this.#pendingWatchDeps ??= {
       file: { added: new Set(), removed: new Set() },
       context: { added: new Set(), removed: new Set() },
@@ -452,27 +460,33 @@ export class Watching {
           const pending = this.#pendingWatchDeps!;
           this.#pendingWatchDeps = undefined;
 
-          const fileDependencies = new Set([
-            ...compilation.fileDependencies,
-          ]) as unknown as Iterable<string> & {
+          // Only the unwrapped native watcher can consume deltas alone after
+          // its first registration. Capture full membership now when requested,
+          // never defer native-backed compilation access through a lazy closure.
+          const needsFullSnapshot = requiresFullWatchDependencies(
+            this.compiler.watchFileSystem,
+          );
+          const fileDependencies = new Set(
+            needsFullSnapshot ? [...compilation.fileDependencies] : [],
+          ) as unknown as Iterable<string> & {
             added?: Iterable<string>;
             removed?: Iterable<string>;
           };
           fileDependencies.added = pending.file.added;
           fileDependencies.removed = pending.file.removed;
 
-          const contextDependencies = new Set([
-            ...compilation.contextDependencies,
-          ]) as unknown as Iterable<string> & {
+          const contextDependencies = new Set(
+            needsFullSnapshot ? [...compilation.contextDependencies] : [],
+          ) as unknown as Iterable<string> & {
             added?: Iterable<string>;
             removed?: Iterable<string>;
           };
           contextDependencies.added = pending.context.added;
           contextDependencies.removed = pending.context.removed;
 
-          const missingDependencies = new Set([
-            ...compilation.missingDependencies,
-          ]) as unknown as Iterable<string> & {
+          const missingDependencies = new Set(
+            needsFullSnapshot ? [...compilation.missingDependencies] : [],
+          ) as unknown as Iterable<string> & {
             added?: Iterable<string>;
             removed?: Iterable<string>;
           };
