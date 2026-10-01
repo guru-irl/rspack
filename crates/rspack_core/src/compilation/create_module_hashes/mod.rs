@@ -16,7 +16,11 @@ impl PassExt for CreateModuleHashesPass {
   }
 
   async fn run_pass(&self, compilation: &mut Compilation) -> Result<()> {
-    create_module_hashes_pass_impl(compilation).await
+    create_module_hashes_pass_impl(compilation).await?;
+    // IDs now correspond to the updated hash artifact. A failed earlier pass
+    // must not advance this baseline, even if it completed ID assignment.
+    compilation.module_ids_diff_artifact.previous_ids = None;
+    Ok(())
   }
 }
 

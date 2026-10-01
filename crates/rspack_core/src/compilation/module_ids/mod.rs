@@ -49,6 +49,16 @@ impl PassExt for ModuleIdsPass {
       compilation.module_ids_artifact.clear();
     }
 
+    // On a rebuild, the recovered allocation is the last hash-consumed map,
+    // unless an earlier ID pass failed before hashing. Keep that older baseline
+    // until CreateModuleHashesPass succeeds. Do not copy IDs on cold builds.
+    if compilation.incremental.mutations_writable()
+      && compilation.module_ids_diff_artifact.previous_ids.is_none()
+    {
+      compilation.module_ids_diff_artifact.previous_ids =
+        Some((*compilation.module_ids_artifact).clone());
+    }
+
     let module_ids_artifact = compilation.module_ids_artifact.steal();
     let mut preserved_module_ids_artifact = ModuleIdsArtifact::default();
 
@@ -148,17 +158,13 @@ impl PassExt for ModuleIdsPass {
         if compilation
           .module_ids_diff_artifact
           .previous_ids
-          .get(module)
+          .as_ref()
+          .and_then(|ids| ids.get(module))
           != Some(id)
         {
           mutations.add(Mutation::ModuleSetId { module: *module });
         }
       }
-    }
-    if compilation.incremental.enabled() {
-      // Keep a separate comparison snapshot because global ID plugins may discard
-      // the recovered allocation map on the next compilation.
-      compilation.module_ids_diff_artifact.previous_ids = (*module_ids_artifact).clone();
     }
     compilation.module_ids_artifact = module_ids_artifact.into();
     compilation.extend_diagnostics(diagnostics);

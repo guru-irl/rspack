@@ -108,7 +108,7 @@ pub use imported_by_defer_modules_artifact::ImportedByDeferModulesArtifact;
 pub(crate) use incremental_artifacts::IncrementalArtifacts;
 pub use module_graph_cache_artifact::*;
 pub use module_ids_artifact::ModuleIdsArtifact;
-pub use module_ids_diff_artifact::ModuleIdsDiffArtifact;
+pub use module_ids_diff_artifact::{DeterministicModuleIdsInputs, ModuleIdsDiffArtifact};
 pub use process_runtime_requirements_cache_artifact::ProcessRuntimeRequirementsCacheArtifact;
 pub use runtime_proxy_metadata_artifact::{
   RuntimeProxyMetadata, RuntimeProxyMetadataArtifact, render_lexical_declarations,

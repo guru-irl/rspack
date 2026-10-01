@@ -1,5 +1,6 @@
 import collision from "./trigger.js";
 import targetModuleId from "./module7.js";
+import reference from "./ref.js";
 import stable from "./stable.js";
 
 it("should reassign the collision as a fresh build does and update emitted references", () => {
@@ -12,6 +13,7 @@ it("should reassign the collision as a fresh build does and update emitted refer
 
 it("should not code generate the unrelated stable module after a collision", () => {
 	if (WATCH_STEP === "1") {
+		expect([reference, __STATS__.modules.find(module => module.name === "./ref.js").codeGenerated]).toEqual([383, true]);
 		expect(__STATS__.modules.find(module => module.name === "./stable.js").codeGenerated).toBe(false);
 	}
 });
