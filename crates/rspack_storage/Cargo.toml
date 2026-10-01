@@ -19,6 +19,7 @@ rspack_parallel = { workspace = true }
 rspack_paths    = { workspace = true }
 rustc-hash      = { workspace = true }
 tokio           = { workspace = true, features = ["time"] }
+tracing         = { workspace = true }
 
 [lints]
 workspace = true

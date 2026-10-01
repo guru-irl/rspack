@@ -5604,6 +5604,7 @@ dependencies = [
  "rspack_paths",
  "rustc-hash",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

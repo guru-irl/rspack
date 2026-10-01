@@ -68,6 +68,7 @@ impl DB {
   }
 
   /// Loads all key-value pairs from the specified bucket.
+  #[tracing::instrument(name = "Storage::DB::load", level = "info", skip_all)]
   pub async fn load(&self, bucket_name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut buckets = self.buckets.lock().await;
 
@@ -94,6 +95,7 @@ impl DB {
   /// - `None`: Remove the key
   ///
   /// Returns `false` when the DB is readonly or the save failed.
+  #[tracing::instrument(name = "Storage::DB::save", level = "info", skip_all)]
   pub async fn save(&self, changes: BucketChanges, max_pack_size: usize) -> bool {
     if self.readonly.load(Ordering::Relaxed) {
       return false;
