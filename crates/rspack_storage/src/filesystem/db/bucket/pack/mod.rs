@@ -5,6 +5,7 @@ mod id_alloc;
 use std::hash::{Hash, Hasher};
 
 use rustc_hash::FxHasher;
+use tracing::Instrument;
 
 pub use self::{generator::PackGenerator, id::PackId, id_alloc::PackIdAlloc};
 use super::{
@@ -32,6 +33,7 @@ impl Pack {
   /// Loads a pack file from disk and returns the pack data with its content hash.
   ///
   /// Returns: (Pack, content_hash)
+  #[tracing::instrument(name = "Storage::Pack::load", level = "info", skip_all)]
   pub async fn load(fs: &ScopeFileSystem, id: PackId) -> Result<(Self, u64)> {
     let pack_name = id.pack_name();
     let mut reader = fs.stream_read(&pack_name).await?;
@@ -76,6 +78,7 @@ impl Pack {
   /// Saves the pack to disk and generates its index metadata.
   ///
   /// The index includes a bloom filter for fast key lookups and a content hash for integrity.
+  #[tracing::instrument(name = "Storage::Pack::save", level = "info", skip_all)]
   pub async fn save(&self, fs: &ScopeFileSystem, id: PackId) -> Result<PackIndex> {
     let mut writer = fs.stream_write(id.pack_name()).await?;
 
@@ -93,7 +96,10 @@ impl Pack {
       writer.write(value).await?;
       index_gen.add_value(value);
     }
-    writer.flush().await?;
+    writer
+      .flush()
+      .instrument(tracing::info_span!("Storage::Pack::flush"))
+      .await?;
     Ok(index_gen.finish())
   }
 

@@ -87,6 +87,7 @@ impl Transaction {
   /// # Arguments
   /// * `added_relative_path` - Files to move from temp to root
   /// * `removed_relative_path` - Files to delete from root
+  #[tracing::instrument(name = "Storage::Transaction::commit", level = "info", skip_all)]
   pub async fn commit(
     self,
     added_relative_path: Vec<String>,

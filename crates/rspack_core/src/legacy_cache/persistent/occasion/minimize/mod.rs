@@ -91,32 +91,33 @@ impl Occasion for MinimizeOccasion {
   #[tracing::instrument(name = "Cache::Occasion::Minimize::save", skip_all)]
   fn save(&self, storage: &mut dyn Storage, cache_item: &MinimizePersistentCache) {
     // Only persist entries that were added during this build.
-    cache_item
-      .dirty_keys
-      .par_iter()
-      .filter_map(|key| {
-        let entry = cache_item.entries.get(key)?;
-        let storage_entry = Entry {
-          source: entry.source.clone(),
-          extracted_comments: entry
-            .extracted_comments
-            .as_ref()
-            .map(|ec| ExtractedCommentsEntry {
-              source: ec.source.clone(),
-              comments_file_name: ec.comments_file_name.clone(),
+    tracing::info_span!("Cache::Occasion::Minimize::serialize").in_scope(|| {
+      cache_item
+        .dirty_keys
+        .par_iter()
+        .filter_map(|key| {
+          let entry = cache_item.entries.get(key)?;
+          let storage_entry = Entry {
+            source: entry.source.clone(),
+            extracted_comments: entry.extracted_comments.as_ref().map(|ec| {
+              ExtractedCommentsEntry {
+                source: ec.source.clone(),
+                comments_file_name: ec.comments_file_name.clone(),
+              }
             }),
-        };
-        match self.codec.encode(&storage_entry) {
-          Ok(bytes) => Some((key.to_bytes(), bytes)),
-          Err(err) => {
-            tracing::warn!("minimize persistent cache encode failed: {:?}", err);
-            None
+          };
+          match self.codec.encode(&storage_entry) {
+            Ok(bytes) => Some((key.to_bytes(), bytes)),
+            Err(err) => {
+              tracing::warn!("minimize persistent cache encode failed: {:?}", err);
+              None
+            }
           }
-        }
-      })
-      .consume(|(key, bytes)| {
-        storage.set(SCOPE, key, bytes);
-      });
+        })
+        .consume(|(key, bytes)| {
+          storage.set(SCOPE, key, bytes);
+        });
+    });
 
     tracing::debug!(
       "saved {} minimize persistent cache entries",
@@ -130,29 +131,31 @@ impl Occasion for MinimizeOccasion {
     let mut entries = FxHashMap::default();
     entries.reserve(items.len());
 
-    for (key, value) in items {
-      let Some(key) = MinimizeCacheKey::from_bytes(&key) else {
-        tracing::warn!("minimize persistent cache key has invalid length");
-        continue;
-      };
-      match self.codec.decode::<Entry>(&value) {
-        Ok(entry) => {
-          entries.insert(
-            key,
-            CachedMinimizeEntry {
-              source: entry.source,
-              extracted_comments: entry.extracted_comments.map(|ec| CachedExtractedComments {
-                source: ec.source,
-                comments_file_name: ec.comments_file_name,
-              }),
-            },
-          );
-        }
-        Err(err) => {
-          tracing::warn!("minimize persistent cache decode failed: {:?}", err);
+    tracing::info_span!("Cache::Occasion::Minimize::deserialize").in_scope(|| {
+      for (key, value) in items {
+        let Some(key) = MinimizeCacheKey::from_bytes(&key) else {
+          tracing::warn!("minimize persistent cache key has invalid length");
+          continue;
+        };
+        match self.codec.decode::<Entry>(&value) {
+          Ok(entry) => {
+            entries.insert(
+              key,
+              CachedMinimizeEntry {
+                source: entry.source,
+                extracted_comments: entry.extracted_comments.map(|ec| CachedExtractedComments {
+                  source: ec.source,
+                  comments_file_name: ec.comments_file_name,
+                }),
+              },
+            );
+          }
+          Err(err) => {
+            tracing::warn!("minimize persistent cache decode failed: {:?}", err);
+          }
         }
       }
-    }
+    });
 
     tracing::debug!(
       "recovered {} minimize persistent cache entries",

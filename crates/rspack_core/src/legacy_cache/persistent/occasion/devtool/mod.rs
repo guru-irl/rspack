@@ -188,47 +188,49 @@ impl Occasion for SourceMapDevToolPluginOccasion {
 
   #[tracing::instrument(name = "Cache::Occasion::SourceMap::save", skip_all)]
   fn save(&self, storage: &mut dyn Storage, cache_item: &SourceMapDevToolPluginCache) {
-    for key in &cache_item.pending_removes {
-      match self.codec.encode(key) {
-        Ok(key) => storage.remove(SCOPE, &key),
-        Err(err) => {
-          tracing::warn!("source map persistent cache key encode failed: {:?}", err);
-        }
-      }
-    }
-
-    cache_item
-      .pending_writes
-      .par_iter()
-      .filter_map(|key| {
-        let key_bytes = match self.codec.encode(key) {
-          Ok(bytes) => bytes,
+    tracing::info_span!("Cache::Occasion::SourceMap::serialize").in_scope(|| {
+      for key in &cache_item.pending_removes {
+        match self.codec.encode(key) {
+          Ok(key) => storage.remove(SCOPE, &key),
           Err(err) => {
             tracing::warn!("source map persistent cache key encode failed: {:?}", err);
-            return None;
-          }
-        };
-        let entry = cache_item.entries.get(key)?.as_ref()?;
-        let storage_entry = Entry {
-          append: entry.asset_append().to_vec(),
-          source_map: entry
-            .source_map()
-            .map(|(filename, source)| SourceMapAssetEntry {
-              filename: filename.to_string(),
-              source: source.clone(),
-            }),
-        };
-        match self.codec.encode(&storage_entry) {
-          Ok(bytes) => Some((key_bytes, bytes)),
-          Err(err) => {
-            tracing::warn!("source map persistent cache encode failed: {:?}", err);
-            None
           }
         }
-      })
-      .consume(|(key, bytes)| {
-        storage.set(SCOPE, key, bytes);
-      });
+      }
+
+      cache_item
+        .pending_writes
+        .par_iter()
+        .filter_map(|key| {
+          let key_bytes = match self.codec.encode(key) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+              tracing::warn!("source map persistent cache key encode failed: {:?}", err);
+              return None;
+            }
+          };
+          let entry = cache_item.entries.get(key)?.as_ref()?;
+          let storage_entry = Entry {
+            append: entry.asset_append().to_vec(),
+            source_map: entry
+              .source_map()
+              .map(|(filename, source)| SourceMapAssetEntry {
+                filename: filename.to_string(),
+                source: source.clone(),
+              }),
+          };
+          match self.codec.encode(&storage_entry) {
+            Ok(bytes) => Some((key_bytes, bytes)),
+            Err(err) => {
+              tracing::warn!("source map persistent cache encode failed: {:?}", err);
+              None
+            }
+          }
+        })
+        .consume(|(key, bytes)| {
+          storage.set(SCOPE, key, bytes);
+        });
+    });
 
     tracing::debug!(
       "saved {} and removed {} source map persistent cache entries",
@@ -240,33 +242,35 @@ impl Occasion for SourceMapDevToolPluginOccasion {
   #[tracing::instrument(name = "Cache::Occasion::SourceMap::recovery", skip_all)]
   async fn recovery(&self, storage: &dyn Storage) -> Result<SourceMapDevToolPluginCache> {
     let items = storage.load(SCOPE).await?;
-    let entries = items
-      .into_par_iter()
-      .filter_map(|(key, value)| {
-        let key = match self.codec.decode::<CacheKey>(&key) {
-          Ok(key) => key,
-          Err(err) => {
-            tracing::warn!("source map persistent cache key decode failed: {:?}", err);
-            return None;
-          }
-        };
-        match self.codec.decode::<Entry>(&value) {
-          Ok(entry) => Some((
-            key,
-            Some(CachedSourceMapDevToolPluginEntry::from_parts(
-              entry.append,
-              entry
-                .source_map
-                .map(|source_map| (source_map.filename, source_map.source)),
+    let entries = tracing::info_span!("Cache::Occasion::SourceMap::deserialize").in_scope(|| {
+      items
+        .into_par_iter()
+        .filter_map(|(key, value)| {
+          let key = match self.codec.decode::<CacheKey>(&key) {
+            Ok(key) => key,
+            Err(err) => {
+              tracing::warn!("source map persistent cache key decode failed: {:?}", err);
+              return None;
+            }
+          };
+          match self.codec.decode::<Entry>(&value) {
+            Ok(entry) => Some((
+              key,
+              Some(CachedSourceMapDevToolPluginEntry::from_parts(
+                entry.append,
+                entry
+                  .source_map
+                  .map(|source_map| (source_map.filename, source_map.source)),
+              )),
             )),
-          )),
-          Err(err) => {
-            tracing::warn!("source map persistent cache decode failed: {:?}", err);
-            None
+            Err(err) => {
+              tracing::warn!("source map persistent cache decode failed: {:?}", err);
+              None
+            }
           }
-        }
-      })
-      .collect::<FxHashMap<CacheKey, Option<CachedSourceMapDevToolPluginEntry>>>();
+        })
+        .collect::<FxHashMap<CacheKey, Option<CachedSourceMapDevToolPluginEntry>>>()
+    });
 
     tracing::debug!(
       "recovered {} source map persistent cache entries",

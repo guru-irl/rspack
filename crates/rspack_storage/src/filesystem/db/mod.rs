@@ -12,6 +12,7 @@ use std::{
 use rspack_parallel::TryFutureConsumer;
 use rustc_hash::FxHashMap as HashMap;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 
 use self::{bucket::Bucket, transaction::Transaction};
 use super::ScopeFileSystem;
@@ -68,6 +69,7 @@ impl DB {
   }
 
   /// Loads all key-value pairs from the specified bucket.
+  #[tracing::instrument(name = "Storage::DB::load", level = "info", skip_all)]
   pub async fn load(&self, bucket_name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut buckets = self.buckets.lock().await;
 
@@ -94,6 +96,7 @@ impl DB {
   /// - `None`: Remove the key
   ///
   /// Returns `false` when the DB is readonly or the save failed.
+  #[tracing::instrument(name = "Storage::DB::save", level = "info", skip_all)]
   pub async fn save(&self, changes: BucketChanges, max_pack_size: usize) -> bool {
     if self.readonly.load(Ordering::Relaxed) {
       return false;
@@ -129,6 +132,7 @@ impl DB {
               .await?;
             Ok::<_, Error>((bucket_name, bucket, affacted_files))
           }
+          .in_current_span()
         })
         .try_fut_consume(|(bucket_name, bucket, affacted_files)| {
           let (added_pack, removed_pack) = affacted_files;
