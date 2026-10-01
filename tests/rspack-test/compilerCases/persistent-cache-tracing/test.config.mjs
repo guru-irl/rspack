@@ -25,7 +25,9 @@ export default {
 					capture.closes.some(
 						row => row.name === name && row.target === target
 					),
-					`missing trace span ${name} at target ${target}`
+					`missing trace span ${name} at target ${target}; observed: ${[
+						...new Set(capture.closes.map(row => `${row.name}@${row.target}`))
+					].join(", ")}`
 				);
 			};
 			assert(cold.packFiles > 0, "persistent cache must actually write packs");
@@ -74,6 +76,23 @@ export default {
 				"rspack_storage::filesystem::db::bucket::pack"
 			);
 			requireSpan(warm, "Storage::DB::load", "rspack_storage::filesystem::db");
+			for (const [name, target] of [
+				[
+					"Cache::Occasion::Make::ModuleGraph",
+					"rspack_core::legacy_cache::persistent::occasion::make::module_graph"
+				],
+				[
+					"Cache::Occasion::SourceMap",
+					"rspack_core::legacy_cache::persistent::occasion::devtool"
+				],
+				[
+					"Cache::Occasion::Minimize",
+					"rspack_core::legacy_cache::persistent::occasion::minimize"
+				]
+			]) {
+				requireSpan(cold, `${name}::serialize`, target);
+				requireSpan(warm, `${name}::deserialize`, target);
+			}
 			for (const capture of [cold, warm]) {
 				assert(
 					capture.closes.every(

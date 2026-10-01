@@ -104,3 +104,26 @@ RSPACK_PROFILE=rspack_core=warn
 # Keep INFO level logs for other crates but turn off logs for rspack_resolver
 RSPACK_PROFILE=info,rspack_core=off
 ```
+
+### Persistent cache
+
+For the legacy persistent cache (`cache.type: 'persistent'` with `experiments.newCache: false`), select the cache and storage targets at INFO level:
+
+```sh
+RSPACK_PROFILE='off,rspack_core::legacy_cache::persistent=info,rspack_storage=info' \
+RSPACK_TRACE_LAYER=logger rspack build
+```
+
+`off` disables other native targets. Persistent cache spans use Rust module-path targets under `rspack_core::legacy_cache::persistent`, and storage spans use targets under `rspack_storage`. The old prefix `rspack_core::cache` no longer matches these persistent cache spans.
+
+Targets are different from span names. For example, `Cache::Occasion::SourceMap::serialize` is a span name at target `rspack_core::legacy_cache::persistent::occasion::devtool`. The module graph, source map, and minimize occasions each emit one `serialize` or `deserialize` span around their encode or decode phase, not one span per entry. These phases also include preparation and staging or reconstruction where they share the same loop. The `rspack.persistentCache` name used by [`stats.loggingDebug`](/config/cache#inspect-persistent-cache-logs) is a separate stats logger, not a native trace target.
+
+These INFO spans are available in release bindings with the `logger` layer. DEBUG and TRACE spans are compiled out of release bindings; `ALL` or a more verbose filter cannot restore them. Perfetto requires a debug binding; see [Using `@rspack-debug/core`](/contribute/development/debugging) for setup.
+
+When interpreting storage timings:
+
+- `Storage::FileSystem::save` and `Cache::Context::save_storage` are synchronous and only measure enqueueing the background write, not the write itself.
+- The queued write is visible as `Storage::DB::save`, `Storage::Pack::save`, and `Storage::Pack::flush`. The final `Storage::FileSystem::flush` waits for queued work on compiler close or idle.
+- `Storage::Pack::flush` measures the writer flush, not `fsync` or durable disk writeback.
+
+When using `@rspack/core` directly, register tracing before creating the compiler and wait for `compiler.close(callback)` to complete before calling `rspack.experiments.globalTrace.cleanup()`, so background cache writes finish before trace cleanup. JavaScript records (`target: "javascript"`) are not affected by the native filter and may still appear in this capture.
