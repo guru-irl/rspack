@@ -116,14 +116,14 @@ RSPACK_TRACE_LAYER=logger rspack build
 
 `off` 会关闭其他原生 target。持久化缓存 span 使用 `rspack_core::legacy_cache::persistent` 下的 Rust 模块路径作为 target，存储 span 的 target 则位于 `rspack_storage` 下。旧前缀 `rspack_core::cache` 已无法匹配这些持久化缓存 span。
 
-target 与 span 名称不同。例如，`Cache::Occasion::SourceMap::serialize` 是 span 名称，其 target 为 `rspack_core::legacy_cache::persistent::occasion::devtool`。模块图、source map 和压缩的 occasion 会分别在编码或解码阶段记录一个 `serialize` 或 `deserialize` span，而不是为每个缓存条目记录一个 span。如果同一循环中还包含准备、暂存或重建操作，这些操作也会计入对应阶段。[`stats.loggingDebug`](/config/cache) 使用的 `rspack.persistentCache` 是独立的 stats logger 名称，不是原生 trace target。
+target 与 span 名称不同。例如，`Cache::Occasion::SourceMap::serialize` 是 span 名称，其 target 为 `rspack_core::legacy_cache::persistent::occasion::devtool`。模块图、source map 和压缩的 occasion 会分别在编码或解码阶段记录一个 `serialize` 或 `deserialize` span，而不是为每个缓存条目记录一个 span。如果同一循环中还包含准备、暂存或重建操作，这些操作也会计入对应阶段。[`stats.loggingDebug`](/config/cache#inspect-persistent-cache-logs) 使用的 `rspack.persistentCache` 是独立的 stats logger 名称，不是原生 trace target。
 
 release binding 可以通过 `logger` layer 记录这些 INFO span。DEBUG 和 TRACE span 会在 release binding 中被编译移除，设置 `ALL` 或更详细的过滤条件也无法恢复它们。Perfetto 需要 debug binding，配置方式请参考[使用 `@rspack-debug/core`](/contribute/development/debugging)。
 
 分析存储耗时时，需要注意：
 
 - `Storage::FileSystem::save` 和 `Cache::Context::save_storage` 是同步操作，只记录将后台写入加入队列的耗时，不包含实际写入。
-- 队列中的写入会记录为 `Storage::DB::save`、`Storage::Pack::save` 和 `Storage::Pack::flush`。最后的 `Storage::FileSystem::flush` 会在编译器关闭或空闲时等待队列中的任务完成。
+- 队列中的写入会记录为 `Storage::DB::save`、`Storage::Pack::save` 和 `Storage::Pack::flush`。最后的 `Storage::FileSystem::flush` 会在编译器关闭时等待队列中的任务完成。
 - `Storage::Pack::flush` 记录的是 writer flush，不是 `fsync`，也不代表数据已持久化到磁盘。
 
 直接使用 `@rspack/core` 时，应在创建编译器前注册 tracing，并等待 `compiler.close(callback)` 完成后再调用 `rspack.experiments.globalTrace.cleanup()`，确保后台缓存写入先于 trace 清理完成。JavaScript 记录（`target: "javascript"`）不受原生过滤条件影响，因此仍可能出现在这次采集中。

@@ -123,7 +123,7 @@ These INFO spans are available in release bindings with the `logger` layer. DEBU
 When interpreting storage timings:
 
 - `Storage::FileSystem::save` and `Cache::Context::save_storage` are synchronous and only measure enqueueing the background write, not the write itself.
-- The queued write is visible as `Storage::DB::save`, `Storage::Pack::save`, and `Storage::Pack::flush`. The final `Storage::FileSystem::flush` waits for queued work on compiler close or idle.
+- The queued write is visible as `Storage::DB::save`, `Storage::Pack::save`, and `Storage::Pack::flush`. The final `Storage::FileSystem::flush` waits for queued work on compiler close.
 - `Storage::Pack::flush` measures the writer flush, not `fsync` or durable disk writeback.
 
 When using `@rspack/core` directly, register tracing before creating the compiler and wait for `compiler.close(callback)` to complete before calling `rspack.experiments.globalTrace.cleanup()`, so background cache writes finish before trace cleanup. JavaScript records (`target: "javascript"`) are not affected by the native filter and may still appear in this capture.
