@@ -24,9 +24,10 @@ function startWatch(compiler, observe = () => {}) {
   });
   const watch = watching.watch;
   watching.watch = function (...args) {
-    const result = watch.apply(this, args);
+    let result;
     let delivery;
     try {
+      result = watch.apply(this, args);
       delivery = observe(args);
     } catch (error) {
       failure = error;
@@ -56,25 +57,33 @@ function startWatch(compiler, observe = () => {}) {
 }
 
 async function withCompiler(run, nativeWatcher = true) {
-  const context = await fs.mkdtemp(path.join(os.tmpdir(), 'native-watch-'));
-  await fs.copyFile(
-    path.join(fixture, 'entry.js'),
-    path.join(context, 'entry.js'),
+  const context = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'native-watch-')),
   );
-  await fs.mkdir(path.join(context, 'context'));
-  const compiler = rspack({
-    context,
-    mode: 'development',
-    entry: './entry.js',
-    devtool: false,
-    experiments: { nativeWatcher },
-    output: { path: path.join(context, 'dist') },
-  });
+  let compiler;
   try {
+    await fs.copyFile(
+      path.join(fixture, 'entry.js'),
+      path.join(context, 'entry.js'),
+    );
+    await fs.mkdir(path.join(context, 'context'));
+    compiler = rspack({
+      context,
+      mode: 'development',
+      entry: './entry.js',
+      devtool: false,
+      experiments: { nativeWatcher },
+      output: { path: path.join(context, 'dist') },
+    });
     await run(compiler, context);
   } finally {
-    await closeCompiler(compiler);
-    await fs.rm(context, { recursive: true, force: true });
+    if (compiler) await closeCompiler(compiler);
+    await fs.rm(context, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 50,
+    });
   }
 }
 
