@@ -12,7 +12,7 @@ use rustc_hash::FxHashSet;
 use crate::id_helpers::{
   ModuleFilterFn, assign_deterministic_ids_with_hash, compare_by_pre_order_index_or_id,
   get_deterministic_id_range, get_full_module_name, get_used_module_ids_and_modules_with_artifact,
-  get_used_module_ids_and_modules_with_async_filter, should_assign_module_id_without_chunk,
+  get_used_module_ids_and_modules_with_async_filter,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -104,23 +104,6 @@ async fn module_ids(
     candidates.sort_unstable_by(|(a, _, a_index), (b, _, b_index)| {
       compare_by_pre_order_index_or_id(*a_index, a, *b_index, b)
     });
-    let eligibility = mg
-      .modules()
-      .map(|(identifier, module)| {
-        (
-          *identifier,
-          (
-            module.need_id(),
-            compilation
-              .build_chunk_graph_artifact
-              .chunk_graph
-              .get_number_of_module_chunks(*identifier)
-              != 0
-              || should_assign_module_id_without_chunk(module.as_ref()),
-          ),
-        )
-      })
-      .collect();
     let ranges = [10usize
       .checked_pow(self.max_length as u32)
       .unwrap_or(usize::MAX)];
@@ -134,7 +117,6 @@ async fn module_ids(
     reserved_ids.sort_unstable();
     DeterministicModuleIdsInputs {
       candidates,
-      eligibility,
       reserved_ids,
       context: context.to_owned(),
       range,
@@ -178,60 +160,73 @@ async fn module_ids(
     module_ids.retain(|module, _| preserved_module_ids.contains_key(module));
   }
 
-  // Use the sync path when no async test filter is provided (the common case),
-  // avoiding unnecessary async overhead on the hot path.
-  let (used_ids, modules) = if self.test.is_some() {
-    get_used_module_ids_and_modules_with_async_filter(compilation, module_ids, self.test.as_ref())
-      .await?
-  } else {
-    get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None)
-  };
-
-  let mut module_ids_map = std::mem::take(module_ids);
-  let context = self
-    .context
-    .as_deref()
-    .unwrap_or(compilation.options.context.as_ref());
   let mut conflicts = 0;
-
-  let module_graph = compilation.get_module_graph();
-  let modules = modules
-    .into_iter()
-    .filter_map(|identifier| {
-      module_graph
-        .module_by_identifier(&identifier)
-        .map(|module| {
-          (
-            identifier,
-            module,
-            module_graph.get_pre_order_index(&identifier),
-          )
-        })
-    })
-    .collect::<Vec<_>>();
-  let used_ids_len = used_ids.len();
   let ranges = [10usize
     .checked_pow(self.max_length as u32)
     .unwrap_or(usize::MAX)];
   let expand_factor = if self.fixed_length { 0 } else { 10 };
-  let range = get_deterministic_id_range(modules.len(), &ranges, expand_factor, used_ids_len);
 
-  let modules_with_hashes = if let Some(inputs) = &inputs {
-    // Full replay can use the already captured names too. Hashing and collision
-    // retries are unchanged; do not render every full name a second time.
-    inputs
+  let (mut used_module_ids, modules_with_hashes) = if let Some(inputs) = &inputs {
+    // The captured candidate count and reservations define the hashing range.
+    // Replay this exact domain instead of scanning the module graph again.
+    debug_assert_eq!(
+      inputs.range,
+      get_deterministic_id_range(
+        inputs.candidates.len(),
+        &ranges,
+        expand_factor,
+        inputs.reserved_ids.len(),
+      )
+    );
+    let mut used_module_ids = FxHashSet::with_capacity_and_hasher(
+      inputs.reserved_ids.len() + inputs.candidates.len(),
+      Default::default(),
+    );
+    used_module_ids.extend(inputs.reserved_ids.iter().cloned());
+    let modules_with_hashes = inputs
       .candidates
       .par_iter()
       .map(|(identifier, full_name, pre_order_index)| {
         (
           *identifier,
           *pre_order_index,
-          get_number_hash_state(full_name, range),
+          get_number_hash_state(full_name, inputs.range),
         )
       })
-      .collect::<Vec<_>>()
+      .collect::<Vec<_>>();
+    (used_module_ids, modules_with_hashes)
   } else {
-    modules
+    // Callable filters and other unprovable inputs retain the original replay.
+    let (used_ids, modules) = if self.test.is_some() {
+      get_used_module_ids_and_modules_with_async_filter(compilation, module_ids, self.test.as_ref())
+        .await?
+    } else {
+      get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None)
+    };
+    let context = self
+      .context
+      .as_deref()
+      .unwrap_or(compilation.options.context.as_ref());
+    let module_graph = compilation.get_module_graph();
+    let modules = modules
+      .into_iter()
+      .filter_map(|identifier| {
+        module_graph
+          .module_by_identifier(&identifier)
+          .map(|module| {
+            (
+              identifier,
+              module,
+              module_graph.get_pre_order_index(&identifier),
+            )
+          })
+      })
+      .collect::<Vec<_>>();
+    let range = get_deterministic_id_range(modules.len(), &ranges, expand_factor, used_ids.len());
+    let mut used_module_ids =
+      FxHashSet::with_capacity_and_hasher(used_ids.len() + modules.len(), Default::default());
+    used_module_ids.extend(used_ids.into_iter().map(ModuleId::from));
+    let modules_with_hashes = modules
       .into_par_iter()
       .map(|(identifier, module, pre_order_index)| {
         let full_name = get_full_module_name(module, context);
@@ -241,14 +236,10 @@ async fn module_ids(
           get_number_hash_state(&full_name, range),
         )
       })
-      .collect::<Vec<_>>()
+      .collect::<Vec<_>>();
+    (used_module_ids, modules_with_hashes)
   };
-
-  let mut used_module_ids = FxHashSet::with_capacity_and_hasher(
-    used_ids_len + modules_with_hashes.len(),
-    Default::default(),
-  );
-  used_module_ids.extend(used_ids.into_iter().map(ModuleId::from));
+  let mut module_ids_map = std::mem::take(module_ids);
   module_ids_map.reserve(modules_with_hashes.len());
 
   assign_deterministic_ids_with_hash(

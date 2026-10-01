@@ -165,6 +165,16 @@ impl PassExt for ModuleIdsPass {
           mutations.add(Mutation::ModuleSetId { module: *module });
         }
       }
+      if let Some(previous_ids) = &compilation.module_ids_diff_artifact.previous_ids {
+        let module_graph = compilation.get_module_graph();
+        for module in previous_ids.keys() {
+          if !module_ids_artifact.contains_key(module)
+            && module_graph.module_by_identifier(module).is_some()
+          {
+            mutations.add(Mutation::ModuleSetId { module: *module });
+          }
+        }
+      }
     }
     compilation.module_ids_artifact = module_ids_artifact.into();
     compilation.extend_diagnostics(diagnostics);

@@ -9,7 +9,6 @@ use crate::{ArtifactExt, ModuleId, incremental::IncrementalPasses};
 #[derive(Debug, PartialEq, Eq)]
 pub struct DeterministicModuleIdsInputs {
   pub candidates: Vec<(Identifier, String, Option<u32>)>,
-  pub eligibility: IdentifierMap<(bool, bool)>,
   pub reserved_ids: Vec<ModuleId>,
   pub context: String,
   pub range: usize,

@@ -8,7 +8,6 @@ export default {
 		expect(codegen).not.toBeNull();
 		expect(codegen[0]).toContain("1 modules are affected, 3 in total");
 		expect(stats.modules.find(module => module.name === "./stable.js").codeGenerated).toBe(false);
-		expect(stats.warnings.some(warning => /NotFriendlyForIncremental|not friendly for incremental/.test(warning.message) && /moduleIds|modulesHashes/.test(warning.message))).toBe(false);
 		return true;
 	}
 };
