@@ -19,6 +19,7 @@ type ThreadSafety<T> = Arc<Mutex<T>>;
 pub(crate) struct FilesData {
   changed: HashSet<String>,
   deleted: HashSet<String>,
+  last_event: Option<tokio::time::Instant>,
 }
 
 impl FilesData {
@@ -141,35 +142,33 @@ impl Executor {
 
       let future = async move {
         while let Some(events) = rx.lock().await.recv().await {
-          for event in &events {
-            let path = event.path.to_string_lossy().to_string();
-            match event.kind {
-              FsEventKind::Change => {
-                files_data
-                  .lock()
-                  .expect("should lock files data")
-                  .changed
-                  .insert(path);
-              }
-              FsEventKind::Remove => {
-                files_data
-                  .lock()
-                  .expect("should lock files data")
-                  .deleted
-                  .insert(path);
-              }
-              FsEventKind::Create => {
-                files_data
-                  .lock()
-                  .expect("should lock files data")
-                  .changed
-                  .insert(path);
+          let paths: Vec<_> = events
+            .iter()
+            .map(|event| (event.kind, event.path.to_string_lossy().to_string()))
+            .collect();
+          {
+            let mut files = files_data.lock().expect("should lock files data");
+            if !paths.is_empty() {
+              // Repeated events on an already-pending path also restart the quiet period.
+              files.last_event = Some(tokio::time::Instant::now());
+            }
+            for (kind, path) in paths {
+              match kind {
+                FsEventKind::Change | FsEventKind::Create => {
+                  files.changed.insert(path);
+                }
+                FsEventKind::Remove => {
+                  files.deleted.insert(path);
+                }
               }
             }
-          }
 
-          if !paused.load(Ordering::Relaxed) && !aggregate_running.load(Ordering::Relaxed) {
-            let _ = exec_aggregate_tx.send(ExecAggregateEvent::Execute);
+            if !files.is_empty()
+              && !paused.load(Ordering::Relaxed)
+              && !aggregate_running.swap(true, Ordering::Relaxed)
+            {
+              let _ = exec_aggregate_tx.send(ExecAggregateEvent::Execute);
+            }
           }
 
           let _ = exec_tx.send(ExecEvent::Execute(events));
@@ -194,12 +193,8 @@ impl Executor {
     // indefinitely — the event loop already processed them (added to files_data)
     // but skipped sending Execute because paused was true. No future OS event
     // will re-deliver them, so we must kick the aggregate task ourselves.
-    if !self
-      .files_data
-      .lock()
-      .expect("should lock files data")
-      .is_empty()
-    {
+    let files = self.files_data.lock().expect("should lock files data");
+    if !files.is_empty() && !self.aggregate_running.swap(true, Ordering::Relaxed) {
       let _ = self.exec_aggregate_tx.send(ExecAggregateEvent::Execute);
     }
   }
@@ -215,6 +210,7 @@ impl Executor {
       Arc::clone(&self.files_data),
       self.aggregate_timeout as u64,
       Arc::clone(&self.aggregate_running),
+      Arc::clone(&self.paused),
     ));
 
     self.execute_handle = Some(create_execute_task(
@@ -264,6 +260,7 @@ fn create_execute_aggregate_task(
   files: Arc<SyncMutex<FilesData>>,
   aggregate_timeout: u64,
   running: Arc<AtomicBool>,
+  paused: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
   let future = async move {
     loop {
@@ -278,23 +275,49 @@ fn create_execute_aggregate_task(
       };
 
       if let ExecAggregateEvent::Execute = aggregate_rx {
-        running.store(true, Ordering::Relaxed);
-        // Wait for the aggregate timeout before executing the handler
-        tokio::time::sleep(tokio::time::Duration::from_millis(aggregate_timeout)).await;
+        let timeout = tokio::time::Duration::from_millis(aggregate_timeout);
+        loop {
+          let deadline = {
+            let files = files.lock().expect("should lock files data");
+            if files.is_empty() {
+              running.store(false, Ordering::Relaxed);
+              break;
+            }
+            let Some(last_event) = files.last_event else {
+              running.store(false, Ordering::Relaxed);
+              break;
+            };
+            last_event + timeout
+          };
+          tokio::time::sleep_until(deadline).await;
 
-        // Get the files to process
-        let (changed, deleted) = {
-          let mut files = files.lock().expect("should lock files data");
-          if files.is_empty() {
-            running.store(false, Ordering::Relaxed);
-            continue;
-          }
-          files.take_aggregated()
-        };
+          let (changed, deleted) = {
+            let mut files = files.lock().expect("should lock files data");
+            if paused.load(Ordering::Relaxed) || files.is_empty() {
+              // Keep paused data for the next watch registration's resume kick.
+              running.store(false, Ordering::Relaxed);
+              break;
+            }
+            let Some(last_event) = files.last_event else {
+              running.store(false, Ordering::Relaxed);
+              break;
+            };
+            let deadline = last_event + timeout;
+            if tokio::time::Instant::now() < deadline {
+              continue;
+            }
+            // Pause before taking the batch, not when JS accepts it, so a second
+            // aggregate cannot overflow the bounded callback queue.
+            paused.store(true, Ordering::Relaxed);
+            files.take_aggregated()
+          };
 
-        // Call the event handler with the changed and deleted files
-        event_handler.on_event_handle(changed, deleted);
-        running.store(false, Ordering::Relaxed);
+          event_handler.on_event_handle(changed, deleted);
+
+          // Later arrivals stay pending for getInfo() or the next registration's resume kick.
+          running.store(false, Ordering::Relaxed);
+          break;
+        }
       }
     }
   };
