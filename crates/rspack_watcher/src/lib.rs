@@ -244,11 +244,9 @@ impl FsWatcher {
 
   /// Takes the pending changed and removed files, leaving empty buffers for later events.
   pub fn take_aggregated(&self) -> (HashSet<String>, HashSet<String>) {
-    self
-      .files_data
-      .lock()
-      .expect("should lock files data")
-      .take_aggregated()
+    let files = std::mem::take(&mut *self.files_data.lock().expect("should lock files data"));
+    // Resolve the batch after releasing the lock: `into_final` stats paths.
+    files.into_final()
   }
 
   /// Pauses the file system watcher, stopping the execution of the event loop.

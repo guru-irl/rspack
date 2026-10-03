@@ -23,13 +23,28 @@ pub(crate) struct FilesData {
 }
 
 impl FilesData {
-  pub(crate) fn take_aggregated(&mut self) -> (HashSet<String>, HashSet<String>) {
-    let files = std::mem::take(self);
-    (files.changed, files.deleted)
-  }
-
   fn is_empty(&self) -> bool {
     self.changed.is_empty() && self.deleted.is_empty()
+  }
+
+  /// Returns the changed and deleted files, reporting a path in both sets by
+  /// its state on disk. Call it after releasing the lock: it stats paths.
+  pub(crate) fn into_final(mut self) -> (HashSet<String>, HashSet<String>) {
+    // A path in both sets was unlinked and re-created (e.g. git checkout), or
+    // the reverse, within this window. Event order is unreliable (FSEvents
+    // merges flags), so report its state on disk, like watchpack.
+    let deleted = &mut self.deleted;
+    self.changed.retain(|path| {
+      if !deleted.contains(path) {
+        return true;
+      }
+      let exists = std::fs::symlink_metadata(path).is_ok();
+      if exists {
+        deleted.remove(path);
+      }
+      exists
+    });
+    (self.changed, self.deleted)
   }
 }
 
@@ -291,7 +306,7 @@ fn create_execute_aggregate_task(
           };
           tokio::time::sleep_until(deadline).await;
 
-          let (changed, deleted) = {
+          let taken = {
             let mut files = files.lock().expect("should lock files data");
             if paused.load(Ordering::Relaxed) || files.is_empty() {
               // Keep paused data for the next watch registration's resume kick.
@@ -309,9 +324,11 @@ fn create_execute_aggregate_task(
             // Pause before taking the batch, not when JS accepts it, so a second
             // aggregate cannot overflow the bounded callback queue.
             paused.store(true, Ordering::Relaxed);
-            files.take_aggregated()
+            std::mem::take(&mut *files)
           };
 
+          // Resolve the batch after releasing the lock: `into_final` stats paths.
+          let (changed, deleted) = taken.into_final();
           event_handler.on_event_handle(changed, deleted);
 
           // Later arrivals stay pending for getInfo() or the next registration's resume kick.
