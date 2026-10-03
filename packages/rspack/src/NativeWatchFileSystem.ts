@@ -188,9 +188,12 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
         // path, where the forwarded `aggregated` runs before its rebuild callback.
         this.#events.emit('aggregated', changes, removals);
         watcher.emit('aggregated', changes, removals);
-        if (!undelayedReported && changedFiles.length) {
+        if (
+          !undelayedReported &&
+          (changedFiles.length || removedFiles.length)
+        ) {
           undelayedReported = true;
-          callbackUndelayed?.(changedFiles[0], Date.now());
+          callbackUndelayed?.(changedFiles[0] ?? removedFiles[0], Date.now());
         }
         callback(err, new Map(), new Map(), changes, removals);
       },
@@ -207,6 +210,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
           this.#events.emit('change', event.path, mtime);
           watcher.emit('change', event.path, mtime);
         } else {
+          if (!undelayedReported) {
+            undelayedReported = true;
+            callbackUndelayed?.(event.path, Date.now());
+          }
           this.#events.emit('remove', event.path);
           watcher.emit('remove', event.path);
         }
