@@ -33,6 +33,8 @@ impl CappedOutput {
     scratch: &mut [u8],
   ) -> std::io::Result<()> {
     let (dict, chunk) = staging.split_at(*dict_len);
+    // The fast encoder needs an empty dictionary or at least 4 bytes; ours is 0 or 64 KiB.
+    debug_assert!(dict.is_empty() || dict.len() >= 4);
     // Errors are matched by kind in `save`. A codec error cannot happen with a
     // bound-sized scratch; if it does, the pack is stored raw.
     let written = compress_into_with_dict(chunk, scratch, dict)
@@ -89,7 +91,11 @@ impl Pack {
   ///
   /// The index includes a bloom filter for fast key lookups and a content hash for integrity.
   #[tracing::instrument(name = "Storage::Pack::save", level = "info", skip_all)]
-  pub async fn save(&self, fs: &ScopeFileSystem, id: PackId) -> Result<PackIndex> {
+  pub async fn save(&mut self, fs: &ScopeFileSystem, id: PackId) -> Result<PackIndex> {
+    // Nearby keys share the LZ4 window and make output deterministic.
+    // Keys are unique within a pack, so an unstable sort is sufficient.
+    self.data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
     // Use append writes: not every filesystem's write_all appends to the stream.
     async fn write_bytes(writer: &mut dyn rspack_fs::WriteStream, mut bytes: &[u8]) -> Result<()> {
       while !bytes.is_empty() {
@@ -128,7 +134,7 @@ impl Pack {
       index_gen.add_value(value);
     }
     // LZ4's size prefix is u32. Larger bodies remain raw, without failing the save.
-    let compressed = if raw_len >= 128
+    let compressed = if raw_len >= 8 * 1024
       && let Ok(size) = u32::try_from(raw_len)
     {
       // Account for the prepended size when requiring at least 12.5% savings.
