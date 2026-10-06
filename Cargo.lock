@@ -5605,6 +5605,7 @@ dependencies = [
  "cow-utils",
  "futures",
  "itertools 0.14.0",
+ "itoa",
  "lz4_flex",
  "rspack_error",
  "rspack_fs",
