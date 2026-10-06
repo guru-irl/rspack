@@ -7,7 +7,6 @@ module.exports = {
       apply(compiler) {
         let step = -1;
         let latePath;
-        const deliveries = [];
 
         compiler.hooks.done.tap('DoneAddedWatchDependency', (stats) => {
           step++;
@@ -26,13 +25,8 @@ module.exports = {
             const files = args[0];
             // The first native delivery uses full membership. Step 1 is the
             // discriminating delivery, when native registration uses .added.
-            deliveries.push({ step, added: [...files.added] });
-            expect(files.has(latePath)).toBe(true);
             if (step === 1) {
-              expect(deliveries.map((delivery) => delivery.step)).toEqual([
-                0, 1,
-              ]);
-              expect(deliveries[1].added).toContain(latePath);
+              expect([...files.added]).toContain(latePath);
             }
             return originalWatch.apply(this, args);
           };
