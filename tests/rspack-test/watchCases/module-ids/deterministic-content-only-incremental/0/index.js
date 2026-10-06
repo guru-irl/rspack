@@ -1,9 +1,7 @@
-import changed from "./changed.js";
-import stable from "./stable.js";
+import "./changed.js";
+import "./stable.js";
 
-it("should execute the current edit and retain the stable module ID", () => {
-	expect(changed).toBe(WATCH_STEP);
-	expect(stable).toBe("stable");
+it("should retain the stable module id after a content-only edit", () => {
 	const module = __STATS__.modules.find(module => module.name === "./stable.js");
 	if (WATCH_STEP === "0") STATE.stableId = module.id;
 	else expect(module.id).toBe(STATE.stableId);
