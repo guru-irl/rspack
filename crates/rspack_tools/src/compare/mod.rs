@@ -89,6 +89,7 @@ fn join_relative_cache_path(root_path: &Utf8PathBuf, relative_path: &str) -> Utf
 
 /// Load all compiler-path-specific storages from a directory path.
 /// Returns a HashMap where the key is the compiler cache directory name.
+/// Only uncompressed (default) caches can be read by this tool.
 pub fn load_storages_from_path(path: &Utf8PathBuf) -> HashMap<String, BoxStorage> {
   let fs = Arc::new(NativeFileSystem::new(false));
   let mut storages = HashMap::default();
@@ -114,7 +115,7 @@ pub fn load_storages_from_path(path: &Utf8PathBuf) -> HashMap<String, BoxStorage
     let storage = create_storage(
       StorageOptions::FileSystem {
         directory: path.clone(),
-        compression: true,
+        compression: false,
       },
       cache_directory,
       0,

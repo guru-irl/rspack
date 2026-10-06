@@ -136,7 +136,7 @@ impl Storage for FileSystemStorage {
 
   #[tracing::instrument(name = "Storage::FileSystem::load", level = "info", skip_all)]
   async fn load(&self, scope: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let data = self.db.load(scope).await?;
+    let data = self.db.load(scope, self.options.compression).await?;
     Ok(data)
   }
 
