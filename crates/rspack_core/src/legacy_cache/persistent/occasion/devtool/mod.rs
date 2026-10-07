@@ -219,7 +219,7 @@ impl Occasion for SourceMapDevToolPluginOccasion {
                 source: source.clone(),
               }),
           };
-          match self.codec.encode(&storage_entry) {
+          match self.codec.encode_value(&storage_entry) {
             Ok(bytes) => Some((key_bytes, bytes)),
             Err(err) => {
               tracing::warn!("source map persistent cache encode failed: {:?}", err);
@@ -253,7 +253,7 @@ impl Occasion for SourceMapDevToolPluginOccasion {
               return None;
             }
           };
-          match self.codec.decode::<Entry>(&value) {
+          match self.codec.decode_value::<Entry>(value) {
             Ok(entry) => Some((
               key,
               Some(CachedSourceMapDevToolPluginEntry::from_parts(

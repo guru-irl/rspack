@@ -136,7 +136,7 @@ impl Storage for FileSystemStorage {
 
   #[tracing::instrument(name = "Storage::FileSystem::load", level = "info", skip_all)]
   async fn load(&self, scope: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let data = self.db.load(scope, self.options.compression).await?;
+    let data = self.db.load(scope).await?;
     Ok(data)
   }
 
@@ -163,7 +163,6 @@ impl Storage for FileSystemStorage {
       .map(|(k, v)| (k, v.into_iter().collect()))
       .collect();
     let max_pack_size = self.options.max_pack_size;
-    let compression = self.options.compression;
     let fs = self.fs.clone();
     let stale_fs = self.stale_fs();
     let cache_directory = self.options.cache_directory.clone();
@@ -171,7 +170,7 @@ impl Storage for FileSystemStorage {
     let next_meta_refresh_time = self.next_meta_refresh_time.clone();
 
     self.task_queue.add_task(async move {
-      if db.save(changes, max_pack_size, compression).await {
+      if db.save(changes, max_pack_size).await {
         refresh_metadata(
           fs,
           stale_fs,
