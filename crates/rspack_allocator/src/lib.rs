@@ -5,7 +5,7 @@
   feature = "system-allocator",
   feature = "tracy-client"
 )))]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: live_heap::LiveHeap = live_heap::LiveHeap;
 
 #[global_allocator]
 #[cfg(not(any(miri, target_family = "wasm")))]
@@ -24,3 +24,12 @@ static GLOBAL: sftrace_setup::SftraceAllocator<std::alloc::System> =
 #[cfg(all(feature = "tracy-client", not(feature = "sftrace-setup")))]
 static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
   tracy_client::ProfiledAllocator::new(std::alloc::System, 10); // adjust callstack_depth if needed with performance cost
+
+#[cfg(not(any(miri, target_family = "wasm")))]
+mod live_heap;
+
+/// Measurement only: starts the live-heap sampler when `RSPACK_LIVE_HEAP_LOG` is set.
+pub fn start_live_heap_sampler() {
+  #[cfg(not(any(miri, target_family = "wasm")))]
+  live_heap::start_sampler();
+}
