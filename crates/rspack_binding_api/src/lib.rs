@@ -272,6 +272,7 @@ impl JsCompiler {
     cache: Reference<JsCache>,
     js_helpers: JsHelpers<'_>,
   ) -> Result<Self> {
+    rspack_allocator::start_live_heap_sampler();
     tracing::info!(name:"rspack_version", version = rspack_workspace::rspack_pkg_version!());
 
     let compiler_scoped_tsfn_manager = CompilerScopedTsFnManager::new();
