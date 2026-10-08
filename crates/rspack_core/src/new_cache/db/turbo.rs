@@ -1,7 +1,12 @@
 use std::{
   fmt,
   hash::Hasher,
-  time::{SystemTime, UNIX_EPOCH},
+  io::Read,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+  time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -12,9 +17,12 @@ use turbo_persistence::{
   StoreKey, TurboPersistence,
 };
 
-use crate::new_cache::{
-  CacheKey,
-  db::{DatabaseFamily, DatabaseValue},
+use crate::{
+  InfrastructureLogger, Logger,
+  new_cache::{
+    CacheKey,
+    db::{DatabaseFamily, DatabaseValue},
+  },
 };
 
 const STALE_DIRECTORY: &str = "_stale";
@@ -189,6 +197,13 @@ pub struct TurboDatabase {
   base_path: Utf8PathBuf,
   path: Utf8PathBuf,
   readonly: bool,
+  prefetch_cancelled: Option<Arc<AtomicBool>>,
+}
+
+impl Drop for TurboDatabase {
+  fn drop(&mut self) {
+    self.cancel_prefetch();
+  }
 }
 
 impl fmt::Debug for TurboDatabase {
@@ -203,24 +218,46 @@ impl fmt::Debug for TurboDatabase {
 }
 
 impl TurboDatabase {
-  pub fn open(base_path: Utf8PathBuf, path: Utf8PathBuf, readonly: bool) -> Result<Self> {
+  pub fn open(
+    base_path: Utf8PathBuf,
+    path: Utf8PathBuf,
+    readonly: bool,
+    logger: Arc<InfrastructureLogger>,
+  ) -> Result<Self> {
     let prefetch_mode = std::env::var("RSPACK_NEWCACHE_PREFETCH").ok();
     let prefetch_mode = match prefetch_mode.as_deref() {
       Some("1" | "willneed") => Some("willneed"),
       Some("read") => Some("read"),
       _ => None,
     };
-    let warm = prefetch_mode.is_some() && path.join("CURRENT").is_file();
+    let warm = path.join("CURRENT").is_file();
     let inner = open_database(&path, readonly)
       .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
     if warm && let Some(mode) = prefetch_mode {
       prefetch_database(path.as_std_path().to_path_buf(), mode);
     }
+    let prefetch_cancelled = if warm && std::env::var_os("RSPACK_DISABLE_CACHE_PREFETCH").is_none()
+    {
+      let cancelled = Arc::new(AtomicBool::new(false));
+      let thread_cancelled = cancelled.clone();
+      let thread_path = path.clone();
+      // A dedicated I/O thread keeps sequential reads off the compilation pools.
+      // The buffer lives on its bounded stack and is released when prefetch ends.
+      let _ = std::thread::Builder::new()
+        .name("rspack-cache-prefetch".into())
+        .stack_size(512 * 1024)
+        .spawn(move || prefetch_files(thread_path, thread_cancelled, logger));
+      Some(cancelled)
+    } else {
+      None
+    };
+
     Ok(Self {
       inner,
       base_path,
       path,
       readonly,
+      prefetch_cancelled,
     })
   }
 
@@ -264,7 +301,14 @@ impl TurboDatabase {
     self.inner.has_unrecoverable_write_error()
   }
 
+  fn cancel_prefetch(&self) {
+    if let Some(cancelled) = &self.prefetch_cancelled {
+      cancelled.store(true, Ordering::Relaxed);
+    }
+  }
+
   pub fn reset(&mut self) -> Result<()> {
+    self.cancel_prefetch();
     let old_database = std::mem::replace(
       &mut self.inner,
       Inner::empty_in_memory_with_config(database_config()),
@@ -290,10 +334,61 @@ impl TurboDatabase {
   }
 
   pub fn shutdown(self) -> Result<()> {
+    self.cancel_prefetch();
     self.inner.clear_cache();
     self.inner.shutdown()?;
     Ok(())
   }
+}
+
+#[allow(
+  clippy::large_stack_arrays,
+  reason = "The prefetch thread reserves an explicitly sized stack for this fixed buffer"
+)]
+fn prefetch_files(
+  path: Utf8PathBuf,
+  cancelled: Arc<AtomicBool>,
+  logger: Arc<InfrastructureLogger>,
+) {
+  let start = Instant::now();
+  let mut buffer = [0_u8; 256 * 1024];
+  let mut files = 0;
+  let mut bytes = 0_u64;
+  // Blobs already read sequentially on lookup; prefetch would also read dead blobs.
+  // Stream directory entries rather than retaining a list of cache files.
+  if let Ok(entries) = std::fs::read_dir(&path) {
+    for entry in entries.flatten() {
+      if cancelled.load(Ordering::Relaxed) {
+        break;
+      }
+      let file_path = entry.path();
+      let extension = file_path
+        .extension()
+        .and_then(|extension| extension.to_str());
+      if !matches!(extension, Some("sst" | "meta"))
+        || !entry.file_type().is_ok_and(|kind| kind.is_file())
+      {
+        continue;
+      }
+      // Compaction may remove a file between the directory scan and the read.
+      let Ok(mut file) = std::fs::File::open(file_path) else {
+        continue;
+      };
+      files += 1;
+      while !cancelled.load(Ordering::Relaxed) {
+        match file.read(&mut buffer) {
+          Ok(0) => break,
+          Ok(read) => bytes += read as u64,
+          Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+          Err(_) => break,
+        }
+      }
+    }
+  }
+  logger.debug(format!(
+    "Prefetched cache ({files} files, {bytes} bytes, {} ms)",
+    start.elapsed().as_millis()
+  ));
 }
 
 fn move_to_stale(base_path: &Utf8PathBuf, path: &Utf8PathBuf) -> Result<()> {
