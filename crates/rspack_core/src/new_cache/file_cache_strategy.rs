@@ -334,6 +334,7 @@ impl FileCacheStrategy {
         let Some(state) = state.as_mut() else {
           return Ok(());
         };
+        state.database.ensure_open(&self.logger)?;
         (
           std::mem::take(&mut state.pending_writes.entries),
           state.pending_writes.new_build_dependencies().take(),

@@ -25,6 +25,10 @@ impl NoopDatabase {
     true
   }
 
+  pub fn ensure_open(&mut self, _logger: &crate::InfrastructureLogger) -> Result<()> {
+    Ok(())
+  }
+
   pub fn write_batch(
     &self,
     writes: impl ParallelIterator<Item = (DatabaseFamily, CacheKey, Vec<u8>)>,

@@ -12,9 +12,12 @@ use turbo_persistence::{
   StoreKey, TurboPersistence,
 };
 
-use crate::new_cache::{
-  CacheKey,
-  db::{DatabaseFamily, DatabaseValue},
+use crate::{
+  InfrastructureLogger, Logger,
+  new_cache::{
+    CacheKey,
+    db::{DatabaseFamily, DatabaseValue},
+  },
 };
 
 const STALE_DIRECTORY: &str = "_stale";
@@ -185,7 +188,7 @@ impl StoreKey for CacheKey {
 }
 
 pub struct TurboDatabase {
-  inner: Inner,
+  inner: Option<Inner>,
   base_path: Utf8PathBuf,
   path: Utf8PathBuf,
   readonly: bool,
@@ -204,8 +207,20 @@ impl fmt::Debug for TurboDatabase {
 
 impl TurboDatabase {
   pub fn open(base_path: Utf8PathBuf, path: Utf8PathBuf, readonly: bool) -> Result<Self> {
-    let inner = open_database(&path, readonly)
-      .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
+    // Without CURRENT there are no committed entries to restore. Avoid the
+    // initialization syncs until the first idle store. Keep readonly opens eager.
+    let inner = if !readonly && matches!(path.join("CURRENT").try_exists(), Ok(false)) {
+      // The cache directory is observable before the first store.
+      std::fs::create_dir_all(&path)
+        .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
+      None
+    } else {
+      Some(
+        open_database(&path, readonly).map_err(|error| {
+          rspack_error::error!("Open cache database from {path} failed: {error}")
+        })?,
+      )
+    };
     Ok(Self {
       inner,
       base_path,
@@ -215,18 +230,36 @@ impl TurboDatabase {
   }
 
   pub fn get(&self, family: DatabaseFamily, key: &CacheKey) -> Result<Option<DatabaseValue>> {
-    Ok(self.inner.get(family.index(), &key)?)
+    let Some(inner) = &self.inner else {
+      return Ok(None);
+    };
+    Ok(inner.get(family.index(), &key)?)
   }
 
   pub fn is_empty(&self) -> bool {
-    self.inner.is_empty()
+    self.inner.as_ref().is_none_or(Inner::is_empty)
+  }
+
+  pub fn ensure_open(&mut self, logger: &InfrastructureLogger) -> Result<()> {
+    if self.inner.is_none() {
+      let start = logger.time("open cache database");
+      self.inner = Some(open_database(&self.path, self.readonly).map_err(|error| {
+        rspack_error::error!("Open cache database from {} failed: {error}", self.path)
+      })?);
+      logger.time_end(start);
+    }
+    Ok(())
   }
 
   pub fn write_batch(
     &self,
     writes: impl ParallelIterator<Item = (DatabaseFamily, CacheKey, Vec<u8>)>,
   ) -> Result<usize> {
-    let batch = self.inner.write_batch::<CacheKey>()?;
+    let inner = self
+      .inner
+      .as_ref()
+      .expect("cache database should be opened before storing");
+    let batch = inner.write_batch::<CacheKey>()?;
     let writes_len = writes
       .try_fold(
         || 0,
@@ -237,35 +270,41 @@ impl TurboDatabase {
       )
       .try_reduce(|| 0, |a, b| Ok(a + b))?;
     if writes_len > 0 {
-      self.inner.commit_write_batch(batch)?;
+      inner.commit_write_batch(batch)?;
     }
     Ok(writes_len)
   }
 
   pub fn compact(&self) -> Result<()> {
-    if self.readonly || self.inner.is_empty() {
+    if self.readonly || self.is_empty() {
       return Ok(());
     }
-    self.inner.compact(&COMPACT_CONFIG)?;
+    if let Some(inner) = &self.inner {
+      inner.compact(&COMPACT_CONFIG)?;
+    }
     Ok(())
   }
 
   pub fn has_unrecoverable_write_error(&self) -> bool {
-    self.inner.has_unrecoverable_write_error()
+    self
+      .inner
+      .as_ref()
+      .is_some_and(Inner::has_unrecoverable_write_error)
   }
 
   pub fn reset(&mut self) -> Result<()> {
-    let old_database = std::mem::replace(
-      &mut self.inner,
-      Inner::empty_in_memory_with_config(database_config()),
-    );
-    old_database.clear_cache();
-    old_database.shutdown()?;
-    drop(old_database);
+    let old_database = self
+      .inner
+      .replace(Inner::empty_in_memory_with_config(database_config()));
+    if let Some(old_database) = old_database {
+      old_database.clear_cache();
+      old_database.shutdown()?;
+      drop(old_database);
+    }
 
     if !self.readonly {
       move_to_stale(&self.base_path, &self.path)?;
-      self.inner = open_database(&self.path, false)?;
+      self.inner = Some(open_database(&self.path, false)?);
     }
     Ok(())
   }
@@ -280,8 +319,10 @@ impl TurboDatabase {
   }
 
   pub fn shutdown(self) -> Result<()> {
-    self.inner.clear_cache();
-    self.inner.shutdown()?;
+    if let Some(inner) = self.inner {
+      inner.clear_cache();
+      inner.shutdown()?;
+    }
     Ok(())
   }
 }
