@@ -204,8 +204,18 @@ impl fmt::Debug for TurboDatabase {
 
 impl TurboDatabase {
   pub fn open(base_path: Utf8PathBuf, path: Utf8PathBuf, readonly: bool) -> Result<Self> {
+    let prefetch_mode = std::env::var("RSPACK_NEWCACHE_PREFETCH").ok();
+    let prefetch_mode = match prefetch_mode.as_deref() {
+      Some("1" | "willneed") => Some("willneed"),
+      Some("read") => Some("read"),
+      _ => None,
+    };
+    let warm = prefetch_mode.is_some() && path.join("CURRENT").is_file();
     let inner = open_database(&path, readonly)
       .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
+    if warm && let Some(mode) = prefetch_mode {
+      prefetch_database(path.as_std_path().to_path_buf(), mode);
+    }
     Ok(Self {
       inner,
       base_path,
@@ -341,4 +351,74 @@ fn database_config() -> DbConfig<{ DatabaseFamily::COUNT }> {
       },
     ],
   }
+}
+
+// Measurement-only opt-in: overlap sequential cache I/O with a warm database open.
+fn prefetch_database(path: std::path::PathBuf, mode: &'static str) {
+  if mode == "willneed" && !cfg!(target_os = "linux") {
+    return;
+  }
+  let _ = std::thread::Builder::new()
+    .name("newcache-prefetch".into())
+    .spawn(move || {
+      use std::io::Read;
+
+      let started = std::time::Instant::now();
+      let mut files = 0_u64;
+      let mut bytes = 0_u64;
+      let mut errors = 0_u64;
+      let mut buffer = if mode == "read" {
+        vec![0_u8; 1024 * 1024]
+      } else {
+        Vec::new()
+      };
+      if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+          let path = entry.path();
+          if !matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("sst" | "blob" | "meta")
+          ) {
+            continue;
+          }
+          let Ok(mut file) = std::fs::File::open(path) else {
+            errors += 1;
+            continue;
+          };
+          files += 1;
+          if mode == "read" {
+            loop {
+              match file.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => bytes += count as u64,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                  errors += 1;
+                  break;
+                }
+              }
+            }
+          } else {
+            #[cfg(target_os = "linux")]
+            {
+              use std::os::fd::AsRawFd;
+              // SAFETY: file owns a valid descriptor for the duration of this call.
+              let result =
+                unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_WILLNEED) };
+              if result == 0 {
+                bytes += file.metadata().map_or(0, |metadata| metadata.len());
+              } else {
+                errors += 1;
+              }
+            }
+          }
+        }
+      } else {
+        errors += 1;
+      }
+      eprintln!(
+        "[newcache-prefetch] mode={mode} files={files} bytes={bytes} ms={} errors={errors}",
+        started.elapsed().as_millis()
+      );
+    });
 }
