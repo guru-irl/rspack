@@ -499,11 +499,7 @@ impl<'a> BuiltinPlugin<'a> {
             .map_err(|report| napi::Error::from_reason(report.to_string()))?,
         );
         plugins.push(
-          SplitChunksPlugin::new_with_name_batch_getters(
-            options.options,
-            options.name_batch_getters,
-          )
-          .boxed(),
+          SplitChunksPlugin::new_with_batch_getters(options.options, options.batch_getters).boxed(),
         );
       }
       BuiltinPluginName::RemoveDuplicateModulesPlugin => {

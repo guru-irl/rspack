@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::{Either3, Uint32Array};
 use napi_derive::napi;
-use rspack_core::ChunkUkey;
-use rspack_plugin_split_chunks::{ChunkNameGetter, ChunkNameGetterFnCtx, SplitChunksNameBatchFn};
-use rustc_hash::FxHashMap;
+use rspack_plugin_split_chunks::{
+  ChunkNameBatchGetterFnCtx, ChunkNameGetter, ChunkNameGetterFnCtx, SplitChunksNameBatchFn,
+};
 
 use crate::{
   chunk::ChunkWrapper, compiler_scoped_tsfn::CompilerScopedTsFnHandle as ThreadsafeFunction,
@@ -21,7 +21,7 @@ pub(super) fn default_chunk_option_name() -> ChunkNameGetter {
   ChunkNameGetter::Disabled
 }
 
-const CHUNK_DEDUP_HASH_THRESHOLD: usize = 16;
+use super::batch::ChunkTable;
 
 #[napi(object, object_from_js = false)]
 pub struct JsChunkOptionNameCtx {
@@ -93,18 +93,13 @@ pub struct JsChunkOptionNameBatch {
   pub cache_group_key: String,
 }
 
-impl<'a> From<Vec<ChunkNameGetterFnCtx<'a>>> for JsChunkOptionNameBatch {
-  fn from(contexts: Vec<ChunkNameGetterFnCtx<'a>>) -> Self {
+impl<'a> From<Vec<ChunkNameBatchGetterFnCtx<'a>>> for JsChunkOptionNameBatch {
+  fn from(contexts: Vec<ChunkNameBatchGetterFnCtx<'a>>) -> Self {
     let context_count = contexts.len();
-    let chunk_reference_count: usize = contexts.iter().map(|context| context.chunks.len()).sum();
+    let chunk_reference_count: usize = contexts.iter().map(|context| context.chunks_len()).sum();
     let chunk_index_start = context_count + 1;
-    // `modules` and `chunk_data` have exact capacities. `chunks` is deduplicated, so the total
-    // reference count could greatly overallocate it; cap its initial capacity at 16.
-    let mut chunk_ukeys =
-      Vec::<ChunkUkey>::with_capacity(chunk_reference_count.min(CHUNK_DEDUP_HASH_THRESHOLD));
-    let mut chunk_indices_by_ukey = None::<FxHashMap<ChunkUkey, u32>>;
+    let mut table = ChunkTable::new(contexts[0].compilation, chunk_reference_count);
     let mut modules = Vec::with_capacity(context_count);
-    let mut chunks = Vec::with_capacity(chunk_reference_count.min(CHUNK_DEDUP_HASH_THRESHOLD));
     let mut chunk_data = Vec::with_capacity(chunk_index_start + chunk_reference_count);
     chunk_data.resize(chunk_index_start, 0);
     let cache_group_key = contexts[0].cache_group_key.to_string();
@@ -117,30 +112,8 @@ impl<'a> From<Vec<ChunkNameGetterFnCtx<'a>>> for JsChunkOptionNameBatch {
         context.compilation.compiler_id(),
       ));
 
-      for chunk in context.chunks {
-        let chunk_index = if let Some(chunk_indices_by_ukey) = &mut chunk_indices_by_ukey {
-          *chunk_indices_by_ukey.entry(*chunk).or_insert_with(|| {
-            let index = chunks.len() as u32;
-            chunks.push(ChunkWrapper::new(*chunk, context.compilation));
-            index
-          })
-        } else if let Some(index) = chunk_ukeys.iter().position(|item| item == chunk) {
-          index as u32
-        } else {
-          let index = chunks.len() as u32;
-          chunk_ukeys.push(*chunk);
-          chunks.push(ChunkWrapper::new(*chunk, context.compilation));
-          if chunk_ukeys.len() == CHUNK_DEDUP_HASH_THRESHOLD {
-            chunk_indices_by_ukey = Some(
-              chunk_ukeys
-                .iter()
-                .enumerate()
-                .map(|(index, chunk)| (*chunk, index as u32))
-                .collect(),
-            );
-          }
-          index
-        };
+      for chunk in context.chunks_iter() {
+        let chunk_index = table.index(*chunk);
         chunk_data.push(chunk_index);
       }
       chunk_data[context_index + 1] = (chunk_data.len() - chunk_index_start) as u32;
@@ -148,7 +121,7 @@ impl<'a> From<Vec<ChunkNameGetterFnCtx<'a>>> for JsChunkOptionNameBatch {
 
     Self {
       modules,
-      chunks,
+      chunks: table.chunks,
       chunk_data: chunk_data.into(),
       cache_group_key,
     }
@@ -170,7 +143,7 @@ pub(super) fn normalize_raw_chunk_name(raw: RawChunkOptionName) -> ChunkNameGett
 pub(super) fn normalize_raw_chunk_name_batch(
   raw: RawChunkOptionNameBatch,
 ) -> SplitChunksNameBatchFn {
-  Arc::new(move |contexts: Vec<ChunkNameGetterFnCtx>| {
+  Arc::new(move |contexts: Vec<ChunkNameBatchGetterFnCtx>| {
     let batch = contexts.into();
     let raw = raw.clone();
     Box::pin(async move { raw.call_with_sync(batch).await })

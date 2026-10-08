@@ -798,6 +798,11 @@ export interface JsChunkOptionNameCtx {
   cacheGroupKey: string
 }
 
+export interface JsChunksFilterBatch {
+  chunks: Chunk[]
+  chunkIndices: Uint32Array
+}
+
 /**
  * File clean options
  *
@@ -1938,10 +1943,12 @@ export interface RawCacheGroupOptions {
   key: string
   priority?: number
   test?: RegExp | string | Function
+  testBatch?: ((modules: Module[]) => (boolean | undefined)[] | { results: (boolean | undefined)[]; thrown: number[]; error: unknown })
   filename?: JsFilename
   idHint?: string
   /** What kind of chunks should be selected. */
   chunks?: RegExp | 'async' | 'initial' | 'all'
+  chunksBatch?: ((batch: JsChunksFilterBatch) => boolean[] | { results: boolean[]; thrown: number[]; error: unknown })
   type?: RegExp | string
   layer?: RegExp | string | ((layer?: string) => boolean)
   automaticNameDelimiter?: string
@@ -3172,6 +3179,7 @@ export interface RawSplitChunksOptions {
   cacheGroups?: Array<RawCacheGroupOptions>
   /** What kind of chunks should be selected. */
   chunks?: RegExp | 'async' | 'initial' | 'all' | Function
+  chunksBatch?: ((batch: JsChunksFilterBatch) => boolean[] | { results: boolean[]; thrown: number[]; error: unknown })
   usedExports?: boolean
   automaticNameDelimiter?: string
   maxAsyncRequests?: number
