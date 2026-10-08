@@ -114,13 +114,20 @@ impl Task<TaskContext> for AddTask {
     }
 
     let cached_module = if let Some(module_build_cache) = &context.module_build_cache {
-      module_build_cache
+      let timer = rspack_cacheable::make_timers::RESTORE.start();
+      let result = module_build_cache
         .restore(
           &module,
           &context.build_context.file_system_info,
           &context.value_cache_versions,
         )
-        .await?
+        .await;
+      if timer.is_some() && matches!(&result, Ok(Some(_))) {
+        rspack_cacheable::make_timers::RESTORE_HITS
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
+      drop(timer);
+      result?
     } else {
       None
     };

@@ -46,16 +46,21 @@ impl ModuleBuildCache {
     }
 
     let identifier = module.identifier();
-    let Some(result) = self.cache.get::<ModuleRef>(identifier.as_str(), None) else {
+    let timer = rspack_cacheable::make_timers::RESTORE_GET.start();
+    let result = self.cache.get::<ModuleRef>(identifier.as_str(), None);
+    drop(timer);
+    let Some(result) = result else {
       return Ok(None);
     };
-    if result
+    let timer = rspack_cacheable::make_timers::NEED_BUILD.start();
+    let need_build = result
       .need_build(&NeedBuildContext::new(
         file_system_info,
         value_cache_versions,
       ))
-      .await?
-    {
+      .await;
+    drop(timer);
+    if need_build? {
       return Ok(None);
     }
 
