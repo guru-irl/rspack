@@ -20,6 +20,8 @@ use crate::{
   },
 };
 
+// turbo-persistence's commit pointer; check this name when upgrading the backend.
+const CURRENT_FILE: &str = "CURRENT";
 const STALE_DIRECTORY: &str = "_stale";
 const MB: u64 = 1024 * 1024;
 
@@ -187,6 +189,9 @@ impl StoreKey for CacheKey {
   }
 }
 
+/// A database opened by the idle thread but not yet installed in the cache state.
+pub struct PreparedDatabase(Inner);
+
 pub struct TurboDatabase {
   inner: Option<Inner>,
   base_path: Utf8PathBuf,
@@ -209,7 +214,7 @@ impl TurboDatabase {
   pub fn open(base_path: Utf8PathBuf, path: Utf8PathBuf, readonly: bool) -> Result<Self> {
     // Without CURRENT there are no committed entries to restore. Avoid the
     // initialization syncs until the first idle store. Keep readonly opens eager.
-    let inner = if !readonly && matches!(path.join("CURRENT").try_exists(), Ok(false)) {
+    let inner = if !readonly && matches!(path.join(CURRENT_FILE).try_exists(), Ok(false)) {
       // The cache directory is observable before the first store.
       std::fs::create_dir_all(&path)
         .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
@@ -240,15 +245,22 @@ impl TurboDatabase {
     self.inner.as_ref().is_none_or(Inner::is_empty)
   }
 
-  pub fn ensure_open(&mut self, logger: &InfrastructureLogger) -> Result<()> {
-    if self.inner.is_none() {
-      let start = logger.time("open cache database");
-      self.inner = Some(open_database(&self.path, self.readonly).map_err(|error| {
-        rspack_error::error!("Open cache database from {} failed: {error}", self.path)
-      })?);
-      logger.time_end(start);
+  pub fn prepare_open(&self, logger: &InfrastructureLogger) -> Result<Option<PreparedDatabase>> {
+    if self.inner.is_some() {
+      return Ok(None);
     }
-    Ok(())
+    let start = logger.time("create cache database");
+    let inner = open_database(&self.path, self.readonly).map_err(|error| {
+      rspack_error::error!("Open cache database from {} failed: {error}", self.path)
+    })?;
+    logger.time_end(start);
+    Ok(Some(PreparedDatabase(inner)))
+  }
+
+  pub fn finish_open(&mut self, database: Option<PreparedDatabase>) {
+    if let Some(database) = database {
+      self.inner = Some(database.0);
+    }
   }
 
   pub fn write_batch(
@@ -258,7 +270,7 @@ impl TurboDatabase {
     let inner = self
       .inner
       .as_ref()
-      .expect("cache database should be opened before storing");
+      .ok_or_else(|| rspack_error::error!("Cache database is not open for storing"))?;
     let batch = inner.write_batch::<CacheKey>()?;
     let writes_len = writes
       .try_fold(
@@ -276,12 +288,14 @@ impl TurboDatabase {
   }
 
   pub fn compact(&self) -> Result<()> {
-    if self.readonly || self.is_empty() {
+    let Some(inner) = self
+      .inner
+      .as_ref()
+      .filter(|inner| !self.readonly && !inner.is_empty())
+    else {
       return Ok(());
-    }
-    if let Some(inner) = &self.inner {
-      inner.compact(&COMPACT_CONFIG)?;
-    }
+    };
+    inner.compact(&COMPACT_CONFIG)?;
     Ok(())
   }
 

@@ -329,12 +329,22 @@ impl FileCacheStrategy {
       let start = self.logger.time("store cache");
       let codec = &self.codec;
 
+      // Only the idle thread opens the database. Keep the initialization syncs
+      // under a read guard so beginIdle/endIdle and cache readers can proceed.
+      let database = {
+        let state = self.read_state();
+        let Some(state) = state.as_ref() else {
+          return Ok(());
+        };
+        state.database.prepare_open(&self.logger)?
+      };
+
       let (entries, new_build_dependencies) = {
         let mut state = self.write_state();
         let Some(state) = state.as_mut() else {
           return Ok(());
         };
-        state.database.ensure_open(&self.logger)?;
+        state.database.finish_open(database);
         (
           std::mem::take(&mut state.pending_writes.entries),
           state.pending_writes.new_build_dependencies().take(),

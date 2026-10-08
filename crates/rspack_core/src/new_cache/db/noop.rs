@@ -1,11 +1,15 @@
 use rayon::iter::ParallelIterator;
 use rspack_error::Result;
 
-use crate::new_cache::{
-  CacheKey,
-  db::{DatabaseFamily, DatabaseValue},
+use crate::{
+  InfrastructureLogger,
+  new_cache::{
+    CacheKey,
+    db::{DatabaseFamily, DatabaseValue},
+  },
 };
 
+pub struct PreparedDatabase;
 pub struct NoopDatabase;
 
 impl NoopDatabase {
@@ -25,9 +29,11 @@ impl NoopDatabase {
     true
   }
 
-  pub fn ensure_open(&mut self, _logger: &crate::InfrastructureLogger) -> Result<()> {
-    Ok(())
+  pub fn prepare_open(&self, _logger: &InfrastructureLogger) -> Result<Option<PreparedDatabase>> {
+    Ok(None)
   }
+
+  pub fn finish_open(&mut self, _database: Option<PreparedDatabase>) {}
 
   pub fn write_batch(
     &self,
