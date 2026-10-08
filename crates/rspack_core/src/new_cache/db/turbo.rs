@@ -6,6 +6,7 @@ use std::{
     Arc,
     atomic::{AtomicBool, Ordering},
   },
+  thread::JoinHandle,
   time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -197,7 +198,7 @@ pub struct TurboDatabase {
   base_path: Utf8PathBuf,
   path: Utf8PathBuf,
   readonly: bool,
-  prefetch_cancelled: Option<Arc<AtomicBool>>,
+  prefetch_thread: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
 }
 
 impl Drop for TurboDatabase {
@@ -227,18 +228,19 @@ impl TurboDatabase {
     let warm = path.join("CURRENT").is_file();
     let inner = open_database(&path, readonly)
       .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
-    let prefetch_cancelled = if warm && std::env::var_os("RSPACK_DISABLE_CACHE_PREFETCH").is_none()
-    {
+    // Any value, including empty or "0", disables prefetch.
+    let prefetch_thread = if warm && std::env::var_os("RSPACK_DISABLE_CACHE_PREFETCH").is_none() {
       let cancelled = Arc::new(AtomicBool::new(false));
       let thread_cancelled = cancelled.clone();
       let thread_path = path.clone();
       // A dedicated I/O thread keeps sequential reads off the compilation pools.
       // The buffer lives on its bounded stack and is released when prefetch ends.
-      let _ = std::thread::Builder::new()
+      std::thread::Builder::new()
         .name("rspack-cache-prefetch".into())
         .stack_size(512 * 1024)
-        .spawn(move || prefetch_files(thread_path, thread_cancelled, logger));
-      Some(cancelled)
+        .spawn(move || prefetch_files(thread_path, thread_cancelled, logger))
+        .ok()
+        .map(|thread| (cancelled, thread))
     } else {
       None
     };
@@ -247,7 +249,7 @@ impl TurboDatabase {
       base_path,
       path,
       readonly,
-      prefetch_cancelled,
+      prefetch_thread,
     })
   }
 
@@ -292,13 +294,18 @@ impl TurboDatabase {
   }
 
   fn cancel_prefetch(&self) {
-    if let Some(cancelled) = &self.prefetch_cancelled {
+    if let Some((cancelled, _)) = &self.prefetch_thread {
       cancelled.store(true, Ordering::Relaxed);
     }
   }
 
   pub fn reset(&mut self) -> Result<()> {
     self.cancel_prefetch();
+    if let Some((_, thread)) = self.prefetch_thread.take() {
+      // Release prefetch's file and directory handles before renaming on Windows.
+      // This runs on the idle-cache thread, waiting only for in-flight I/O.
+      let _ = thread.join();
+    }
     let old_database = std::mem::replace(
       &mut self.inner,
       Inner::empty_in_memory_with_config(database_config()),
@@ -345,32 +352,34 @@ fn prefetch_files(
   let mut files = 0;
   let mut bytes = 0_u64;
   // Blobs already read sequentially on lookup; prefetch would also read dead blobs.
-  // Stream directory entries rather than retaining a list of cache files.
-  if let Ok(entries) = std::fs::read_dir(&path) {
-    for entry in entries.flatten() {
-      if cancelled.load(Ordering::Relaxed) {
-        break;
-      }
-      let file_path = entry.path();
-      let extension = file_path
-        .extension()
-        .and_then(|extension| extension.to_str());
-      if !matches!(extension, Some("sst" | "meta"))
-        || !entry.file_type().is_ok_and(|kind| kind.is_file())
-      {
-        continue;
-      }
-      // Compaction may remove a file between the directory scan and the read.
-      let Ok(mut file) = std::fs::File::open(file_path) else {
-        continue;
-      };
-      files += 1;
-      while !cancelled.load(Ordering::Relaxed) {
-        match file.read(&mut buffer) {
-          Ok(0) => break,
-          Ok(read) => bytes += read as u64,
-          Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-          Err(_) => break,
+  // Stream metadata first, then SSTs, without retaining a list of cache files.
+  for extension in ["meta", "sst"] {
+    if cancelled.load(Ordering::Relaxed) {
+      break;
+    }
+    if let Ok(entries) = std::fs::read_dir(&path) {
+      for entry in entries.flatten() {
+        if cancelled.load(Ordering::Relaxed) {
+          break;
+        }
+        let file_path = entry.path();
+        if file_path.extension().and_then(|ext| ext.to_str()) != Some(extension)
+          || !entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
+          continue;
+        }
+        // Compaction may remove a file between the directory scan and the read.
+        let Ok(mut file) = std::fs::File::open(file_path) else {
+          continue;
+        };
+        files += 1;
+        while !cancelled.load(Ordering::Relaxed) {
+          match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => bytes += read as u64,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+          }
         }
       }
     }
