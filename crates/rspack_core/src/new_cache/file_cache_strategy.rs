@@ -105,7 +105,7 @@ impl FileCacheStrategy {
     }
 
     let start = self.logger.time("open cache database");
-    let mut database = match Database::open(base_path, path, self.readonly) {
+    let mut database = match Database::open(base_path, path, self.readonly, self.logger.clone()) {
       Ok(database) => database,
       Err(error) => {
         self.session_unavailable(Some(&error));
