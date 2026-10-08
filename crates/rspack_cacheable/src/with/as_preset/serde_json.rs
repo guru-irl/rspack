@@ -46,6 +46,11 @@ where
 {
   #[inline]
   fn deserialize_with(field: &ArchivedString, _: &mut D) -> Result<Value> {
+    let _timer = crate::make_timers::JSON_DECODE.start();
+    if _timer.is_some() {
+      crate::make_timers::JSON_BYTES
+        .fetch_add(field.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
     serde_json::from_str(field)
       .map_err(|_| Error::MessageError("deserialize serde_json value failed"))
   }
@@ -86,6 +91,11 @@ where
 {
   #[inline]
   fn deserialize_with(field: &ArchivedString, _: &mut D) -> Result<Map<String, Value>> {
+    let _timer = crate::make_timers::JSON_DECODE.start();
+    if _timer.is_some() {
+      crate::make_timers::JSON_BYTES
+        .fetch_add(field.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
     serde_json::from_str(field)
       .map_err(|_| Error::MessageError("deserialize serde_json value failed"))
   }
