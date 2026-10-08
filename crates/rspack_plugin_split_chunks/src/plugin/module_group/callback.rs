@@ -146,14 +146,14 @@ impl RoundScratch<'_> {
   }
 }
 
-struct Stage<'a> {
-  plugin: &'a SplitChunksPlugin,
-  combinator: &'a Combinator,
-  all_modules: &'a [ModuleIdentifier],
-  compilation: &'a Compilation,
-  module_chunks: &'a [SsoHashSet<ChunkUkey>],
-  module_group_map: &'a FxDashMap<ModuleGroupKey, ModuleGroup>,
-  chunk_index_map: &'a FxHashMap<ChunkUkey, u32>,
+pub(super) struct Stage<'a> {
+  pub(super) plugin: &'a SplitChunksPlugin,
+  pub(super) combinator: &'a Combinator,
+  pub(super) all_modules: &'a [ModuleIdentifier],
+  pub(super) compilation: &'a Compilation,
+  pub(super) module_chunks: &'a [SsoHashSet<ChunkUkey>],
+  pub(super) module_group_map: &'a FxDashMap<ModuleGroupKey, ModuleGroup>,
+  pub(super) chunk_index_map: &'a FxHashMap<ChunkUkey, u32>,
 }
 
 struct Phase<'a> {
@@ -187,7 +187,7 @@ impl<'a> Phase<'a> {
           let index = u32::try_from(index).expect("module index should fit in u32");
           (!self.stage.module_chunks[index as usize].is_empty()
             && !failures.contains(index)
-            && (group.r#type)(self.module(index)))
+            && (is_default_module_type_filter(&group.r#type) || (group.r#type)(self.module(index))))
           .then_some(index)
         }),
     );
@@ -205,7 +205,9 @@ impl<'a> Phase<'a> {
       let mut results = stream::iter(0..candidates.len())
         .map(|slot| {
           let index = candidates[slot];
-          let result = (group.layer)(self.module(index).get_layer().map(ToString::to_string));
+          let result = group
+            .layer
+            .call(self.module(index).get_layer().map(ToString::to_string));
           async move { (index, result.await) }
         })
         .buffered(SCALAR_WINDOW);
@@ -290,32 +292,20 @@ impl<'a> Phase<'a> {
         }
       }
     } else {
-      let matches = candidates
-        .iter()
-        .map(|index| {
-          let item = self.module(*index);
-          match &group.test {
-            CacheGroupTest::String(test) => item
-              .name_for_condition()
-              .is_some_and(|name| name.starts_with(test)),
-            CacheGroupTest::RegExp(test) => item
-              .name_for_condition()
-              .is_some_and(|name| test.test(&name)),
-            CacheGroupTest::Enabled => true,
-            CacheGroupTest::Fn(_) => unreachable!("scalar callback handled separately"),
-          }
-        })
-        .collect::<Vec<_>>();
-      matched.extend(
-        candidates
-          .iter()
-          .copied()
-          .zip(matches)
-          .filter_map(|(index, matched)| {
-            (matched && self.stage.module_chunks[index as usize].len() >= group.min_chunks as usize)
-              .then_some(index)
-          }),
-      );
+      matched.extend(candidates.iter().copied().filter(|index| {
+        let item = self.module(*index);
+        let matched = match &group.test {
+          CacheGroupTest::String(test) => item
+            .name_for_condition()
+            .is_some_and(|name| name.starts_with(test)),
+          CacheGroupTest::RegExp(test) => item
+            .name_for_condition()
+            .is_some_and(|name| test.test(&name)),
+          CacheGroupTest::Enabled => true,
+          CacheGroupTest::Fn(_) => unreachable!("scalar callback handled separately"),
+        };
+        matched && self.stage.module_chunks[*index as usize].len() >= group.min_chunks as usize
+      }));
     }
 
     Ok(())
@@ -762,28 +752,18 @@ impl<'a> Phase<'a> {
   }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare_callback_groups(
-  plugin: &SplitChunksPlugin,
-  combinator: &Combinator,
-  all_modules: &[ModuleIdentifier],
+  stage: Stage<'_>,
   cache_groups: &[IndexedCacheGroup<'_>],
   native_positions: &[usize],
-  compilation: &Compilation,
-  module_chunks: &[SsoHashSet<ChunkUkey>],
   direct_matches: &[Option<Vec<AtomicBool>>],
-  module_group_map: &FxDashMap<ModuleGroupKey, ModuleGroup>,
-  chunk_index_map: &FxHashMap<ChunkUkey, u32>,
 ) -> Result<()> {
-  let stage = Stage {
+  let Stage {
     plugin,
-    combinator,
     all_modules,
-    compilation,
     module_chunks,
-    module_group_map,
-    chunk_index_map,
-  };
+    ..
+  } = &stage;
   let mut failures = Failures::new(all_modules.len());
   let mut candidates = Vec::with_capacity(all_modules.len());
   let mut matched = Vec::with_capacity(all_modules.len());

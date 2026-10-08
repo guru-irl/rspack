@@ -68,13 +68,60 @@ impl ChunkFilter {
 }
 
 pub type ModuleTypeFilter = Arc<dyn Fn(&dyn Module) -> bool + Send + Sync>;
-pub type ModuleLayerFilter =
-  Arc<dyn Fn(Option<String>) -> BoxFuture<'static, Result<bool>> + Send + Sync>;
+pub type ModuleLayerFilter = Arc<dyn ModuleLayerFilterFn>;
+
+pub trait ModuleLayerFilterFn: Send + Sync {
+  fn call(&self, layer: Option<String>) -> BoxFuture<'static, Result<bool>>;
+
+  fn is_native(&self) -> bool {
+    false
+  }
+
+  fn test_native(&self, _layer: Option<&str>) -> bool {
+    unreachable!("async layer filter should not run in the native pass")
+  }
+}
+
+impl<F> ModuleLayerFilterFn for F
+where
+  F: Fn(Option<String>) -> BoxFuture<'static, Result<bool>> + Send + Sync,
+{
+  fn call(&self, layer: Option<String>) -> BoxFuture<'static, Result<bool>> {
+    self(layer)
+  }
+}
+
+struct NativeModuleLayerFilter<F>(F);
+
+impl<F> ModuleLayerFilterFn for NativeModuleLayerFilter<F>
+where
+  F: Fn(Option<&str>) -> bool + Send + Sync,
+{
+  fn call(&self, layer: Option<String>) -> BoxFuture<'static, Result<bool>> {
+    let matched = self.test_native(layer.as_deref());
+    Box::pin(async move { Ok(matched) })
+  }
+
+  fn is_native(&self) -> bool {
+    true
+  }
+
+  fn test_native(&self, layer: Option<&str>) -> bool {
+    (self.0)(layer)
+  }
+}
+
+pub fn create_native_module_layer_filter(
+  filter: impl Fn(Option<&str>) -> bool + Send + Sync + 'static,
+) -> ModuleLayerFilter {
+  Arc::new(NativeModuleLayerFilter(filter))
+}
 
 static DEFAULT_MODULE_TYPE_FILTER: LazyLock<ModuleTypeFilter> =
   LazyLock::new(|| Arc::new(|_| true));
-static DEFAULT_MODULE_LAYER_FILTER: LazyLock<ModuleLayerFilter> =
-  LazyLock::new(|| Arc::new(|_| Box::pin(async move { Ok(true) })));
+static DEFAULT_MODULE_LAYER_FILTER: LazyLock<ModuleLayerFilter> = LazyLock::new(|| {
+  Arc::new(|_| -> BoxFuture<'static, Result<bool>> { Box::pin(async move { Ok(true) }) })
+});
 
 pub fn create_default_module_type_filter() -> ModuleTypeFilter {
   Arc::clone(&DEFAULT_MODULE_TYPE_FILTER)

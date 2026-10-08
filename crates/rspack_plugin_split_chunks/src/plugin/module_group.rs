@@ -852,7 +852,7 @@ impl SplitChunksPlugin {
         let group = indexed.cache_group;
         let getters =
           batch_getters.and_then(|getters| getters.get(indexed.cache_group_index as usize));
-        (is_default_module_layer_filter(&group.layer)
+        ((is_default_module_layer_filter(&group.layer) || group.layer.is_native())
           && !matches!(group.test, CacheGroupTest::Fn(_))
           && !group.chunk_filter.is_func()
           && !matches!(group.name, ChunkNameGetter::Fn(_))
@@ -863,9 +863,15 @@ impl SplitChunksPlugin {
     // These filters cannot yield or invoke user callbacks. Run their CPU work
     // on Rayon instead of allocating and joining one Tokio task per module.
     let use_native_preparation = native_positions.len() == cache_groups.len();
-    let native_type_filters = native_positions
+    const TYPE_FILTER: u8 = 1;
+    const LAYER_FILTER: u8 = 2;
+    let native_filters = native_positions
       .iter()
-      .map(|position| !is_default_module_type_filter(&cache_groups[*position].cache_group.r#type))
+      .map(|position| {
+        let group = cache_groups[*position].cache_group;
+        (u8::from(!is_default_module_type_filter(&group.r#type)) * TYPE_FILTER)
+          | (u8::from(!is_default_module_layer_filter(&group.layer)) * LAYER_FILTER)
+      })
       .collect::<Vec<_>>();
     let process_module = |module_index: usize, module_identifier: ModuleIdentifier| -> Result<()> {
       let belong_to_chunks = module_chunks
@@ -882,9 +888,7 @@ impl SplitChunksPlugin {
       let mut used_exports_combinations = [None, None];
       let mut non_used_exports_combinations = [None, None];
 
-      for (&cache_group_position, &has_type_filter) in
-        native_positions.iter().zip(&native_type_filters)
-      {
+      for (&cache_group_position, &filters) in native_positions.iter().zip(&native_filters) {
         let indexed_cache_group = &cache_groups[cache_group_position];
         let cache_group = indexed_cache_group.cache_group;
         let has_name_batch_getter = batch_getters.is_some_and(|getters| {
@@ -894,7 +898,14 @@ impl SplitChunksPlugin {
         });
         let include_intersections = self.dedup_depth > 0
           && cache_group_uses_intersections(cache_group, has_name_batch_getter);
-        if has_type_filter && !(cache_group.r#type)(module) {
+        if filters & TYPE_FILTER != 0 && !(cache_group.r#type)(module) {
+          continue;
+        }
+        if filters & LAYER_FILTER != 0
+          && !cache_group
+            .layer
+            .test_native(module.get_layer().map(|layer| layer.as_str()))
+        {
           continue;
         }
 
@@ -1001,11 +1012,11 @@ impl SplitChunksPlugin {
 
     if !native_positions.is_empty() {
       let modules = all_modules.par_iter().enumerate();
-      if use_native_preparation && native_type_filters.iter().all(|filtered| !filtered) {
+      if use_native_preparation && native_filters.iter().all(|filters| *filters == 0) {
         // Leave the default native fast path's scheduling unchanged.
         modules.try_for_each(|(index, identifier)| process_module(index, *identifier))?;
       } else {
-        // Native work in typed or mixed stages stays parallel, with coarse
+        // Native work in filtered or mixed stages stays parallel, with coarse
         // tasks to amortize scheduling across at least 4096 modules.
         modules
           .with_min_len(4096)
@@ -1014,16 +1025,18 @@ impl SplitChunksPlugin {
     }
     if !use_native_preparation {
       callback::prepare_callback_groups(
-        self,
-        combinator,
-        all_modules,
+        callback::Stage {
+          plugin: self,
+          combinator,
+          all_modules,
+          compilation,
+          module_chunks,
+          module_group_map: &module_group_map,
+          chunk_index_map,
+        },
         &cache_groups,
         &native_positions,
-        compilation,
-        module_chunks,
         &direct_matches,
-        &module_group_map,
-        chunk_index_map,
       )
       .await?;
     }
