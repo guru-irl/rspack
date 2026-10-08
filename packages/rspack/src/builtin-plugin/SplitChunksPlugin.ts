@@ -36,7 +36,7 @@ export class SplitChunksPlugin extends RspackBuiltinPlugin {
 export function toRawSplitChunksOptions(
   sc: false | OptimizationSplitChunksOptions,
   compiler: Compiler,
-  enableNameBatch = false,
+  enableBatchCallbacks = false,
 ): RawSplitChunksOptions | undefined {
   if (!sc) {
     return;
@@ -60,7 +60,7 @@ export function toRawSplitChunksOptions(
     }
 
     if (typeof name === 'function') {
-      if (!enableNameBatch) {
+      if (!enableBatchCallbacks) {
         return {
           name: (ctx: Context) => {
             if (typeof ctx.module === 'undefined') {
@@ -114,16 +114,36 @@ export function toRawSplitChunksOptions(
 
   function getTest(test: OptimizationSplitChunksCacheGroup['test']) {
     if (typeof test === 'function') {
-      return (ctx: JsCacheGroupTestCtx) => {
-        // chunk graph and module graph should all exist in the optimizeChunks stage
-        const info = {
-          moduleGraph: compiler._lastCompilation!.moduleGraph,
-          chunkGraph: compiler._lastCompilation!.chunkGraph,
+      const getInfo = () => ({
+        moduleGraph: compiler._lastCompilation!.moduleGraph,
+        chunkGraph: compiler._lastCompilation!.chunkGraph,
+      });
+      if (!enableBatchCallbacks) {
+        return {
+          test: (ctx: JsCacheGroupTestCtx) => test(ctx.module, getInfo()),
         };
-        return test(ctx.module, info);
+      }
+      return {
+        testBatch: (modules: Module[]) => {
+          const results = new Array<boolean | undefined>(modules.length);
+          let thrown: number[] | undefined;
+          let error: unknown;
+          for (let i = 0; i < modules.length; i++) {
+            try {
+              results[i] = test(modules[i], getInfo());
+            } catch (e) {
+              if (thrown === undefined) {
+                thrown = [];
+                error = e;
+              }
+              thrown.push(i);
+            }
+          }
+          return thrown === undefined ? results : { results, thrown, error };
+        },
       };
     }
-    return test;
+    return { test };
   }
 
   function getChunks(chunks: any) {
@@ -131,6 +151,37 @@ export function toRawSplitChunksOptions(
       return (chunk: Chunk) => chunks(chunk);
     }
     return chunks;
+  }
+
+  function getChunksOptions(chunks: OptimizationSplitChunksOptions['chunks']) {
+    if (typeof chunks !== 'function' || !enableBatchCallbacks) {
+      return { chunks: getChunks(chunks) };
+    }
+    return {
+      chunksBatch: ({
+        chunks: table,
+        chunkIndices,
+      }: {
+        chunks: Chunk[];
+        chunkIndices: Uint32Array;
+      }) => {
+        const results = new Array<boolean>(chunkIndices.length);
+        let thrown: number[] | undefined;
+        let error: unknown;
+        for (let i = 0; i < chunkIndices.length; i++) {
+          try {
+            results[i] = chunks(table[chunkIndices[i]]);
+          } catch (e) {
+            if (thrown === undefined) {
+              thrown = [];
+              error = e;
+            }
+            thrown.push(i);
+          }
+        }
+        return thrown === undefined ? results : { results, thrown, error };
+      },
+    };
   }
 
   const {
@@ -150,7 +201,7 @@ export function toRawSplitChunksOptions(
 
   return {
     ...getName(name),
-    chunks: getChunks(chunks),
+    ...getChunksOptions(chunks),
     defaultSizeTypes: defaultSizeTypes || ['javascript', 'unknown'],
     cacheGroups: Object.entries(cacheGroups)
       .filter(([_key, group]) => group !== false)
@@ -169,9 +220,9 @@ export function toRawSplitChunksOptions(
         } = group as Exclude<typeof group, false>;
         const rawGroup: RawCacheGroupOptions = {
           key,
-          test: getTest(test),
+          ...getTest(test),
           ...getName(name),
-          chunks: getChunks(chunks),
+          ...getChunksOptions(chunks),
           minSize: JsSplitChunkSizes.__to_binding(minSize),
           minSizeReduction: JsSplitChunkSizes.__to_binding(minSizeReduction),
           enforceSizeThreshold:

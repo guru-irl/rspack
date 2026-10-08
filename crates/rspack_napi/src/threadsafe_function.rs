@@ -317,7 +317,7 @@ impl TypeName for DynThreadsafeFunction {
   }
 }
 
-fn pretty_type_error(return_value: Unknown, error: napi::Error) -> rspack_error::Error {
+pub fn pretty_type_error(return_value: Unknown, error: napi::Error) -> rspack_error::Error {
   let expected_type = match error.status {
     Status::ObjectExpected => "object",
     Status::StringExpected => "string",

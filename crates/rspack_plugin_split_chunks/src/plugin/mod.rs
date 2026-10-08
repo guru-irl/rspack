@@ -24,17 +24,47 @@ use crate::{
   common::{FallbackCacheGroup, ModuleChunkMap},
   get_module_sizes,
   module_group::{IndexedCacheGroup, ModuleGroup, ModuleGroupKey},
-  options::chunk_name::ChunkNameGetterFnCtx,
+  options::{cache_group_test::CacheGroupTestFnCtx, chunk_name::ChunkNameBatchGetterFnCtx},
 };
 
 type ModuleGroupMap = FxIndexMap<ModuleGroupKey, ModuleGroup>;
 
 #[doc(hidden)]
 pub type SplitChunksNameBatchFn = Arc<
-  dyn for<'a> Fn(Vec<ChunkNameGetterFnCtx<'a>>) -> BoxFuture<'static, Result<Vec<Option<String>>>>
+  dyn for<'a> Fn(
+      Vec<ChunkNameBatchGetterFnCtx<'a>>,
+    ) -> BoxFuture<'static, Result<Vec<Option<String>>>>
     + Sync
     + Send,
 >;
+
+#[doc(hidden)]
+pub type SplitChunksTestBatchFn = Arc<
+  dyn for<'a> Fn(
+      Vec<CacheGroupTestFnCtx<'a>>,
+    ) -> BoxFuture<'static, Result<Vec<Result<Option<bool>>>>>
+    + Sync
+    + Send,
+>;
+
+#[doc(hidden)]
+pub type SplitChunksChunksBatchFn = Arc<
+  dyn Fn(&[ChunkUkey], &Compilation) -> BoxFuture<'static, Result<Vec<Result<bool>>>> + Sync + Send,
+>;
+
+#[doc(hidden)]
+#[derive(Default)]
+pub struct GroupBatchGetters {
+  pub name: Option<SplitChunksNameBatchFn>,
+  pub test: Option<SplitChunksTestBatchFn>,
+  pub chunks: Option<SplitChunksChunksBatchFn>,
+}
+
+impl GroupBatchGetters {
+  fn is_empty(&self) -> bool {
+    self.name.is_none() && self.test.is_none() && self.chunks.is_none()
+  }
+}
 
 #[derive(Debug)]
 pub struct PluginOptions {
@@ -48,7 +78,7 @@ pub struct PluginOptions {
 pub struct SplitChunksPlugin {
   dedup_depth: u32,
   cache_groups: Box<[CacheGroup]>,
-  name_batch_getters: Option<Box<[Option<SplitChunksNameBatchFn>]>>,
+  batch_getters: Option<Box<[GroupBatchGetters]>>,
   fallback_cache_group: FallbackCacheGroup,
   hide_path_info: bool,
 }
@@ -66,24 +96,24 @@ impl SplitChunksPlugin {
   }
 
   #[doc(hidden)]
-  pub fn new_with_name_batch_getters(
+  pub fn new_with_batch_getters(
     options: PluginOptions,
-    name_batch_getters: Vec<Option<SplitChunksNameBatchFn>>,
+    batch_getters: Vec<GroupBatchGetters>,
   ) -> Self {
     assert_eq!(
       options.cache_groups.len(),
-      name_batch_getters.len(),
-      "name batch getters should align with cache groups"
+      batch_getters.len(),
+      "batch getters should align with cache groups"
     );
-    let name_batch_getters = name_batch_getters
+    let batch_getters = batch_getters
       .iter()
-      .any(Option::is_some)
-      .then(|| name_batch_getters.into());
+      .any(|getters| !getters.is_empty())
+      .then(|| batch_getters.into());
     tracing::debug!("Create `SplitChunksPlugin` with {:#?}", options);
     Self::new_inner(
       options.dedup_depth,
       options.cache_groups.into(),
-      name_batch_getters,
+      batch_getters,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
     )
@@ -201,10 +231,10 @@ impl SplitChunksPlugin {
           .iter()
           .filter(|indexed_cache_group| {
             let cache_group = indexed_cache_group.cache_group;
-            let has_name_batch_getter = self.name_batch_getters.as_deref().is_some_and(|getters| {
+            let has_name_batch_getter = self.batch_getters.as_deref().is_some_and(|getters| {
               getters
                 .get(indexed_cache_group.cache_group_index as usize)
-                .is_some_and(Option::is_some)
+                .is_some_and(|getters| getters.name.is_some())
             });
             cache_group.used_exports == used_exports
               && module_group::cache_group_uses_intersections(cache_group, has_name_batch_getter)
