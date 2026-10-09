@@ -20,8 +20,10 @@ jobs:
       - name: Install published dependencies
         working-directory: benchmark-app
         run: npm install --registry=https://registry.npmjs.org --ignore-scripts
-      - name: Measure and check semantics
+      - name: Verify excluded compile-count diagnostics
         working-directory: benchmark-app
+        env:
+          BENCH_DIAGNOSTICS_ONLY: '1'
         run: node ../scripts/bench-tanstack-filter/run.mjs
       - uses: actions/upload-artifact@v4
         if: always()

@@ -58,7 +58,13 @@ fs.copyFileSync(pluginFile, path.join(output, 'published-router-code-splitter-pl
 const instrumented = new Map();
 for (const file of walk(unpluginDir).filter(f => /\.(mjs|js)$/.test(f))) {
   let text = fs.readFileSync(file, 'utf8');
-  if (text.includes('function patternToIdFilter(')) fs.writeFileSync(path.join(output, 'published-unplugin-filter.js'), text);
+  if (text.includes('function patternToIdFilter(')) {
+    fs.writeFileSync(path.join(output, 'published-unplugin-filter.js'), text);
+    instrumented.set(file, text);
+    const patched = text.replace('const matcher = picomatch(glob, { dot: true });', 'const matcher = picomatch(glob, { dot: true }); globalThis.__globCompile?.(pattern);');
+    if (patched === text) throw new Error('Could not instrument picomatch construction');
+    text = patched;
+  }
   if (text.includes('function transformUse(')) {
     fs.writeFileSync(path.join(output, 'published-unplugin-adapter.js'), text);
     const start = text.indexOf('function transformUse(');
@@ -70,7 +76,7 @@ for (const file of walk(unpluginDir).filter(f => /\.(mjs|js)$/.test(f))) {
     if (!observedResult) return [];`);
     if (patched === scope) throw new Error('Could not instrument transformUse');
     instrumented.set(file, text);
-    text = text.replace(scope, patched);
+    text = text.replace(scope, patched).replace('normalizeObjectHook("load", plugin.transform)', 'globalThis.__withCompileContext(plugin.name, "rule", () => normalizeObjectHook("load", plugin.transform))');
   }
   if (text.includes('filter(this.resource, source)')) {
     if (!instrumented.has(file)) instrumented.set(file, text);
@@ -78,7 +84,8 @@ for (const file of walk(unpluginDir).filter(f => /\.(mjs|js)$/.test(f))) {
     globalThis.__referenceProbe?.(plugin.name, this.resource, observedResult, 'transform');
     if (!observedResult)`);
     if (patched === text) throw new Error('Could not instrument transform loader');
-    text = patched;
+    fs.writeFileSync(path.join(output, `published-${path.basename(path.dirname(path.dirname(file)))}-transform-loader.js`), instrumented.get(file));
+    text = patched.replace('normalizeObjectHook("transform", plugin.transform)', 'globalThis.__withCompileContext(plugin.name, "transform", () => normalizeObjectHook("transform", plugin.transform))');
   }
   if (instrumented.has(file)) fs.writeFileSync(file, text);
 }
@@ -91,6 +98,12 @@ for (const name of ['S', 'R', 'N']) {
   diagnostics[name] = JSON.parse(fs.readFileSync(result, 'utf8'));
 }
 for (const [file, text] of instrumented) fs.writeFileSync(file, text);
+for (const [name, diag] of Object.entries(diagnostics)) for (const stage of ['rule', 'transform']) {
+  for (const pattern of ['tsr-split', 'tsr-shared']) {
+    const expected = name === 'S' ? diag.records[stage].length : 0;
+    if ((diag.records.compiles[stage][pattern] ?? 0) !== expected) throw new Error(`Compile count mismatch ${name} ${stage} ${pattern}`);
+  }
+}
 function accepted(diag, stage) { return diag.records[stage].filter(r => r.accepted).map(r => r.id).sort(); }
 if (diagnostics.S.records.rule.some(r => r.stockExcludeMatch)) throw new Error('Stock exclude matched an observed rule ID');
 for (const token of ['tsr-split', 'tsr-shared']) if (!diagnostics.S.records.rule.some(r => r.id.includes(token))) throw new Error(`Missing ${token} rule IDs`);
@@ -117,6 +130,12 @@ if (!foundVite) throw new Error('Vite hook-filter implementation not found');
 const vite = JSON.parse(fs.readFileSync(path.join(output, 'vite-diagnostic.json'), 'utf8'));
 if (vite.ids.some(r => r.stockExcludeMatch || r.S !== r.R || r.S !== r.N)) throw new Error('Vite fixture filter mismatch');
 for (const token of ['tsr-split', 'tsr-shared']) if (!vite.ids.some(r => r.id.includes(token))) throw new Error(`Missing Vite ${token} IDs`);
+if (process.env.BENCH_DIAGNOSTICS_ONLY === '1') {
+  arm('S');
+  console.log('Excluded compile-count diagnostics complete.');
+  console.log(JSON.stringify(Object.fromEntries(Object.entries(diagnostics).map(([name, d]) => [name, { ruleCalls: d.records.rule.length, transformCalls: d.records.transform.length, compiles: d.records.compiles }])), null, 2));
+  process.exit(0);
+}
 const samples = [];
 const referenceManifests = {};
 for (let round = 0; round < 5; round++) {

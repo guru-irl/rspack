@@ -3,9 +3,22 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 const condition = process.env.BENCH_CONDITION;
 const diagnostic = process.env.BENCH_DIAGNOSTIC === '1';
-const records = { rule: [], transform: [] };
+const records = { rule: [], transform: [], compiles: { rule: {}, transform: {} } };
 const root = process.cwd();
 const cleanId = id => id.split(root).join('<app>').split(encodeURIComponent(root)).join('%3Capp%3E');
+if (diagnostic) {
+  globalThis.__withCompileContext = (name, stage, fn) => {
+    const previous = globalThis.__compileContext;
+    globalThis.__compileContext = { name, stage };
+    try { return fn(); } finally { globalThis.__compileContext = previous; }
+  };
+  globalThis.__globCompile = pattern => {
+    const context = globalThis.__compileContext;
+    if (context?.name !== 'tanstack-router:code-splitter:compile-reference-file') return;
+    const counts = records.compiles[context.stage];
+    counts[pattern] = (counts[pattern] ?? 0) + 1;
+  };
+}
 if (diagnostic) globalThis.__referenceProbe = (name, id, accepted, stage) => {
   if (name === 'tanstack-router:code-splitter:compile-reference-file') records[stage].push({ id: cleanId(id), accepted, stockExcludeMatch: ['tsr-split', 'tsr-shared'].some(p => globalThis.__idFilterFactory(p)(id)) });
 };
