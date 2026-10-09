@@ -34,5 +34,5 @@ for (const adapter of ['rspack', 'webpack']) {
   }
 }
 console.log(JSON.stringify(results));
-for (const row of results) assert.equal(row.filter_reads, 1, `${row.adapter}/${row.kind}: filter must be normalized once per hook`);
-console.log('All four loader caches and live-handler checks passed');
+for (const row of results) assert.equal(row.filter_reads, row.kind === 'transform' ? 1 : 0, `${row.adapter}/${row.kind}: transform filters cached, load handlers read directly`);
+console.log('Transform caches, direct load handlers and live-handler checks passed');

@@ -11,15 +11,15 @@ root = pathlib.Path.cwd()
 results = root / 'results'
 results.mkdir(exist_ok=True)
 rows = []
-arms = ['U0', 'U1', 'U2', 'RX']
+arms = ['U0', 'U2r2', 'RX']
 
-def run(arm, variant, phase, tag, control=False):
+def run(arm, variant, phase, tag, control=False, flags=(), series=None):
     env = os.environ.copy()
     env.pop('NODE_OPTIONS', None)
     name = f'{tag}-{variant}-{arm}-{phase}'
-    command = ['node', '--expose-gc', 'run.mjs', arm, variant, phase, tag]
+    command = ['node', '--expose-gc', *flags, 'run.mjs', arm, variant, phase, tag]
     if control:
-        command.append('gc')
+        command.append(control if isinstance(control, str) else 'gc')
     with (results / f'{name}.stderr.log').open('w') as errors:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True, env=env)
         active = threading.Event()
@@ -61,7 +61,7 @@ def run(arm, variant, phase, tag, control=False):
     result['peak_anon_mib'] = max(result['end_anon_mib'], max(r[1] for r in readings))
     result['rss_sample_count'] = len(readings)
     result['rss_samples'] = [[(t - readings[0][0]) * 1000, v] for t, v in readings]
-    result['series'] = 'gc-control' if control else 'default'
+    result['series'] = series or ('gc-control' if control else 'default')
     rows.append(result)
     with (results / 'samples.jsonl').open('a') as out:
         out.write(json.dumps(result) + '\n')
@@ -71,7 +71,7 @@ def run(arm, variant, phase, tag, control=False):
 def repeat(rep, control=False):
     tag = f'g{rep}' if control else f'r{rep}'
     variants = ['broad', 'narrow'] if rep % 2 else ['narrow', 'broad']
-    orders = [arms, ['U1', 'RX', 'U0', 'U2'], ['U2', 'U0', 'RX', 'U1'], ['RX', 'U2', 'U1', 'U0'], list(reversed(arms))]
+    orders = [arms, ['U2r2', 'RX', 'U0'], ['RX', 'U0', 'U2r2'], list(reversed(arms)), ['U0', 'RX', 'U2r2']]
     order = orders[(rep - 1) % len(orders)]
     for variant in variants:
         pairs = {}
@@ -90,17 +90,28 @@ def repeat(rep, control=False):
                 for field in ['started', 'completed']:
                     assert len({pairs[arm][phase_index]['loader'][field][kind] for arm in arms}) == 1
 
-for rep in range(1, 6):
-    repeat(rep)
-# One additional cold/warm process pair per arm/variant. Not a timing sample.
-repeat(1, control=True)
-assert len(rows) == 96
-assert len({r['output_sha256'] for r in rows}) == 1
-assert all(r.get('post_gc') is None for r in rows if r['series'] == 'default')
-for arm, files in json.loads((results / 'arm-hashes.json').read_text()).items():
-    for name, digest in files.items():
-        assert hashlib.sha256((root / 'variants' / arm / 'package' / name).read_bytes()).hexdigest() == digest
-for name, digest in json.loads((results / 'dependency-hashes.json').read_text()):
-    assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
-(results / 'parity.json').write_text(json.dumps({'timing_runs': 80, 'excluded_gc_runs': 16, 'output_sha256': rows[0]['output_sha256'], 'output_bytes_identical': True, 'call_counts_identical': True, 'stable_plugin_and_hook_identity': True, 'all_integrity_checks_passed': True}, indent=2))
-print('All output/work/cache/identity checks passed', flush=True)
+def verify_hashes():
+    for arm, files in json.loads((results / 'arm-hashes.json').read_text()).items():
+        for name, digest in files.items():
+            assert hashlib.sha256((root / 'variants' / arm / 'package' / name).read_bytes()).hexdigest() == digest
+    for name, digest in json.loads((results / 'dependency-hashes.json').read_text()):
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+
+if __name__ == '__main__':
+    for rep in range(1, 6):
+        repeat(rep)
+    # Excluded default-generation controls, not timing samples.
+    repeat(1, control=True)
+    assert len(rows) == 72
+    assert len({r['output_sha256'] for r in rows}) == 1
+    assert all(r.get('post_gc') is None for r in rows if r['series'] == 'default')
+    resolve = [run(arm, 'broad', 'cold', 'resolve', control='resolve', series='resolve-control') for arm in ['U0', 'U2r2']]
+    assert resolve[0]['resolve_handler_calls'] == resolve[1]['resolve_handler_calls'] > 0
+    assert resolve[0]['resolve_filter_reads'] > 1 and resolve[1]['resolve_filter_reads'] == 1
+    assert resolve[0]['output_sha256'] == resolve[1]['output_sha256'] == rows[0]['output_sha256']
+    for arm in ['U0', 'U2r2']:
+        shutil.rmtree(root / 'cache' / f'broad-{arm}-resolve')
+    (results / 'resolve-counts.json').write_text(json.dumps([{k: r[k] for k in ['arm', 'resolve_filter_reads', 'resolve_handler_calls', 'output_sha256']} for r in resolve], indent=2))
+    verify_hashes()
+    (results / 'parity.json').write_text(json.dumps({'timing_runs': 60, 'excluded_gc_runs': 12, 'excluded_resolve_runs': 2, 'output_sha256': rows[0]['output_sha256'], 'output_bytes_identical': True, 'call_counts_identical': True, 'stable_plugin_and_hook_identity': True, 'all_integrity_checks_passed': True}, indent=2))
+    print('All output/work/cache/identity checks passed', flush=True)

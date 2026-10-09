@@ -1,36 +1,13 @@
-import itertools
 import json
 import pathlib
 import statistics as st
+from paired_stats import paired
 
 root = pathlib.Path('results')
 rows = [json.loads(line) for line in (root / 'samples.jsonl').read_text().splitlines()]
-MIB = 1024 ** 2
 host = json.loads((root / 'host.json').read_text())
-arms = ['U0', 'U1', 'U2', 'RX']
-
-def group(series, variant, phase, arm):
-    return sorted([r for r in rows if (r['series'], r['variant'], r['phase'], r['arm']) == (series, variant, phase, arm)], key=lambda r: r['tag'])
-
-def wilcoxon(deltas):
-    values = sorted((abs(d), d > 0) for d in deltas if d != 0)
-    if not values:
-        return {'n': 0, 'Wplus': 0, 'p_two_sided': 1}
-    ranks = []
-    i = 0
-    while i < len(values):
-        j = i + 1
-        while j < len(values) and values[j][0] == values[i][0]:
-            j += 1
-        rank = ((i + 1) + j) / 2
-        ranks.extend((rank, values[k][1]) for k in range(i, j))
-        i = j
-    observed = sum(rank for rank, positive in ranks if positive)
-    total = sum(rank for rank, _ in ranks)
-    distance = abs(observed - total / 2)
-    extreme = sum(abs(sum(rank for (rank, _), positive in zip(ranks, signs) if positive) - total / 2) >= distance for signs in itertools.product([False, True], repeat=len(ranks)))
-    return {'n': len(ranks), 'Wplus': observed, 'p_two_sided': extreme / 2 ** len(ranks)}
-
+MIB = 1024 ** 2
+arms = ['U0', 'U2r2', 'RX']
 fields = {
     'wall_s': lambda r: r['wall_ms'] / 1000,
     'cpu_s': lambda r: r['cpu_ms'] / 1000,
@@ -38,56 +15,41 @@ fields = {
     'peak_anon_mib': lambda r: r['peak_anon_mib'],
     'end_anon_mib': lambda r: r['end_anon_mib'],
     'heap_used_mib': lambda r: r['heap']['used_heap_size'] / MIB,
-    'heap_total_mib': lambda r: r['heap']['total_heap_size'] / MIB,
     'heap_physical_mib': lambda r: r['heap']['total_physical_size'] / MIB,
     'minor_gc': lambda r: r['gc'].get('1', {}).get('count', 0),
     'major_gc': lambda r: r['gc'].get('4', {}).get('count', 0),
 }
-summary = {'host': host, 'medians': {}, 'pairs': {}, 'gc_controls': {}, 'parity': json.loads((root / 'parity.json').read_text()), 'cwd_parity': json.loads((root / 'cwd-parity.json').read_text()), 'node_cwd': json.loads((root / 'node-cwd.json').read_text())}
-lines = ['# Synthetic unplugin loader filter cache', '', '## Method', '', f"Commit: `{host['commit']}`; run: {host['run_url']}", '', f"Host: {host['cpu_model']}, {host['cpus']} CPUs, {host['ram_mib']:.1f} MiB, Node {host['node']}, {host['platform']}. Initial load {host['load']}.", '', '- U0: stock unplugin 3.4.0. U1: rule callback filters hoisted with cwd invalidation. U2: U1 plus per-hook WeakMap entries with cwd and filter in four rspack/webpack loaders; handlers read fresh and cwd changes recompile. RX: stock with string patterns converted to equivalent picomatch-generated regexes once before timing.', '- Released @rspack/core 2.2.8; one 60,000-leaf-module fixture plus entry. Broad include matches all 60,001 modules; narrow matches 1,800. Both use two excludes. Transform returns code unchanged and load returns null.', '- n=5 fresh-process cold/warm pairs per arm/variant, interleaved in a four-order balanced design followed by a fifth reverse-order repeat; variant order alternates. Warm newCache restores only its preceding own cold cache. No OS page-cache flush. Caches removed after each recorded pair.', '- Wall and process CPU from before compiler creation through done. Make interval: make to finishMake. RssAnon externally sampled at 10 ms and captured at done. V8 endpoint snapshots at done. GC counts filtered by timestamps to that build window.', '- Timed processes do not force GC. Separate excluded n=1 cold/warm process pairs per arm/variant force GC twice after done and output/attachment parity checks. These control footprints retain the compiler and compilation; they are not a steady-state guarantee.', '- Actual loader lifetimes are wrapped in every arm identically. Identity counters use WeakSets, checking stable query/plugin/hook identity without retaining one entry per module. Shared instrumentation can affect absolute numbers.', '- All emitted bytes, callback counts, loader counts, attachment digests, restore counts, registry integrity, touched-file hashes and shared dependency hashes asserted. RX changes pattern representation, not matching semantics for these synthetic filters.', '- Filters are cached separately in each loader module, not globally across adapters or rule filters. Filter mutations after first use with unchanged cwd are not recompiled; handler replacements are visible. Each rule and loader cache checks process.cwd() and recompiles on a cwd mismatch. RegExp objects referenced by compiled filters remain live.', '', '## Per-arm medians, n=5', '']
+summary = {'host': host, 'medians': {}, 'pairs': {}, 'gc_controls': {}, 'parity': json.loads((root / 'parity.json').read_text()), 'resolve_counts': json.loads((root / 'resolve-counts.json').read_text())}
+lines = ['# Round 2 speed and parity', '', f"Run: {host['run_url']}; commit `{host['commit']}`", '', '| Condition | Stock s | Patched s | RegExp s | Patched-stock s (%) | Exact p | Signs (-/0/+) | Patched-RegExp s (%) | Exact p |', '|---|---:|---:|---:|---:|---:|---|---:|---:|']
 for variant in ['broad', 'narrow']:
     for phase in ['cold', 'warm']:
         key = f'{variant}/{phase}'
-        groups = {arm: group('default', variant, phase, arm) for arm in arms}
-        assert all(len(value) == 5 for value in groups.values())
-        summary['medians'][key] = {}
-        lines += [f'### {key}', '', '| Arm | Wall s | CPU s | Make s | Peak anon MiB | End anon MiB | Heap used MiB | Heap total MiB | Heap physical MiB | Minor GC | Major GC |', '|---|' + '---:|' * 10]
-        for arm, values in groups.items():
-            medians = {name: st.median(fn(r) for r in values) for name, fn in fields.items()}
-            summary['medians'][key][arm] = medians
-            lines.append(f'| {arm} | ' + ' | '.join(f'{value:.3f}' for value in medians.values()) + ' |')
-        lines += ['', '| Comparison, right minus left | Paired wall s | Paired wall % | Exact wall p | Paired CPU s | Exact CPU p | Paired make s | Exact make p | Peak MiB | End MiB |', '|---|' + '---:|' * 9]
+        groups = {arm: sorted([r for r in rows if (r['series'], r['variant'], r['phase'], r['arm']) == ('default', variant, phase, arm)], key=lambda r: r['tag']) for arm in arms}
+        assert all(len(group) == 5 for group in groups.values())
+        assert all([r['tag'] for r in group] == [r['tag'] for r in groups['U0']] for group in groups.values())
+        summary['medians'][key] = {arm: {name: st.median(fn(r) for r in group) for name, fn in fields.items()} for arm, group in groups.items()}
         summary['pairs'][key] = {}
-        for left, right in [('U0', 'U1'), ('U0', 'U2'), ('U0', 'RX'), ('U1', 'U2'), ('U1', 'RX'), ('RX', 'U2')]:
-            a, b = groups[left], groups[right]
-            assert [r['tag'] for r in a] == [r['tag'] for r in b]
-            deltas = {name: [fn(y) - fn(x) for x, y in zip(a, b)] for name, fn in fields.items()}
-            percentages = {name: [(fn(y) / fn(x) - 1) * 100 for x, y in zip(a, b)] for name, fn in fields.items() if name not in ['minor_gc', 'major_gc']}
-            tests = {name: wilcoxon(values) for name, values in deltas.items()}
-            pair = {'paired_medians': {name: st.median(values) for name, values in deltas.items()}, 'paired_pct_medians': {name: st.median(values) for name, values in percentages.items()}, 'wilcoxon': tests, 'deltas': deltas}
-            summary['pairs'][key][f'{right}-{left}'] = pair
-            m = pair['paired_medians']
-            vals = [m['wall_s'], pair['paired_pct_medians']['wall_s'], tests['wall_s']['p_two_sided'], m['cpu_s'], tests['cpu_s']['p_two_sided'], m['make_s'], tests['make_s']['p_two_sided'], m['peak_anon_mib'], m['end_anon_mib']]
-            lines.append(f'| {right}-{left} | ' + ' | '.join(f'{value:+.3f}' if i not in [2, 4, 6] else f'{value:.4f}' for i, value in enumerate(vals)) + ' |')
-        lines += ['', '| Arm | use | include | include true | transform handlers | load handlers | build | valid | transform plugin/hook/query identities | load plugin/hook/query identities |', '|---|' + '---:|' * 9]
-        for arm, values in groups.items():
-            r = values[0]
-            assert all(item['counts'] == r['counts'] for item in values)
-            counts = [r['counts'][name] for name in ['use', 'include', 'include_true', 'transform', 'load', 'build', 'valid']]
-            ids = ['/'.join(str(r['identity'][kind][name]) for name in ['plugin_count', 'hook_count', 'query_count']) for kind in ['transform', 'load']]
-            lines.append(f'| {arm} | ' + ' | '.join(map(str, counts + ids)) + ' |')
-        lines += ['']
+        for left, right in [('U0', 'U2r2'), ('RX', 'U2r2'), ('U0', 'RX')]:
+            comparison = {name: paired([fn(r) for r in groups[left]], [fn(r) for r in groups[right]]) for name, fn in fields.items()}
+            comparison['wall_pct'] = st.median((b['wall_ms'] / a['wall_ms'] - 1) * 100 for a, b in zip(groups[left], groups[right]))
+            comparison['peak_pct'] = st.median((b['peak_anon_mib'] / a['peak_anon_mib'] - 1) * 100 for a, b in zip(groups[left], groups[right]))
+            summary['pairs'][key][f'{right}-{left}'] = comparison
+        a, b = summary['pairs'][key]['U2r2-U0'], summary['pairs'][key]['U2r2-RX']
+        m = summary['medians'][key]
+        lines.append(f"| {key} | {m['U0']['wall_s']:.3f} | {m['U2r2']['wall_s']:.3f} | {m['RX']['wall_s']:.3f} | {a['wall_s']['median']:+.3f} ({a['wall_pct']:+.2f}%) | {a['wall_s']['p']:.4f} | {a['wall_s']['negative']}/{a['wall_s']['zero']}/{a['wall_s']['positive']} | {b['wall_s']['median']:+.3f} ({b['wall_pct']:+.2f}%) | {b['wall_s']['p']:.4f} |")
         summary['gc_controls'][key] = {}
-        lines += ['| Excluded forced-GC control, n=1 | End heap used MiB | End heap total MiB | End physical MiB | Post-GC heap used MiB | Post-GC heap total MiB | Post-GC physical MiB | Post-GC anon MiB |', '|---|' + '---:|' * 7]
         for arm in arms:
-            controls = group('gc-control', variant, phase, arm)
+            controls = [r for r in rows if (r['series'], r['variant'], r['phase'], r['arm']) == ('gc-control', variant, phase, arm)]
             assert len(controls) == 1
             r = controls[0]
-            control = {**{f'end_{name}': fields[name](r) for name in ['heap_used_mib', 'heap_total_mib', 'heap_physical_mib']}, 'post_heap_used_mib': r['post_gc']['heap']['used_heap_size'] / MIB, 'post_heap_total_mib': r['post_gc']['heap']['total_heap_size'] / MIB, 'post_heap_physical_mib': r['post_gc']['heap']['total_physical_size'] / MIB, 'post_anon_mib': r['post_gc']['anon_mib']}
-            summary['gc_controls'][key][arm] = control
-            lines.append(f'| {arm} | ' + ' | '.join(f'{value:.3f}' for value in control.values()) + ' |')
-        lines += ['']
-lines += ['## Statistical and memory limits', '', '- Paired medians are medians of per-repeat differences and percentages, not differences or ratios of independent arm medians.', '- Exact two-sided Wilcoxon enumerates all sign assignments to absolute nonzero paired ranks; average ranks for ties; zeros dropped. At n=5 the minimum possible p is 0.0625. No p<0.05 or multiple-comparison significance claim is supported.', '- Peak and end anonymous RSS include allocator behavior and native memory; V8 physical is not an exact partition of RssAnon. The forced-GC controls are one excluded process per condition, not a production lifetime or steady-state memory bound.', '- Full raw samples, V8 spaces, GC events, RSS traces, lifecycle timestamps, identity/work counts and package/dependency digests are included.', '']
+            summary['gc_controls'][key][arm] = {'heap_used_mib': r['post_gc']['heap']['used_heap_size'] / MIB, 'physical_mib': r['post_gc']['heap']['total_physical_size'] / MIB, 'anon_mib': r['post_gc']['anon_mib']}
+lines += ['', '## Default-generation cold memory', '', '| Condition | Arm | Peak anon MiB | End anon MiB | Minor GC | Major GC | Post-GC heap used MiB (excluded n=1) |', '|---|---|---:|---:|---:|---:|---:|']
+for variant in ['broad', 'narrow']:
+    key = variant + '/cold'
+    for arm in arms:
+        m, c = summary['medians'][key][arm], summary['gc_controls'][key][arm]
+        lines.append(f"| {key} | {arm} | {m['peak_anon_mib']:.3f} | {m['end_anon_mib']:.3f} | {m['minor_gc']:.0f} | {m['major_gc']:.0f} | {c['heap_used_mib']:.3f} |")
+lines += ['', 'n=5 interleaved fresh-process own-cache cold/warm pairs. Default V8 flags; no forced GC in timed samples. Exact two-sided paired Wilcoxon with average tied ranks and zeros dropped. Minimum p at five nonzero pairs is 0.0625. Paired medians are not independent median differences. RssAnon includes native memory and allocator behavior. No production or cross-platform guarantee. Full raw data, host, hashes, callback counts and GC events are artifacts.', '']
 (root / 'summary.json').write_text(json.dumps(summary, indent=2))
-(root / 'u2-runner-report.md').write_text('\n'.join(lines))
-print(json.dumps(summary['pairs'], indent=2))
+(root / 'u2r2-runner-report.md').write_text('\n'.join(lines))
+print('\n'.join(lines))
