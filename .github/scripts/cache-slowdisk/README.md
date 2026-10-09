@@ -2,7 +2,7 @@
 
 Measurement only; never for upstream.
 
-Dispatch `Cache slow-disk bindings` on `bench/newcache-e-slowdisk`, then dispatch `Cache slow-disk comparison` with the successful build run ID. Both workflows are dispatch-only and guarded to the measurement fork. They do not edit an existing pull request.
+Push a new measurement commit to `bench/newcache-e-slowdisk`. The branch-scoped `Cache slow-disk bindings` workflow builds both artifacts, then its dependent measurement job downloads the same run artifacts. A separate dispatch-only comparison workflow is retained for optional reuse of an existing build. Both workflows are guarded to the measurement fork and do not edit an existing pull request.
 
 ## Comparability
 
