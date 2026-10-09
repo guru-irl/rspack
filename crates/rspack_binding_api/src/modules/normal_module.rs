@@ -12,6 +12,7 @@ use crate::{
   module::{MODULE_PROPERTIES_BUFFER, Module},
   plugins::JsLoaderItem,
   resource_data::ReadonlyResourceDataWrapper,
+  shared_properties::define_shared_properties,
 };
 
 #[napi]
@@ -63,61 +64,6 @@ impl NormalModule {
         ))
       })?;
 
-    #[js_function]
-    pub fn match_resource_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>, ()>> {
-      let this = ctx.this_unchecked::<JsObject>();
-      let env = ctx.env.raw();
-      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
-
-      wrapped_value.with_ref(|_, module| {
-        Ok(match module.match_resource() {
-          Some(match_resource) => Either::A(ctx.env.create_string(match_resource.resource())?),
-          None => Either::B(()),
-        })
-      })
-    }
-
-    #[js_function(1)]
-    pub fn match_resource_setter(ctx: CallContext) -> napi::Result<()> {
-      let this = ctx.this_unchecked::<JsObject>();
-      let env = ctx.env.raw();
-      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
-
-      let val = ctx.get::<Either<String, ()>>(0)?;
-      match val {
-        Either::A(val) => {
-          let module = wrapped_value.as_mut()?;
-          let ResourceParsedData {
-            path,
-            query,
-            fragment,
-          } = parse_resource(&val).expect("Should parse resource");
-          *module.match_resource_mut() = Some(Box::new(ResourceData::new_with_path(
-            val, path, query, fragment,
-          )));
-        }
-        Either::B(_) => {}
-      }
-      Ok(())
-    }
-
-    #[js_function]
-    fn error_getter(ctx: CallContext<'_>) -> napi::Result<Either<RspackError, ()>> {
-      let this = ctx.this_unchecked::<JsObject>();
-      let env = ctx.env.raw();
-      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
-
-      wrapped_value.with_ref(|compilation, module| {
-        Ok(match module.first_error() {
-          Some(diagnostic) => Either::A(RspackError::try_from_diagnostic(
-            compilation,
-            diagnostic.as_ref(),
-          )?),
-          None => Either::B(()),
-        })
-      })
-    }
-
     MODULE_PROPERTIES_BUFFER.with(|ref_cell| {
       let mut properties = ref_cell.borrow_mut();
       properties.clear();
@@ -152,18 +98,6 @@ impl NormalModule {
           .with_utf8_name("loaders")?
           .with_value(&loaders),
       );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("matchResource")?
-          .with_getter(match_resource_getter)
-          .with_setter(match_resource_setter),
-      );
-      // Info from Build
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("error")?
-          .with_getter(error_getter),
-      );
       Self::new_inherited(self, env, &mut properties)
     })
   }
@@ -195,4 +129,73 @@ impl NormalModule {
   }
 }
 
-impl_module_methods!(NormalModule);
+#[js_function]
+fn match_resource_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>, ()>> {
+  let this = ctx.this_unchecked::<JsObject>();
+  let env = ctx.env.raw();
+  let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
+
+  wrapped_value.with_ref(|_, module| {
+    Ok(match module.match_resource() {
+      Some(match_resource) => Either::A(ctx.env.create_string(match_resource.resource())?),
+      None => Either::B(()),
+    })
+  })
+}
+
+#[js_function(1)]
+fn match_resource_setter(ctx: CallContext) -> napi::Result<()> {
+  let this = ctx.this_unchecked::<JsObject>();
+  let env = ctx.env.raw();
+  let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
+
+  let val = ctx.get::<Either<String, ()>>(0)?;
+  match val {
+    Either::A(val) => {
+      let module = wrapped_value.as_mut()?;
+      let ResourceParsedData {
+        path,
+        query,
+        fragment,
+      } = parse_resource(&val).expect("Should parse resource");
+      *module.match_resource_mut() = Some(Box::new(ResourceData::new_with_path(
+        val, path, query, fragment,
+      )));
+    }
+    Either::B(_) => {}
+  }
+  Ok(())
+}
+
+#[js_function]
+fn error_getter(ctx: CallContext<'_>) -> napi::Result<Either<RspackError, ()>> {
+  let this = ctx.this_unchecked::<JsObject>();
+  let env = ctx.env.raw();
+  let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
+
+  wrapped_value.with_ref(|compilation, module| {
+    Ok(match module.first_error() {
+      Some(diagnostic) => Either::A(RspackError::try_from_diagnostic(
+        compilation,
+        diagnostic.as_ref(),
+      )?),
+      None => Either::B(()),
+    })
+  })
+}
+
+fn define_normal_module_properties(env: &napi::Env, object: Object<'_>) -> napi::Result<()> {
+  define_shared_properties::<NormalModule>(env, object, || {
+    Ok(vec![
+      napi::Property::new()
+        .with_utf8_name("matchResource")?
+        .with_getter(match_resource_getter)
+        .with_setter(match_resource_setter),
+      napi::Property::new()
+        .with_utf8_name("error")?
+        .with_getter(error_getter),
+    ])
+  })
+}
+
+impl_module_methods!(NormalModule, define_normal_module_properties);

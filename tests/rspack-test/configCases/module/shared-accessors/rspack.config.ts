@@ -111,6 +111,26 @@ export default defineConfig({
               );
               expect(() => descriptor.get!.call({})).toThrow();
             }
+            for (const key of ['matchResource', 'error']) {
+              expect(Object.hasOwn(module, key)).toBe(true);
+              const descriptor = Object.getOwnPropertyDescriptor(module, key)!;
+              const firstDescriptor = Object.getOwnPropertyDescriptor(
+                first,
+                key,
+              )!;
+              expect(descriptor.enumerable).toBe(true);
+              expect(descriptor.configurable).toBe(true);
+              expect(descriptor.get).toBe(firstDescriptor.get);
+              expect(descriptor.set).toBe(firstDescriptor.set);
+              expect(typeof descriptor.set).toBe(
+                key === 'matchResource' ? 'function' : 'undefined',
+              );
+              expect(() => descriptor.get!.call({})).toThrow();
+            }
+            expect(module.error).toBeUndefined();
+            expect(() => {
+              module.matchResource = 'x';
+            }).toThrow(/only modify the module in the loader/);
             expect(module.context).toBe(import.meta.dirname);
             expect(module.factoryMeta.sideEffectFree).toBe(false);
             expect(Reflect.set(module, 'context', 'ignored')).toBe(false);
