@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+assert.equal(process.version, 'v22.18.0');
+const module = 'internal/bootstrap/switches/does_own_process_state';
+const source = process.binding('natives')[module];
+assert.ok(source.includes("let cachedCwd = '';"));
+assert.match(source, /function wrappedChdir\(directory\)\s*\{[\s\S]*?rawMethods\.chdir\(directory\);[\s\S]*?cachedCwd = '';/);
+assert.match(source, /function wrappedCwd\(\)\s*\{\s*if \(cachedCwd === ''\)\s*cachedCwd = rawMethods\.cwd\(\);\s*return cachedCwd;/);
+fs.writeFileSync('results/node-cwd-bootstrap.js', source);
+const result = { node: process.version, upstream_path: 'lib/internal/bootstrap/switches/does_own_process_state.js', module, cached_cwd_confirmed: true, chdir_invalidates_cache: true, source_sha256: crypto.createHash('sha256').update(source).digest('hex') };
+fs.writeFileSync('results/node-cwd.json', JSON.stringify(result, null, 2));
+console.log(JSON.stringify(result));

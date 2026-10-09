@@ -1,13 +1,20 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
+@@ -1,5 +1,5 @@
+ import { i as toArray, n as setParseImpl, r as normalizeObjectHook, t as parse } from "./parse-Da_tZNBK.mjs";
+-import { n as transformUse, t as normalizeAbsolutePath } from "./webpack-like-BSQQnmcP.mjs";
++import { i as createCachedIdFilter, n as transformUse, t as normalizeAbsolutePath } from "./webpack-like-BSQQnmcP.mjs";
+ import { r as normalizeMessage$1, t as createBuildContext$2 } from "./context-D3KUBasH.mjs";
+ import { i as isVirtualModuleId, n as decodeVirtualModuleId, r as encodeVirtualModuleId, t as FakeVirtualModulesPlugin } from "./utils-CfJoYofY.mjs";
+ import { i as normalizeMessage$2, n as createBuildContext$3, t as contextOptionsFromCompilation } from "./context-CUiL2Gcl.mjs";
 @@ -1004,12 +1004,13 @@
  				});
  			});
  		}
 -		if (plugin.load) compiler.options.module.rules.unshift({
 +		if (plugin.load) {
-+			const { filter } = normalizeObjectHook("load", plugin.load);
++			const filter = createCachedIdFilter(plugin.load);
 +			compiler.options.module.rules.unshift({
  			enforce: plugin.enforce,
  			include(id) {
@@ -24,7 +31,7 @@ diff --git a/dist/index.mjs b/dist/index.mjs
 -		if (plugin.transform) compiler.options.module.rules.unshift({
 +		}
 +		if (plugin.transform) {
-+			const { filter } = normalizeObjectHook("load", plugin.transform);
++			const filter = createCachedIdFilter(plugin.transform);
 +			compiler.options.module.rules.unshift({
  			enforce: plugin.enforce,
  			use(data) {
@@ -42,7 +49,7 @@ diff --git a/dist/index.mjs b/dist/index.mjs
  				}
 -				if (plugin.load) compiler.options.module.rules.unshift({
 +				if (plugin.load) {
-+					const { filter } = normalizeObjectHook("load", plugin.load);
++					const filter = createCachedIdFilter(plugin.load);
 +					compiler.options.module.rules.unshift({
  					include(id) {
 -						return shouldLoad(id, plugin, externalModules);
@@ -57,7 +64,7 @@ diff --git a/dist/index.mjs b/dist/index.mjs
 -				if (plugin.transform) compiler.options.module.rules.unshift({
 +				}
 +				if (plugin.transform) {
-+					const { filter } = normalizeObjectHook("load", plugin.transform);
++					const filter = createCachedIdFilter(plugin.transform);
 +					compiler.options.module.rules.unshift({
  					enforce: plugin.enforce,
  					use(data) {
@@ -92,26 +99,30 @@ diff --git a/dist/rspack/loaders/load.mjs b/dist/rspack/loaders/load.mjs
  async function load(source, map) {
  	const callback = this.async();
  	const { plugin } = this.query;
-@@ -10,7 +11,14 @@
+@@ -10,7 +11,18 @@
  	if (!plugin?.load || !id) return callback(null, source, map);
  	if (isVirtualModuleId(id, plugin)) id = decodeVirtualModuleId(id, plugin);
  	const context = createContext(this);
 -	const { handler } = normalizeObjectHook("load", plugin.load);
 +	const hook = plugin.load;
-+	let filter = filters.get(hook);
++	const cwd = process.cwd();
++	let cached = filters.get(hook);
 +	let handler;
-+	if (filter) handler = typeof hook === "function" ? hook : hook.handler;
++	if (cached?.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
 +	else {
-+		({ handler, filter } = normalizeObjectHook("load", hook));
-+		filters.set(hook, filter);
++		const normalized = normalizeObjectHook("load", hook);
++		handler = normalized.handler;
++		cached = { cwd, filter: normalized.filter };
++		filters.set(hook, cached);
 +	}
++	const { filter } = cached;
  	try {
  		const res = await handler.call(Object.assign({}, this._compilation && createBuildContext(this._compiler, this._compilation, this), context), normalizeAbsolutePath(id));
  		if (res == null) callback(null, source, map);
 diff --git a/dist/rspack/loaders/transform.mjs b/dist/rspack/loaders/transform.mjs
 --- a/dist/rspack/loaders/transform.mjs
 +++ b/dist/rspack/loaders/transform.mjs
-@@ -1,13 +1,21 @@
+@@ -1,13 +1,25 @@
  import { r as normalizeObjectHook } from "../../parse-Da_tZNBK.mjs";
  import { n as createContext, t as createBuildContext } from "../../context-D3KUBasH.mjs";
  //#region src/rspack/loaders/transform.ts
@@ -124,13 +135,17 @@ diff --git a/dist/rspack/loaders/transform.mjs b/dist/rspack/loaders/transform.m
  	const context = createContext(this);
 -	const { handler, filter } = normalizeObjectHook("transform", plugin.transform);
 +	const hook = plugin.transform;
-+	let filter = filters.get(hook);
++	const cwd = process.cwd();
++	let cached = filters.get(hook);
 +	let handler;
-+	if (filter) handler = typeof hook === "function" ? hook : hook.handler;
++	if (cached?.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
 +	else {
-+		({ handler, filter } = normalizeObjectHook("transform", hook));
-+		filters.set(hook, filter);
++		const normalized = normalizeObjectHook("transform", hook);
++		handler = normalized.handler;
++		cached = { cwd, filter: normalized.filter };
++		filters.set(hook, cached);
 +	}
++	const { filter } = cached;
  	if (!filter(this.resource, source)) return callback(null, source, map);
  	try {
  		const res = await handler.call(Object.assign({}, this._compilation && createBuildContext(this._compiler, this._compilation, this, map), context), source, id);
@@ -145,26 +160,30 @@ diff --git a/dist/webpack/loaders/load.mjs b/dist/webpack/loaders/load.mjs
  async function load(source, map) {
  	const callback = this.async();
  	const { plugin } = this.query;
-@@ -9,7 +10,14 @@
+@@ -9,7 +10,18 @@
  	if (!plugin?.load || !id) return callback(null, source, map);
  	if (id.startsWith(plugin.__virtualModulePrefix)) id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length));
  	const context = createContext(this);
 -	const { handler } = normalizeObjectHook("load", plugin.load);
 +	const hook = plugin.load;
-+	let filter = filters.get(hook);
++	const cwd = process.cwd();
++	let cached = filters.get(hook);
 +	let handler;
-+	if (filter) handler = typeof hook === "function" ? hook : hook.handler;
++	if (cached?.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
 +	else {
-+		({ handler, filter } = normalizeObjectHook("load", hook));
-+		filters.set(hook, filter);
++		const normalized = normalizeObjectHook("load", hook);
++		handler = normalized.handler;
++		cached = { cwd, filter: normalized.filter };
++		filters.set(hook, cached);
 +	}
++	const { filter } = cached;
  	const res = await handler.call(Object.assign({}, createBuildContext({
  		addWatchFile: (file) => {
  			this.addDependency(file);
 diff --git a/dist/webpack/loaders/transform.mjs b/dist/webpack/loaders/transform.mjs
 --- a/dist/webpack/loaders/transform.mjs
 +++ b/dist/webpack/loaders/transform.mjs
-@@ -1,12 +1,20 @@
+@@ -1,12 +1,24 @@
  import { r as normalizeObjectHook } from "../../parse-Da_tZNBK.mjs";
  import { n as createBuildContext, r as createContext } from "../../context-CUiL2Gcl.mjs";
  //#region src/webpack/loaders/transform.ts
@@ -176,24 +195,36 @@ diff --git a/dist/webpack/loaders/transform.mjs b/dist/webpack/loaders/transform
  	const context = createContext(this);
 -	const { handler, filter } = normalizeObjectHook("transform", plugin.transform);
 +	const hook = plugin.transform;
-+	let filter = filters.get(hook);
++	const cwd = process.cwd();
++	let cached = filters.get(hook);
 +	let handler;
-+	if (filter) handler = typeof hook === "function" ? hook : hook.handler;
++	if (cached?.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
 +	else {
-+		({ handler, filter } = normalizeObjectHook("transform", hook));
-+		filters.set(hook, filter);
++		const normalized = normalizeObjectHook("transform", hook);
++		handler = normalized.handler;
++		cached = { cwd, filter: normalized.filter };
++		filters.set(hook, cached);
 +	}
++	const { filter } = cached;
  	if (!filter(this.resource, source)) return callback(null, source, map);
  	try {
  		const res = await handler.call(Object.assign({}, createBuildContext({
 diff --git a/dist/webpack-like-BSQQnmcP.mjs b/dist/webpack-like-BSQQnmcP.mjs
 --- a/dist/webpack-like-BSQQnmcP.mjs
 +++ b/dist/webpack-like-BSQQnmcP.mjs
-@@ -1,11 +1,9 @@
--import { r as normalizeObjectHook } from "./parse-Da_tZNBK.mjs";
+@@ -1,11 +1,18 @@
+ import { r as normalizeObjectHook } from "./parse-Da_tZNBK.mjs";
  import { isAbsolute, normalize } from "node:path";
  //#region src/utils/webpack-like.ts
 -function transformUse(data, plugin, transformLoader) {
++function createCachedIdFilter(hook) {
++	let cached = { cwd: process.cwd(), filter: normalizeObjectHook("load", hook).filter };
++	return (id) => {
++		const cwd = process.cwd();
++		if (cached.cwd !== cwd) cached = { cwd, filter: normalizeObjectHook("load", hook).filter };
++		return cached.filter(id);
++	};
++}
 +function transformUse(data, plugin, transformLoader, filter) {
  	if (data.resource == null) return [];
  	const id = normalizeAbsolutePath(data.resource + (data.resourceQuery || ""));
@@ -202,3 +233,9 @@ diff --git a/dist/webpack-like-BSQQnmcP.mjs b/dist/webpack-like-BSQQnmcP.mjs
  	if (!filter(id)) return [];
  	return [{
  		loader: transformLoader,
+@@ -28,4 +35,4 @@
+ 	else return path;
+ }
+ //#endregion
+-export { transformUse as n, normalizeAbsolutePath as t };
++export { createCachedIdFilter as i, transformUse as n, normalizeAbsolutePath as t };

@@ -4,15 +4,16 @@ This fork-only push benchmark compares released `unplugin@3.4.0` with
 released `@rspack/core@2.2.8` on Ubuntu 24.04, Node 22.18.0:
 
 - U0: untouched package with string filters.
-- U1: hoisted rule `use`/`include` filters.
+- U1: hoisted rule `use`/`include` filters, invalidated on cwd changes.
 - U2: U1 plus per-hook WeakMap filter caches in all four rspack/webpack
-  load and transform loaders. Only filters are cached. Handlers are read
+  load and transform loaders. Entries store cwd and filter, not handlers. Handlers are read
   fresh on every call, including replacements on an existing hook object.
 - RX: stock package, with the synthetic plugin's string patterns converted
   once to equivalent RegExps using `picomatch.makeRe` with `dot: true`.
 
-The only intended behavior difference from stock is that filter changes
-after first use are not seen. Replacing a hook creates a new cache key.
+The only intended behavior difference from stock is that filter mutations
+after first use with unchanged cwd are not seen. Both rule and loader
+caches compare `process.cwd()` on each use and recompile on a mismatch. Replacing a hook creates a new cache key.
 RegExp objects already referenced by a cached filter remain live.
 Loader caches are module-local and do not retain hook keys strongly.
 
@@ -48,3 +49,10 @@ filtering. The 3.3.0 compatibility patch is checked but not measured. A
 separate runner builds and typechecks the source patch against v3.4.0 and
 runs upstream unit tests, checking any failures against the stock baseline.
 No repository Rspack build or unpublished binding is used.
+
+An excluded cwd regression builds twice with the same plugin instance,
+changing cwd between builds. It also reuses the first build's rule callbacks
+in the second cwd. Accepted-id lists must match stock both times. The
+measured Node bootstrap source is checked for cachedCwd and chdir
+invalidation, and retained in the artifact. The source-built patch runs
+this same regression independently.

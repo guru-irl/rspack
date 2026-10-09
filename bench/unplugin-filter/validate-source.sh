@@ -40,8 +40,16 @@ PY
   pnpm run build > "$logs/rebuilt.log" 2>&1
 fi
 cd "$base"
+ln -s "$GITHUB_WORKSPACE/unplugin-source/node_modules" node_modules
+python3 setup.py > "$logs/dist-setup.log" 2>&1
 mkdir -p variants/source-built
 ln -s "$GITHUB_WORKSPACE/unplugin-source" variants/source-built/package
 ln -s "$GITHUB_WORKSPACE/unplugin-source/node_modules" variants/source-built/node_modules
 node check-loaders.mjs source-built > "$logs/source-built-loader-check.log" 2>&1
 cat "$logs/source-built-loader-check.log"
+
+node check-cwd.mjs U0 > "$logs/cwd-stock.log" 2>&1
+node check-cwd.mjs source-built > "$logs/cwd-source-built.log" 2>&1
+python3 compare-cwd.py source-built > "$logs/cwd-parity.log" 2>&1
+cp results/cwd-U0.json results/cwd-source-built.json results/cwd-parity-source-built.json "$logs/"
+cat "$logs/cwd-parity.log"

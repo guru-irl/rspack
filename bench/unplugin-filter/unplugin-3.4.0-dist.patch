@@ -1,27 +1,20 @@
---- a/dist/webpack-like-BQ10QW9c.mjs
-+++ b/dist/webpack-like-BQ10QW9c.mjs
-@@ -1,11 +1,9 @@
--import { r as normalizeObjectHook } from "./parse-B1HhnTCu.mjs";
- import { isAbsolute, normalize } from "node:path";
- //#region src/utils/webpack-like.ts
--function transformUse(data, plugin, transformLoader) {
-+function transformUse(data, plugin, transformLoader, filter) {
- 	if (data.resource == null) return [];
- 	const id = normalizeAbsolutePath(data.resource + (data.resourceQuery || ""));
- 	if (plugin.transformInclude && !plugin.transformInclude(id)) return [];
--	const { filter } = normalizeObjectHook("load", plugin.transform);
- 	if (!filter(id)) return [];
- 	return [{
- 		loader: transformLoader,
+diff --git a/dist/index.mjs b/dist/index.mjs
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
+@@ -1,5 +1,5 @@
+ import { i as toArray, n as setParseImpl, r as normalizeObjectHook, t as parse } from "./parse-B1HhnTCu.mjs";
+-import { n as transformUse, t as normalizeAbsolutePath } from "./webpack-like-BQ10QW9c.mjs";
++import { i as createCachedIdFilter, n as transformUse, t as normalizeAbsolutePath } from "./webpack-like-BQ10QW9c.mjs";
+ import { r as normalizeMessage$1, t as createBuildContext$2 } from "./context-AOdkHe_5.mjs";
+ import { i as isVirtualModuleId, n as decodeVirtualModuleId, r as encodeVirtualModuleId, t as FakeVirtualModulesPlugin } from "./utils-CfJoYofY.mjs";
+ import { i as normalizeMessage$2, n as createBuildContext$3, t as contextOptionsFromCompilation } from "./context-CjyN3JjT.mjs";
 @@ -1004,12 +1004,13 @@
  				});
  			});
  		}
 -		if (plugin.load) compiler.options.module.rules.unshift({
 +		if (plugin.load) {
-+			const { filter } = normalizeObjectHook("load", plugin.load);
++			const filter = createCachedIdFilter(plugin.load);
 +			compiler.options.module.rules.unshift({
  			enforce: plugin.enforce,
  			include(id) {
@@ -38,7 +31,7 @@
 -		if (plugin.transform) compiler.options.module.rules.unshift({
 +		}
 +		if (plugin.transform) {
-+			const { filter } = normalizeObjectHook("load", plugin.transform);
++			const filter = createCachedIdFilter(plugin.transform);
 +			compiler.options.module.rules.unshift({
  			enforce: plugin.enforce,
  			use(data) {
@@ -56,7 +49,7 @@
  				}
 -				if (plugin.load) compiler.options.module.rules.unshift({
 +				if (plugin.load) {
-+					const { filter } = normalizeObjectHook("load", plugin.load);
++					const filter = createCachedIdFilter(plugin.load);
 +					compiler.options.module.rules.unshift({
  					include(id) {
 -						return shouldLoad(id, plugin, externalModules);
@@ -71,7 +64,7 @@
 -				if (plugin.transform) compiler.options.module.rules.unshift({
 +				}
 +				if (plugin.transform) {
-+					const { filter } = normalizeObjectHook("load", plugin.transform);
++					const filter = createCachedIdFilter(plugin.transform);
 +					compiler.options.module.rules.unshift({
  					enforce: plugin.enforce,
  					use(data) {
@@ -95,3 +88,33 @@
  	if (!filter(id)) return false;
  	return !externalModules.has(id);
  }
+diff --git a/dist/webpack-like-BQ10QW9c.mjs b/dist/webpack-like-BQ10QW9c.mjs
+--- a/dist/webpack-like-BQ10QW9c.mjs
++++ b/dist/webpack-like-BQ10QW9c.mjs
+@@ -1,11 +1,18 @@
+ import { r as normalizeObjectHook } from "./parse-B1HhnTCu.mjs";
+ import { isAbsolute, normalize } from "node:path";
+ //#region src/utils/webpack-like.ts
+-function transformUse(data, plugin, transformLoader) {
++function createCachedIdFilter(hook) {
++	let cached = { cwd: process.cwd(), filter: normalizeObjectHook("load", hook).filter };
++	return (id) => {
++		const cwd = process.cwd();
++		if (cached.cwd !== cwd) cached = { cwd, filter: normalizeObjectHook("load", hook).filter };
++		return cached.filter(id);
++	};
++}
++function transformUse(data, plugin, transformLoader, filter) {
+ 	if (data.resource == null) return [];
+ 	const id = normalizeAbsolutePath(data.resource + (data.resourceQuery || ""));
+ 	if (plugin.transformInclude && !plugin.transformInclude(id)) return [];
+-	const { filter } = normalizeObjectHook("load", plugin.transform);
+ 	if (!filter(id)) return [];
+ 	return [{
+ 		loader: transformLoader,
+@@ -28,4 +35,4 @@
+ 	else return path;
+ }
+ //#endregion
+-export { transformUse as n, normalizeAbsolutePath as t };
++export { createCachedIdFilter as i, transformUse as n, normalizeAbsolutePath as t };

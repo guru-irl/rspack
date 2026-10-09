@@ -19,38 +19,38 @@
     },
     "unpackedSize": 79838
   },
-  "patch_sha256": "ad94254069a543d686f14f60e17450ae388fc6f3fbabd2b38476472367bc8bd6",
+  "patch_sha256": "c8b214c9300ec69af83f64fa17b5c0763044b3e0bc2b8900598992b5c050beea",
   "files": [
     {
       "path": "dist/index.mjs",
       "sha256_before": "9beaac94191c0fd32935f81ffa8ba87a7ba1326902cc2c6269b9c23620c95aaf",
-      "sha256_after": "6eb01f9426515f7baeacb2432e720a28558c7cb01f31236902a3c58012650249"
+      "sha256_after": "d51877965d750cd4da3793cd09e707978cd876451562171ec170fb0df3c1ebb6"
     },
     {
       "path": "dist/rspack/loaders/load.mjs",
       "sha256_before": "7ac88e24f6faeb503f9c32889f4e86bc25c9f010e48ed329c6338bed8360c386",
-      "sha256_after": "6ca4f83530550c34cae7e280b79afef2502ab38c35be547de7aedf625efca521"
+      "sha256_after": "531798d0937dd706d4bbd091df4082b6b223733e12ccbe3717eb735ec0378a52"
     },
     {
       "path": "dist/rspack/loaders/transform.mjs",
       "sha256_before": "07bd1113c483a2d0c950fe5af443dcccee71c36fe914c80bb65e0a126cba320d",
-      "sha256_after": "527334687feb1eed58b894252ef229524b930b82277ea6aa29160af3f1ba33fa"
+      "sha256_after": "b6db3eb62d3a4b814eb8a28b699870b40dc8ae706b2cd2a24f785b4e8f5eca34"
     },
     {
       "path": "dist/webpack/loaders/load.mjs",
       "sha256_before": "91fb1c6be0c96c2c4611a440935a583855212d553c5afc44f6020e705a283458",
-      "sha256_after": "39fc4ae1e8a19c95d1d24e68362686a7d857834f673b8f11408c06b7edba72ec"
+      "sha256_after": "4187c1f23eec42fd4bc8ef7e8798461f04c211246ca43073ff0947e6db9e9eca"
     },
     {
       "path": "dist/webpack/loaders/transform.mjs",
       "sha256_before": "03c4a62a9278f5530be4121c75fbea277c0364bb2c10daea5e4090e986ed7c1f",
-      "sha256_after": "b0296e7bc2d9e817c275a07abddef9f4c68fbca40a387b6c2c91a2f59753a001"
+      "sha256_after": "633d908b28c02bbd510cb0cd1940bc50d4c07f29b2174391181c8654f21c4325"
     },
     {
       "path": "dist/webpack-like-BQ10QW9c.mjs",
       "sha256_before": "b147195c01a7fbab637089967960b29c588695cc732fdfb8b275091bb94c26e9",
-      "sha256_after": "e4b844b8782dcdd832dd1f2410a1935361f02874f075bd4eb5ced03b135c1683"
+      "sha256_after": "3d797e75a40b05b10b9fce026888288221224810d252fd77db621d286265528a"
     }
   ],
-  "semantics": "Filters cached once per hook object or function in each loader; handler read fresh per invocation. Filter changes after first use are not seen."
+  "semantics": "Filters cached per hook and cwd; cwd changes rebuild the filter. Handler read fresh per loader invocation. Filter mutations with unchanged cwd after preparation are not seen."
 }

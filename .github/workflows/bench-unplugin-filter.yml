@@ -48,21 +48,23 @@ jobs:
         run: |
           node check-loaders.mjs U2 | tee results/loader-green.log
           node check-loaders.mjs U2-3.3.0 | tee results/loader-green-3.3.0.log
-      - name: Observe expected cwd regression failure
+      - name: Verify cached cwd implementation and excluded chdir parity
         run: |
+          set -o pipefail
+          node check-node-cwd.mjs
           node check-cwd.mjs U0 | tee results/cwd-stock.log
-          node check-cwd.mjs U2 | tee results/cwd-old-u2.log
-          set +e
-          python3 compare-cwd.py > results/cwd-red.log 2>&1
-          rc=$?
-          set -e
-          cat results/cwd-red.log
-          test "$rc" -ne 0
-          grep -q 'U2 cwd filter parity mismatch' results/cwd-red.log
+          node check-cwd.mjs U1 | tee results/cwd-u1.log
+          node check-cwd.mjs U2 | tee results/cwd-u2.log
+          python3 compare-cwd.py U1
+          python3 compare-cwd.py
+      - name: Measure interleaved series and excluded forced-GC controls
+        run: python3 -u series.py
+      - name: Summarize exact paired statistics
+        run: python3 summarize.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unplugin-filter-u2-cwd-red
+          name: unplugin-filter-u2
           path: bench/unplugin-filter/results/
           retention-days: 30
   source-validation:
