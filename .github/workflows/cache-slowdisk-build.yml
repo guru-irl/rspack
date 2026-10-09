@@ -1,0 +1,63 @@
+name: Cache slow-disk bindings
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: round2
+            sha: cd54a74cafbc4477fb732bf0146bad6fb218a9f6
+          - arm: round3
+            sha: 6f6f7a9076d8b76c43e4c46be024fded987396f7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.26.0'
+          run_install: false
+      - name: Toolchain and dependencies
+        run: |
+          set -euo pipefail
+          rustup show
+          pnpm install --frozen-lockfile
+      - name: Build ci-profile binding
+        env:
+          CARGO_BUILD_JOBS: '4'
+        run: |
+          set -euo pipefail
+          pnpm run build:binding:ci
+          mkdir -p artifacts
+          cp crates/node_binding/rspack.linux-x64-gnu.node artifacts/${{ matrix.arm }}.node
+          git rev-parse HEAD > artifacts/${{ matrix.arm }}-sha.txt
+          rustc --version > artifacts/${{ matrix.arm }}-toolchain.txt
+          printf 'ci: opt-level=2, lto=false, codegen-units=256, debug=false\n' > artifacts/${{ matrix.arm }}-profile.txt
+          sha256sum artifacts/${{ matrix.arm }}.node > artifacts/${{ matrix.arm }}-hash.txt
+      - name: Build shared JavaScript
+        if: matrix.arm == 'round3'
+        run: |
+          set -euo pipefail
+          pnpm run build:js
+          tar -czf artifacts/javascript.tar.gz packages/rspack/dist packages/rspack/compiled
+          sha256sum artifacts/javascript.tar.gz > artifacts/javascript-hash.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slowdisk-binding-${{ matrix.arm }}
+          path: artifacts/
+          compression-level: 0
+          retention-days: 14
