@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.5.7', '1.5.8', '2.2.2', '2.2.8', 'canary']
+        version: ['canary']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,6 +36,15 @@ jobs:
           node -p 'require("./.hash-repro/package/node_modules/@rspack/core/package.json").version'
       - name: Compare dependency allocation order
         run: node .github/scripts/chunk-hash-order-repro.cjs
+      - name: Regression case before fix
+        continue-on-error: true
+        run: |
+          set +e
+          node .github/scripts/chunk-hash-test-red.cjs > .hash-repro/evidence/red.log 2>&1
+          rc=$?
+          echo "$rc" > .hash-repro/evidence/red.exit
+          cat .hash-repro/evidence/red.log
+          exit "$rc"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

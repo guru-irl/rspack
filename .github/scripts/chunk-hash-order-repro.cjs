@@ -30,7 +30,7 @@ async function build(delayed, url) {
             if (module.resource && /\/(left|right)\.js$/.test(module.resource)) {
               const source = compilation.codeGenerationResults.get(module, undefined).sources.get('javascript');
               generated[path.basename(module.resource)] = source.source().toString();
-              moduleHashes[path.basename(module.resource)] = compilation.chunkGraph.getModuleHash(module, undefined);
+              moduleHashes[path.basename(module.resource)] = compilation.chunkGraph.getModuleHash(module, path.basename(module.resource, '.js'));
             }
           }
         });
