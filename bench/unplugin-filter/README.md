@@ -1,31 +1,50 @@
 # Synthetic unplugin filter benchmark
 
-This push-only benchmark compares released `unplugin@3.4.0`, a verified
-filters-once dist patch, and no plugin with released `@rspack/core@2.2.8`.
-It runs only on `bench/unplugin-filter` in the fork, on Ubuntu 24.04 and
-Node 22.18.0. It does not build the repository.
+This fork-only push benchmark compares released `unplugin@3.4.0` with
+released `@rspack/core@2.2.8` on Ubuntu 24.04, Node 22.18.0:
 
-The fixture contains 60,000 synthetic plain-JavaScript `.ts` modules plus
-one entry. Three percent of leaf modules are in `routes/`. Both plugin
-hooks use either a broad all-module include or the narrow routes include,
-plus two string excludes. Transform is an identity operation; load returns
-null. Every resource still traverses the function-valued rule callbacks.
+- U0: untouched package with string filters.
+- U1: hoisted rule `use`/`include` filters.
+- U2: U1 plus per-hook WeakMap filter caches in all four rspack/webpack
+  load and transform loaders. Only filters are cached. Handlers are read
+  fresh on every call, including replacements on an existing hook object.
+- RX: stock package, with the synthetic plugin's string patterns converted
+  once to equivalent RegExps using `picomatch.makeRe` with `dot: true`.
 
-Five interleaved repeats alternate arm and variant order. Each arm runs
-cold against a fresh cache, then warm in a new process against its own
-persistent newCache cache. Output bytes, module work, loader attachments,
-cache restoration and package hashes are asserted. A positive median
-broad cold patched-minus-stock wall delta triggers three additional cold
-pairs with `NODE_OPTIONS=--max-semi-space-size=64`.
+The only intended behavior difference from stock is that filter changes
+after first use are not seen. Replacing a hook creates a new cache key.
+RegExp objects already referenced by a cached filter remain live.
+Loader caches are module-local and do not retain hook keys strongly.
 
-The artifact contains raw 10-ms anonymous-RSS and 50-ms loader-concurrency
-traces, phase timestamps, V8 statistics and spaces, GC events, counters,
-installation lock, dependency hashes, logs and a Markdown summary with
-exact paired two-sided Wilcoxon tests. Timings end at the done hook;
-cache close, output hashing and forced-GC controls are excluded.
+One shared fixture contains 60,000 synthetic plain-JavaScript `.ts` leaf
+modules plus an entry. Broad filters match all 60,001; narrow filters match
+1,800. Both hooks have two excludes. Transform returns code unchanged;
+load returns null. Rule callbacks still traverse every resource visit.
 
-Concurrency wraps actual loader lifetimes, preserving their completion
-protocol, with no artificial delay. This common instrumentation can affect
-timings. The broad cold probe establishes sensitivity, not a general
-performance or retained-memory guarantee. With five pairs even unanimous
-signs yield p=0.0625, so do not claim p<0.05 significance.
+Five interleaved repeats use a four-order balanced arm design followed by
+one reverse-order repeat. Each arm runs cold against an empty cache, then
+warm in a new process against its own persistent newCache cache. Variant
+order alternates. No operating-system page-cache flush is performed.
+
+Output bytes, callback and loader work, loader attachments, loader plugin
+and hook identity, cache restoration and package/dependency hashes are
+asserted. Actual loader lifetimes are wrapped identically with no artificial
+delay. Shared instrumentation can affect absolute measurements.
+
+Wall and process CPU finish in the done hook. Peak anonymous RSS is sampled
+externally at 10 ms; endpoint anonymous RSS and V8 heap used/total/physical
+are captured at done. GC events are filtered to the timed build window.
+Output hashing, compiler close and cache persistence are excluded.
+
+The 80 timing samples do not force GC. A further 16 excluded controls
+(one cold/warm pair per arm and variant) force GC twice after parity checks.
+Their post-GC footprints retain the compiler and compilation, so they are
+not steady-state memory guarantees. With five paired samples the smallest
+exact two-sided Wilcoxon p is 0.0625. Do not claim p<0.05 significance.
+
+A focused regression first fails on stock and then checks all four patched
+loaders, including fresh handler reads, replacements and transform id/code
+filtering. The 3.3.0 compatibility patch is checked but not measured. A
+separate runner builds and typechecks the source patch against v3.4.0 and
+runs upstream unit tests, checking any failures against the stock baseline.
+No repository Rspack build or unpublished binding is used.

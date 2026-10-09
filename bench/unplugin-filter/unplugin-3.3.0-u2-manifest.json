@@ -1,0 +1,56 @@
+{
+  "version": "3.3.0",
+  "registry": {
+    "shasum": "18de476b6130a6cde94db87f70ac32b97757f3c9",
+    "tarball": "https://registry.npmjs.org/unplugin/-/unplugin-3.3.0.tgz",
+    "fileCount": 18,
+    "integrity": "sha512-qa66K+crbfyE6JK10GjvbJeRrOsuC/JpbnHctfyp/i4oBTxWOzJfRZyDiOk1PtErMFRu8JhsU/wPvOdBNWe5Rg==",
+    "signatures": [
+      {
+        "sig": "MEQCIFtmWcIRXg9YlRLAe2cfZI8hBtuclMu9lypRyOzJqVdyAiA+pr1Cel9beCW8qqoIamuHjJLMvsy4KM1glSpIr3FflQ==",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/unplugin@3.3.0",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "unpackedSize": 79903
+  },
+  "patch_sha256": "b73cb26953d89db6b420282e853ee319ab8fd74cf754c6694e4a9d50b2cde3e2",
+  "files": [
+    {
+      "path": "dist/index.mjs",
+      "sha256_before": "05c8f48e637f30753f8e0e5b05776b823c47b2d1421326adad7b87160c553e07",
+      "sha256_after": "01550c4c9e2074595a90b52569808344beb15c5c7b381acfa4d9ca9bf5153c61"
+    },
+    {
+      "path": "dist/rspack/loaders/load.mjs",
+      "sha256_before": "3d61b895c396e60683601f492a6d6cc3638d88cfb5fbbab6164650d7583999e0",
+      "sha256_after": "bdb89e982cb5c632224c3714ec8bcda5e361fc221746dc3f5745caf3a13e4b02"
+    },
+    {
+      "path": "dist/rspack/loaders/transform.mjs",
+      "sha256_before": "b9af275bfeeaa8ff6d04058e476ec8b870da62594d91338d24728d40b1a855b9",
+      "sha256_after": "f5d04d20dd4089003c69e98f022429754510052ef9041390199445fa533d0ce8"
+    },
+    {
+      "path": "dist/webpack/loaders/load.mjs",
+      "sha256_before": "c465a74d2b21a2cee0739a81f14896c95e75b8465b0953b2732bf895ded5a8ba",
+      "sha256_after": "d713c772eded87ad7c48bf0fb816be2df20ba33ce3997b2542522cabfd490cf8"
+    },
+    {
+      "path": "dist/webpack/loaders/transform.mjs",
+      "sha256_before": "b35e9c0fa1f289eb70b81b30b9b4b5ad928228ce7e706e50dfb84f7cdf0161f2",
+      "sha256_after": "850910618baf119154e78978bfb9b2d727d7563f97396eb707adf8f639074403"
+    },
+    {
+      "path": "dist/webpack-like-BSQQnmcP.mjs",
+      "sha256_before": "4d4b709a779d6f42ab6b3238db79f4c84fa7b81f4b33672da82403f22ea41e80",
+      "sha256_after": "e4b844b8782dcdd832dd1f2410a1935361f02874f075bd4eb5ced03b135c1683"
+    }
+  ],
+  "semantics": "Filters cached once per hook object or function in each loader; handler read fresh per invocation. Filter changes after first use are not seen."
+}

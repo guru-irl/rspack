@@ -7,11 +7,12 @@ import { pathToFileURL } from 'node:url';
 import { PerformanceObserver, performance } from 'node:perf_hooks';
 const require = createRequire(import.meta.url);
 const { rspack } = require('@rspack/core');
-const [arm, variant, phase, tag] = process.argv.slice(2);
+const picomatch = require('picomatch');
+const [arm, variant, phase, tag, control] = process.argv.slice(2);
 const fixture = path.resolve('fixture');
 const cacheDir = path.resolve('cache', `${variant}-${arm}-${tag}`);
 const counts = { use: 0, use_nonempty: 0, include: 0, include_true: 0, include_false: 0, transform: 0, load: 0, build: 0, valid: 0 };
-const state = globalThis.syntheticLoaderState = { active: 0, max: 0, started: { transform: 0, load: 0 }, completed: { transform: 0, load: 0 }, originals: {} };
+const state = globalThis.syntheticLoaderState = { active: 0, max: 0, started: { transform: 0, load: 0 }, completed: { transform: 0, load: 0 }, originals: {}, identities: Object.fromEntries(['transform', 'load'].map(kind => [kind, { plugins: new WeakSet(), hooks: new WeakSet(), queries: new WeakSet(), plugin_count: 0, hook_count: 0, query_count: 0 }])) };
 const plugins = [];
 if (arm !== 'none') {
   const packageRoot = path.resolve('variants', arm, 'package');
@@ -23,6 +24,7 @@ if (arm !== 'none') {
     state.originals[kind] = (await import(pathToFileURL(path.join(packageRoot, 'dist', file)))).default;
   }
   const filter = { id: { include: variant === 'broad' ? ['**/*.tsx', '**/src/**/*.ts'] : ['**/routes/**'], exclude: ['**/node_modules/**', '**/excluded/**'] } };
+  if (arm === 'RX') for (const key of ['include', 'exclude']) filter.id[key] = filter.id[key].map(glob => picomatch.makeRe(glob, { dot: true }));
   const definition = { name: 'synthetic-filter', transform: { filter, handler(code) { counts.transform++; return code; } }, load: { filter, handler() { counts.load++; return null; } } };
   const plugin = createUnplugin(() => definition).rspack();
   const descriptor = item => {
@@ -108,8 +110,15 @@ const inWindow = gc.filter(e => e.start_ms >= start && e.start_ms < endTime);
 const gcSummary = {};
 for (const e of inWindow) { const key = String(e.kind); gcSummary[key] ??= { count: 0, duration_ms: 0 }; gcSummary[key].count++; gcSummary[key].duration_ms += e.duration_ms; }
 const phaseSplit = { setup_ms: timestamps.make, make_ms: timestamps.finishMake - timestamps.make, compile_ms: timestamps.afterCompile - timestamps.finishMake, emit_ms: timestamps.done - timestamps.afterCompile };
-const result = { event: 'result', arm, variant, phase, tag, node_options: process.env.NODE_OPTIONS ?? '', ...endpoint, counts, timestamps, phase_split: phaseSplit, gc: gcSummary, gc_events: inWindow, loader: { max_exact: state.max, started: state.started, completed: state.completed, samples: concurrency }, attachment_sha256: crypto.createHash('sha256').update(JSON.stringify(attachments)).digest('hex'), attached_modules: selected, output_sha256: crypto.createHash('sha256').update(output).digest('hex') };
-global.gc(); global.gc();
-result.post_gc = { heap: v8.getHeapStatistics(), spaces: v8.getHeapSpaceStatistics(), anon_mib: anon() };
+const identity = Object.fromEntries(Object.entries(state.identities).map(([kind, value]) => [kind, { plugin_count: value.plugin_count, hook_count: value.hook_count, query_count: value.query_count }]));
+for (const kind of ['load', 'transform']) {
+  const expectedIdentities = phase === 'warm' ? 0 : 1;
+  if (identity[kind].plugin_count !== expectedIdentities || identity[kind].hook_count !== expectedIdentities) throw new Error('Loader plugin/hook identity is not stable');
+}
+const result = { event: 'result', control: control ?? null, identity, arm, variant, phase, tag, node_options: process.env.NODE_OPTIONS ?? '', ...endpoint, counts, timestamps, phase_split: phaseSplit, gc: gcSummary, gc_events: inWindow, loader: { max_exact: state.max, started: state.started, completed: state.completed, samples: concurrency }, attachment_sha256: crypto.createHash('sha256').update(JSON.stringify(attachments)).digest('hex'), attached_modules: selected, output_sha256: crypto.createHash('sha256').update(output).digest('hex') };
+if (control === 'gc') {
+  global.gc(); global.gc();
+  result.post_gc = { heap: v8.getHeapStatistics(), spaces: v8.getHeapSpaceStatistics(), anon_mib: anon() };
+}
 console.log(JSON.stringify(result));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));

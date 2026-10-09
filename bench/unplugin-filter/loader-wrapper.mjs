@@ -2,6 +2,11 @@ export function wrap(kind) {
   return function (...args) {
     const state = globalThis.syntheticLoaderState;
     const original = state.originals[kind];
+    const identity = state.identities[kind];
+    const plugin = this.query.plugin;
+    if (!identity.plugins.has(plugin)) { identity.plugins.add(plugin); identity.plugin_count++; }
+    if (!identity.hooks.has(plugin[kind])) { identity.hooks.add(plugin[kind]); identity.hook_count++; }
+    if (!identity.queries.has(this.query)) { identity.queries.add(this.query); identity.query_count++; }
     state.active++;
     state.started[kind]++;
     state.max = Math.max(state.max, state.active);
