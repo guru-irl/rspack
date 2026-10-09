@@ -9,15 +9,18 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
     env:
-      CARGO_BUILD_JOBS: 2
+      CARGO_BUILD_JOBS: 4
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0ad4e2c28191734fd8974c4095459f7033ca744c
+          ref: 40d32e417f99b816b40da9ee22ee6063f7b5ec6f
       - uses: ./.github/actions/pnpm/setup
         with:
           node-version: 24
@@ -53,17 +56,32 @@ jobs:
           node .hash-repro/cross-process.cjs > .hash-evidence/main-matrix.log 2>&1
           mv .hash-repro/evidence .hash-repro/main-evidence
       - name: Install Rust toolchain
-        run: rustup toolchain install nightly-2026-04-16 --profile minimal --component rustfmt --component clippy --component rust-src
+        uses: ./.github/actions/rustup
+        with:
+          key: chunk-hash-gates
+          save-if: true
       - name: Generate Rust files
         run: cargo codegen 2>&1 | tee .hash-evidence/codegen.log
-      - name: Check Rust formatting
-        run: cargo fmt --all --check 2>&1 | tee .hash-evidence/fmt.log
+      - name: Check formatting
+        run: |
+          cargo fmt --all --check 2>&1 | tee .hash-evidence/fmt.log
+          pnpm exec rs fmt --check tests/rspack-test/hashCases/static-url-dependency-order/rspack.config.mjs 2>&1 | tee .hash-evidence/js-fmt.log
       - name: Build fixed development binding
         run: pnpm run build:binding:dev 2>&1 | tee .hash-evidence/build.log
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee .hash-evidence/clippy.log
       - name: Hash, contenthash, CSS, asset and runtime cases
-        run: pnpm --dir tests/rspack-test run test --project base -t 'hashCases|configCases/(contenthash|css|asset|runtime|hash)' 2>&1 | tee .hash-evidence/cases.log
+        run: |
+          failed=0
+          for category in hashCases configCases/contenthash configCases/css configCases/asset configCases/runtime; do
+            set +e
+            pnpm --dir tests/rspack-test run test --project base -t "$category" 2>&1 | tee ".hash-evidence/${category//\//-}.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            echo "$category:$rc" >> .hash-evidence/case-exits.txt
+            if [ "$rc" -ne 0 ]; then failed=1; fi
+          done
+          exit "$failed"
       - name: Fixed cross-process matrix and output parity
         run: |
           rm -rf .hash-repro/package/node_modules/@rspack/core
@@ -89,6 +107,7 @@ jobs:
         if: always()
         with:
           name: hash-gates
+          include-hidden-files: true
           path: |
             .hash-evidence
             .hash-repro/main-evidence
