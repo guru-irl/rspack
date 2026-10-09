@@ -47,6 +47,7 @@ jobs:
       - name: Seed and probe
         run: |
           set -euo pipefail
+          export MODULES=60000
           export TMPDIR="$GITHUB_WORKSPACE/results/temp"
           export FIXTURE="$GITHUB_WORKSPACE/fixture"
           export RSPACK_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js"
