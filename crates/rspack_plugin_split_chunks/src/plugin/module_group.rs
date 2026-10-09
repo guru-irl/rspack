@@ -9,6 +9,7 @@ use std::{
   },
 };
 
+use fixedbitset::FixedBitSet;
 use itertools::Either;
 use rayon::prelude::*;
 use rspack_collections::SsoHashSet;
@@ -39,6 +40,37 @@ use crate::{
 };
 
 type ChunksKey = u64;
+
+// Keep the one-time predicate pass word-aligned and its tasks coarse.
+const NATIVE_PRECOMPUTE_MODULES_PER_JOB: usize = 4096;
+// Candidate processing is heavier than predicate matching.
+const NATIVE_SEQUENTIAL_MODULES: usize = 64;
+const MIN_NATIVE_MODULES_PER_JOB: usize = 256;
+// Preserve the base scheduling of filtered and mixed full-module stages.
+const MIN_FILTERED_MODULES_PER_JOB: usize = 4096;
+
+pub(crate) enum NativeCacheGroupMatches {
+  All,
+  Modules(FixedBitSet),
+}
+
+impl NativeCacheGroupMatches {
+  fn contains(&self, module_index: usize) -> bool {
+    match self {
+      Self::All => true,
+      Self::Modules(modules) => modules.contains(module_index),
+    }
+  }
+}
+
+fn test_native_cache_group(test: &CacheGroupTest, name: Option<&str>) -> bool {
+  match test {
+    CacheGroupTest::String(test) => name.is_some_and(|name| name.starts_with(test)),
+    CacheGroupTest::RegExp(test) => name.is_some_and(|name| test.test(name)),
+    CacheGroupTest::Enabled => true,
+    CacheGroupTest::Fn(_) => unreachable!("native group should not have a test callback"),
+  }
+}
 
 fn chunks_by_index(chunk_index_map: &FxHashMap<ChunkUkey, u32>) -> Vec<ChunkUkey> {
   // optimize_chunks assigns dense, one-based indices to the original chunks.
@@ -810,13 +842,146 @@ impl SplitChunksPlugin {
       .expect("This should never happen, please file an issue")
   }
 
+  fn is_native_cache_group(&self, indexed: &IndexedCacheGroup<'_>) -> bool {
+    let group = indexed.cache_group;
+    let getters = self
+      .batch_getters
+      .as_deref()
+      .and_then(|getters| getters.get(indexed.cache_group_index as usize));
+    (is_default_module_layer_filter(&group.layer) || group.layer.is_native())
+      && !matches!(group.test, CacheGroupTest::Fn(_))
+      && !group.chunk_filter.is_func()
+      && !matches!(group.name, ChunkNameGetter::Fn(_))
+      && getters.is_none_or(|getters| getters.is_empty())
+  }
+
+  pub(crate) fn can_precompute_native_cache_groups(
+    &self,
+    cache_groups: &[IndexedCacheGroup<'_>],
+  ) -> bool {
+    cache_groups.iter().all(|indexed| {
+      self.is_native_cache_group(indexed)
+        && is_default_module_type_filter(&indexed.cache_group.r#type)
+    })
+  }
+
+  pub(crate) fn prepare_native_cache_group_matches(
+    &self,
+    all_modules: &[ModuleIdentifier],
+    stages: &[Option<&[IndexedCacheGroup<'_>]>],
+    compilation: &Compilation,
+  ) -> Vec<Option<Vec<NativeCacheGroupMatches>>> {
+    let matches_all = |group: &CacheGroup| {
+      is_default_module_layer_filter(&group.layer) && matches!(group.test, CacheGroupTest::Enabled)
+    };
+    let mut matches = stages
+      .iter()
+      .map(|stage| {
+        stage.map(|groups| {
+          groups
+            .iter()
+            .map(|indexed| {
+              if matches_all(indexed.cache_group) {
+                NativeCacheGroupMatches::All
+              } else {
+                NativeCacheGroupMatches::Modules(FixedBitSet::with_capacity(all_modules.len()))
+              }
+            })
+            .collect::<Vec<_>>()
+        })
+      })
+      .collect::<Vec<_>>();
+    let words_per_chunk = NATIVE_PRECOMPUTE_MODULES_PER_JOB / usize::BITS as usize;
+    let mut jobs = (0..all_modules
+      .len()
+      .div_ceil(NATIVE_PRECOMPUTE_MODULES_PER_JOB))
+      .map(|_| Vec::new())
+      .collect::<Vec<_>>();
+    // Split each group's storage into disjoint word-aligned ranges, then
+    // transpose the borrows so a task tests every group for its modules.
+    // This keeps one bitset per group and one lazy name query per module,
+    // without temporary bitsets, merging copies or shared mutable writes.
+    for (stage, groups) in matches.iter_mut().zip(stages) {
+      if let (Some(stage), Some(groups)) = (stage, groups) {
+        for (matched, indexed) in stage.iter_mut().zip(*groups) {
+          if let NativeCacheGroupMatches::Modules(modules) = matched {
+            for (job, words) in jobs
+              .iter_mut()
+              .zip(modules.as_mut_slice().chunks_mut(words_per_chunk))
+            {
+              job.push((indexed.cache_group, words));
+            }
+          }
+        }
+      }
+    }
+    if jobs.first().is_none_or(|job| job.is_empty()) {
+      return matches;
+    }
+
+    let module_graph = compilation.get_module_graph();
+    let match_chunk = |(chunk_index, mut groups): (usize, Vec<(&CacheGroup, &mut [usize])>)| {
+      let modules = &all_modules[chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB
+        ..all_modules
+          .len()
+          .min((chunk_index + 1) * NATIVE_PRECOMPUTE_MODULES_PER_JOB)];
+      for (index, identifier) in modules.iter().enumerate() {
+        let module = module_graph
+          .module_by_identifier(identifier)
+          .expect("should have module")
+          .as_ref();
+        let mut name_for_condition = None;
+        for (group, words) in &mut groups {
+          if !is_default_module_layer_filter(&group.layer)
+            && !group
+              .layer
+              .test_native(module.get_layer().map(|layer| layer.as_str()))
+          {
+            continue;
+          }
+          let name = if matches!(
+            group.test,
+            CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
+          ) {
+            name_for_condition
+              .get_or_insert_with(|| module.name_for_condition())
+              .as_deref()
+          } else {
+            None
+          };
+          if test_native_cache_group(&group.test, name) {
+            words[index / usize::BITS as usize] |= 1 << (index % usize::BITS as usize);
+          }
+        }
+      }
+    };
+    if all_modules.len() < NATIVE_PRECOMPUTE_MODULES_PER_JOB {
+      for job in jobs.into_iter().enumerate() {
+        match_chunk(job);
+      }
+    } else {
+      jobs.into_par_iter().enumerate().for_each(match_chunk);
+    }
+    for stage in matches.iter_mut().flatten() {
+      for matched in stage {
+        if let NativeCacheGroupMatches::Modules(modules) = matched
+          && modules.count_ones(..) == all_modules.len()
+        {
+          *matched = NativeCacheGroupMatches::All;
+        }
+      }
+    }
+    matches
+  }
+
   #[allow(clippy::too_many_arguments)]
   #[instrument(name = "Compilation:SplitChunks:prepare_module_group_map",target=TRACING_BENCH_TARGET, skip_all)]
   pub(crate) async fn prepare_module_group_map(
     &self,
     combinator: &Combinator,
     all_modules: &[ModuleIdentifier],
-    cache_groups: Vec<IndexedCacheGroup<'_>>,
+    cache_groups: &[IndexedCacheGroup<'_>],
+    native_matches: Option<Vec<NativeCacheGroupMatches>>,
     compilation: &Compilation,
     module_chunks: &[SsoHashSet<ChunkUkey>],
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
@@ -848,17 +1013,7 @@ impl SplitChunksPlugin {
     let native_positions = cache_groups
       .iter()
       .enumerate()
-      .filter_map(|(position, indexed)| {
-        let group = indexed.cache_group;
-        let getters =
-          batch_getters.and_then(|getters| getters.get(indexed.cache_group_index as usize));
-        ((is_default_module_layer_filter(&group.layer) || group.layer.is_native())
-          && !matches!(group.test, CacheGroupTest::Fn(_))
-          && !group.chunk_filter.is_func()
-          && !matches!(group.name, ChunkNameGetter::Fn(_))
-          && getters.is_none_or(|getters| getters.is_empty()))
-        .then_some(position)
-      })
+      .filter_map(|(position, indexed)| self.is_native_cache_group(indexed).then_some(position))
       .collect::<Vec<_>>();
     // These filters cannot yield or invoke user callbacks. Run their CPU work
     // on Rayon instead of allocating and joining one Tokio task per module.
@@ -873,6 +1028,19 @@ impl SplitChunksPlugin {
           | (u8::from(!is_default_module_layer_filter(&group.layer)) * LAYER_FILTER)
       })
       .collect::<Vec<_>>();
+    let candidates = native_matches.as_ref().and_then(|matches| {
+      let mut candidates = FixedBitSet::new();
+      for matched in matches {
+        match matched {
+          NativeCacheGroupMatches::All => return None,
+          NativeCacheGroupMatches::Modules(modules) => candidates.union_with(modules),
+        }
+      }
+      // A union can cover all modules even if no individual group does.
+      (candidates.count_ones(..) < all_modules.len()).then_some(candidates)
+    });
+    // Full-module stages retain the base predicates as well as its scheduling.
+    let prepared_matches = candidates.as_ref().and(native_matches.as_deref());
     let process_module = |module_index: usize, module_identifier: ModuleIdentifier| -> Result<()> {
       let belong_to_chunks = module_chunks
         .get(module_index)
@@ -898,26 +1066,31 @@ impl SplitChunksPlugin {
         });
         let include_intersections = self.dedup_depth > 0
           && cache_group_uses_intersections(cache_group, has_name_batch_getter);
-        if filters & TYPE_FILTER != 0 && !(cache_group.r#type)(module) {
-          continue;
-        }
-        if filters & LAYER_FILTER != 0
-          && !cache_group
-            .layer
-            .test_native(module.get_layer().map(|layer| layer.as_str()))
-        {
-          continue;
-        }
-
-        let is_match = match &cache_group.test {
-          CacheGroupTest::String(test) => module
-            .name_for_condition()
-            .is_some_and(|name| name.starts_with(test)),
-          CacheGroupTest::RegExp(test) => module
-            .name_for_condition()
-            .is_some_and(|name| test.test(&name)),
-          CacheGroupTest::Fn(_) => unreachable!("native group should not have a test callback"),
-          CacheGroupTest::Enabled => true,
+        let is_match = if let Some(matches) = prepared_matches {
+          // A single group's candidate list already guarantees membership.
+          native_positions.len() == 1 || matches[cache_group_position].contains(module_index)
+        } else {
+          // A custom type filter is a closure. Keep its calls, predicate order
+          // and stage-local module-chunk checks exactly as before.
+          if filters & TYPE_FILTER != 0 && !(cache_group.r#type)(module) {
+            continue;
+          }
+          if filters & LAYER_FILTER != 0
+            && !cache_group
+              .layer
+              .test_native(module.get_layer().map(|layer| layer.as_str()))
+          {
+            continue;
+          }
+          let name = if matches!(
+            cache_group.test,
+            CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
+          ) {
+            module.name_for_condition()
+          } else {
+            None
+          };
+          test_native_cache_group(&cache_group.test, name.as_deref())
         };
         if !is_match || belong_to_chunks.len() < cache_group.min_chunks as usize {
           continue;
@@ -1011,16 +1184,31 @@ impl SplitChunksPlugin {
     };
 
     if !native_positions.is_empty() {
-      let modules = all_modules.par_iter().enumerate();
-      if use_native_preparation && native_filters.iter().all(|filters| *filters == 0) {
-        // Leave the default native fast path's scheduling unchanged.
-        modules.try_for_each(|(index, identifier)| process_module(index, *identifier))?;
+      if let Some(candidates) = &candidates {
+        if candidates.count_ones(..) < NATIVE_SEQUENTIAL_MODULES {
+          for index in candidates.ones() {
+            process_module(index, all_modules[index])?;
+          }
+        } else {
+          candidates
+            .ones()
+            .collect::<Vec<_>>()
+            .par_iter()
+            .with_min_len(MIN_NATIVE_MODULES_PER_JOB)
+            .try_for_each(|&index| process_module(index, all_modules[index]))?;
+        }
       } else {
-        // Native work in filtered or mixed stages stays parallel, with coarse
-        // tasks to amortize scheduling across at least 4096 modules.
-        modules
-          .with_min_len(4096)
-          .try_for_each(|(index, identifier)| process_module(index, *identifier))?;
+        let modules = all_modules.par_iter().enumerate();
+        if use_native_preparation && native_filters.iter().all(|filters| *filters == 0) {
+          // Leave the default native fast path's scheduling unchanged.
+          modules.try_for_each(|(index, identifier)| process_module(index, *identifier))?;
+        } else {
+          // Native work in filtered or mixed stages stays parallel, with coarse
+          // tasks to amortize scheduling across at least 4096 modules.
+          modules
+            .with_min_len(MIN_FILTERED_MODULES_PER_JOB)
+            .try_for_each(|(index, identifier)| process_module(index, *identifier))?;
+        }
       }
     }
     if !use_native_preparation {
@@ -1034,7 +1222,7 @@ impl SplitChunksPlugin {
           module_group_map: &module_group_map,
           chunk_index_map,
         },
-        &cache_groups,
+        cache_groups,
         &native_positions,
         &direct_matches,
       )
