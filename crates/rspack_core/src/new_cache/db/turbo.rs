@@ -380,6 +380,11 @@ mod prefetch {
     cancelled: Arc<AtomicBool>,
     logger: Arc<InfrastructureLogger>,
   ) {
+    // Linux caps each call at max(max_sectors_kb, read_ahead_kb).
+    // Use the default 128 KiB read_ahead_kb lower bound across devices.
+    #[cfg(target_os = "linux")]
+    const CHUNK_SIZE: u64 = MB / 8;
+    #[cfg(target_os = "macos")]
     const CHUNK_SIZE: u64 = 4 * MB;
     let start = Instant::now();
     let mut files = 0;
