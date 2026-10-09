@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import { isAbsolute } from 'node:path';
+
 import {
   type BuiltinPlugin,
   BuiltinPluginName,
@@ -15,6 +18,104 @@ import type {
 import type { Module } from '../Module';
 import { JsSplitChunkSizes } from '../util/SplitChunkSize';
 import { createBuiltinPlugin, RspackBuiltinPlugin } from './base';
+
+type SelectorKind = 'test' | 'chunks' | 'name';
+type CallCounts = Record<SelectorKind, { dispatches: number; items: number }>;
+interface CallStats {
+  counts: CallCounts;
+}
+
+let compilerCallStats: WeakMap<Compiler, CallStats> | undefined;
+let nextCompilerLabel = 0;
+
+function getCallStats(compiler: Compiler): CallStats | undefined {
+  const file = process.env.RSPACK_SPLIT_CHUNKS_CALL_STATS;
+  if (!file) {
+    return;
+  }
+  if (!isAbsolute(file)) {
+    throw new Error(
+      'RSPACK_SPLIT_CHUNKS_CALL_STATS must be an absolute file path',
+    );
+  }
+  compilerCallStats ??= new WeakMap();
+  const existing = compilerCallStats.get(compiler);
+  if (existing) {
+    return existing;
+  }
+  const stats: CallStats = {
+    counts: {
+      test: { dispatches: 0, items: 0 },
+      chunks: { dispatches: 0, items: 0 },
+      name: { dispatches: 0, items: 0 },
+    },
+  };
+  compilerCallStats.set(compiler, stats);
+  const label = compiler.name ?? `compiler-${nextCompilerLabel++}`;
+  let phaseIndex = 0;
+  compiler.hooks.done.tap('SplitChunksCallStats', () => {
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ compiler: label, phaseIndex, counts: stats.counts })}\n`,
+    );
+    phaseIndex++;
+    for (const kind of ['test', 'chunks', 'name'] as const) {
+      stats.counts[kind].dispatches = 0;
+      stats.counts[kind].items = 0;
+    }
+  });
+  return stats;
+}
+
+function countItems<T extends (...args: any[]) => any>(
+  fn: T,
+  stats: CallStats,
+  kind: SelectorKind,
+): T {
+  return ((...args: Parameters<T>) => {
+    stats.counts[kind].items++;
+    return fn(...args);
+  }) as T;
+}
+
+function countDispatches<T extends (...args: any[]) => any>(
+  fn: T,
+  stats: CallStats,
+  kind: SelectorKind,
+): T {
+  return ((...args: Parameters<T>) => {
+    stats.counts[kind].dispatches++;
+    return fn(...args);
+  }) as T;
+}
+
+function instrumentDispatches(
+  options: RawSplitChunksOptions,
+  stats: CallStats,
+): RawSplitChunksOptions {
+  const instrument = (target: object) => {
+    const callbacks = target as Record<string, unknown>;
+    for (const kind of ['test', 'chunks', 'name'] as const) {
+      for (const key of [kind, `${kind}Batch`]) {
+        const fn = callbacks[key];
+        if (typeof fn === 'function') {
+          callbacks[key] = countDispatches(
+            fn as (...args: any[]) => any,
+            stats,
+            kind,
+          );
+        }
+      }
+    }
+  };
+  instrument(options);
+  for (const group of options.cacheGroups ?? []) {
+    instrument(group);
+  }
+  // Preserve the existing fallback option normalization and precedence.
+  // Only callbacks created by getChunks are instrumented here.
+  return options;
+}
 
 export class SplitChunksPlugin extends RspackBuiltinPlugin {
   name = BuiltinPluginName.SplitChunksPlugin;
@@ -42,6 +143,8 @@ export function toRawSplitChunksOptions(
     return;
   }
 
+  const stats = getCallStats(compiler);
+
   const { dedupDepth } = sc;
   if (
     dedupDepth !== undefined &&
@@ -60,6 +163,9 @@ export function toRawSplitChunksOptions(
     }
 
     if (typeof name === 'function') {
+      if (stats) {
+        name = countItems(name, stats, 'name');
+      }
       if (!enableBatchCallbacks) {
         return {
           name: (ctx: Context) => {
@@ -112,8 +218,9 @@ export function toRawSplitChunksOptions(
     };
   }
 
-  function getTest(test: OptimizationSplitChunksCacheGroup['test']) {
-    if (typeof test === 'function') {
+  function getTest(testOption: OptimizationSplitChunksCacheGroup['test']) {
+    if (typeof testOption === 'function') {
+      const test = stats ? countItems(testOption, stats, 'test') : testOption;
       const getInfo = () => ({
         moduleGraph: compiler._lastCompilation!.moduleGraph,
         chunkGraph: compiler._lastCompilation!.chunkGraph,
@@ -143,20 +250,28 @@ export function toRawSplitChunksOptions(
         },
       };
     }
-    return { test };
+    return { test: testOption };
   }
 
   function getChunks(chunks: any) {
     if (typeof chunks === 'function') {
+      if (stats) {
+        chunks = countItems(chunks, stats, 'chunks');
+      }
       return (chunk: Chunk) => chunks(chunk);
     }
     return chunks;
   }
 
-  function getChunksOptions(chunks: OptimizationSplitChunksOptions['chunks']) {
-    if (typeof chunks !== 'function' || !enableBatchCallbacks) {
-      return { chunks: getChunks(chunks) };
+  function getChunksOptions(
+    chunkOption: OptimizationSplitChunksOptions['chunks'],
+  ) {
+    if (typeof chunkOption !== 'function' || !enableBatchCallbacks) {
+      return { chunks: getChunks(chunkOption) };
     }
+    const chunks = stats
+      ? countItems(chunkOption, stats, 'chunks')
+      : chunkOption;
     return {
       chunksBatch: ({
         chunks: table,
@@ -199,7 +314,7 @@ export function toRawSplitChunksOptions(
     ...passThrough
   } = sc;
 
-  return {
+  const options: RawSplitChunksOptions = {
     ...getName(name),
     ...getChunksOptions(chunks),
     defaultSizeTypes: defaultSizeTypes || ['javascript', 'unknown'],
@@ -252,4 +367,21 @@ export function toRawSplitChunksOptions(
         ? 0
         : 1),
   };
+  if (stats) {
+    const fallback = options.fallbackCacheGroup;
+    if (
+      fallback &&
+      typeof chunks === 'function' &&
+      !Object.prototype.hasOwnProperty.call(fallbackCacheGroup ?? {}, 'chunks')
+    ) {
+      const callbacks = fallback as Record<string, unknown>;
+      callbacks.chunks = countDispatches(
+        callbacks.chunks as (chunk: Chunk) => boolean,
+        stats,
+        'chunks',
+      );
+    }
+    return instrumentDispatches(options, stats);
+  }
+  return options;
 }
