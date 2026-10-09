@@ -1,6 +1,16 @@
 # Rayon slow-path measurements
 
-Measurement only; never for upstream. The vendored Rayon core keeps scheduling unchanged.
+Measurement only; never for upstream. The vendored Rayon core keeps scheduling unchanged by default.
+
+## Spin-before-sleep diagnostic
+
+The first Rayon pool reads these process-wide settings once:
+
+- `RSPACK_RAYON_SPIN_ROUNDS=<n>` replaces the 32 idle rounds before the sleepy announcement. Unsigned values from 0 through 4294967294 are accepted; invalid values use the default.
+- `RSPACK_RAYON_SPIN_US=<microseconds>` instead keeps searching until the time budget since becoming idle expires. A valid unsigned 64-bit budget takes precedence over rounds, including zero. The idle loop reads the clock every fourth round; expiry can overshoot by those rounds and scheduler delay.
+- `RSPACK_RAYON_SPIN_MODE=yield|pause` selects the idle-round wait. The default and invalid values use `thread::yield_now()`. `pause` uses exactly 64 calls to `std::hint::spin_loop()` per round. This is a processor hint, not a fixed-duration delay, and can incur virtualization exits.
+
+After the sleepy announcement, the worker still does one more search before the normal sleep protocol. Jobs-counter, latch and wake operations are unchanged. With all three unset, the original 32-round yield loop is used without an idle clock read. Timed workers restart their budget after waking fully; a jobs-counter retry returns directly to the sleepy announcement as before. No worker spins without a bound, but very large explicit budgets can consume substantial CPU. Measure wall time and process CPU together, including the default `RAYON_NUM_THREADS` and an eight-thread reference.
 
 ## MultiCompiler diagnostic run
 
@@ -21,17 +31,21 @@ Apply the plugin to every config, not just the client:
 const RayonMarksPlugin = require('./rayon-marks-plugin.cjs');
 
 function addRayonMarks(configs, diagnosticSerial = false) {
-  const marked = configs.map(config => ({
+  const marked = configs.map((config) => ({
     ...config,
     plugins: [...(config.plugins || []), new RayonMarksPlugin()],
   }));
-  if (configs.parallelism !== undefined) marked.parallelism = configs.parallelism;
+  if (configs.parallelism !== undefined)
+    marked.parallelism = configs.parallelism;
   if (diagnosticSerial) marked.parallelism = 1;
   return marked;
 }
 
 // Config names such as "client" and "ssr" appear in each mark.
-module.exports = addRayonMarks([clientConfig, ssrConfig, ...otherConfigs], true);
+module.exports = addRayonMarks(
+  [clientConfig, ssrConfig, ...otherConfigs],
+  true,
+);
 ```
 
 `parallelism` is a top-level property on the config array, not on the individual configurations. For a clean diagnostic run, set `configs.parallelism = 1`. Set `diagnosticSerial` to false to retain normal concurrent operation (and preserve the original array's parallelism if specified).
