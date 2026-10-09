@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   paired-benchmark:
-    runs-on: macos-15-arm64
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
