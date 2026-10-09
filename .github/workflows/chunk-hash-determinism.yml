@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['2.2.2', '2.2.8', 'canary']
+        version: ['1.5.7', '1.5.8', '2.2.2', '2.2.8', 'canary']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,12 +23,16 @@ jobs:
           mkdir -p .hash-repro/package .hash-repro/evidence
           npm view @rspack/core dist-tags --json > .hash-repro/evidence/dist-tags.json
           npm view @rspack/core versions --json > .hash-repro/evidence/versions.json
+          PACKAGE=@rspack/core
+          SPEC="@rspack/core@$VERSION"
           if [ "$VERSION" = canary ]; then
-            VERSION=$(node -p 'require("./.hash-repro/evidence/versions.json").filter(v => v.includes("canary")).at(-1)')
+            PACKAGE=@rspack-canary/core
+            VERSION=$(npm view @rspack-canary/core version)
+            SPEC="@rspack/core@npm:@rspack-canary/core@$VERSION"
           fi
-          echo "Selected package $VERSION"
-          npm view "@rspack/core@$VERSION" version gitHead dist --json > .hash-repro/evidence/package.json
-          npm install --prefix .hash-repro/package --no-audit --no-fund "@rspack/core@$VERSION"
+          echo "Selected package $PACKAGE@$VERSION"
+          npm view "$PACKAGE@$VERSION" version gitHead dist --json > .hash-repro/evidence/package.json
+          npm install --prefix .hash-repro/package --no-audit --no-fund "$SPEC"
           node -p 'require("./.hash-repro/package/node_modules/@rspack/core/package.json").version'
       - name: Compare processes and compiler instances
         run: node .github/scripts/chunk-hash-determinism.cjs

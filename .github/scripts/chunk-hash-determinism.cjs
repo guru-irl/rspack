@@ -15,9 +15,12 @@ const variants = {
   commonjs: { ...base, esm: false },
   'no-css': { ...base, css: false },
   'no-asset': { ...base, asset: false },
-  production: { ...base, mode: 'production' },
   small: { ...base, count: 50 },
   minimal: { ...base, count: 1, css: false, asset: false, esm: false, functions: false },
+  'minimal-asset': { ...base, count: 1, css: false, esm: false, functions: false },
+  'default-url': { ...base, count: 50, url: true },
+  production: { ...base, mode: 'production' },
+  'production-no-concat': { ...base, mode: 'production', concatenate: false }, 
 };
 function generate(v) {
   fs.rmSync(fixture, { recursive: true, force: true });
@@ -43,9 +46,9 @@ async function build(v) {
     context: fixture, mode: v.mode, devtool: false, cache: false,
     entry: Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`Entry-${i}`, `./entry-${i}.js`])),
     experiments: { css: true, outputModule: v.esm },
-    module: { parser: { javascript: { url: 'new-url-relative' } }, rules: [{ test: /\.css$/, type: 'css' }, { test: /\.svg$/, type: 'asset/resource' }] },
+    module: { parser: { javascript: { url: v.url ?? 'new-url-relative' } }, rules: [{ test: /\.css$/, type: 'css' }, { test: /\.svg$/, type: 'asset/resource' }] },
     output: { module: v.esm, path: path.join(fixture, 'dist'), clean: true, filename: filename('js'), chunkFilename: filename('js'), cssFilename: filename('css'), cssChunkFilename: filename('css'), publicPath: '' },
-    optimization: { minimize: false, splitChunks: false, runtimeChunk: { name: e => `runtime-${e.name}` } },
+    optimization: { minimize: false, splitChunks: false, concatenateModules: v.concatenate, runtimeChunk: { name: e => `runtime-${e.name}` } },
   });
   const stats = await new Promise((resolve, reject) => compiler.run((err, stats) => err ? reject(err) : resolve(stats)));
   if (stats.hasErrors()) throw new Error(stats.toString({ all: false, errors: true, errorDetails: true }));
@@ -82,17 +85,25 @@ function compare(a, b) {
   for (const [name, v] of Object.entries(variants)) {
     generate(v);
     const outputs = [1, 2].map(i => path.join(evidence, `${name}-${i}.json`));
-    for (const output of outputs) execFileSync(process.execPath, [__filename, 'child', JSON.stringify(v), output], { stdio: 'inherit' });
-    const a = JSON.parse(fs.readFileSync(outputs[0]));
-    const b = JSON.parse(fs.readFileSync(outputs[1]));
-    results.variants[name] = compare(a, b);
+    try {
+      for (const output of outputs) execFileSync(process.execPath, [__filename, 'child', JSON.stringify(v), output], { stdio: 'inherit' });
+      const a = JSON.parse(fs.readFileSync(outputs[0]));
+      const b = JSON.parse(fs.readFileSync(outputs[1]));
+      results.variants[name] = compare(a, b);
+    } catch (err) {
+      results.variants[name] = { error: `child exit ${err.status}, signal ${err.signal}` };
+    }
     console.log(name, JSON.stringify(results.variants[name]));
     fs.writeFileSync(path.join(evidence, 'summary.json'), JSON.stringify(results, null, 2));
   }
-  generate(variants.small);
-  const a = await build(variants.small);
-  const b = await build(variants.small);
-  results.sameProcess = compare(a, b);
+  try {
+    generate(variants.small);
+    const a = await build(variants.small);
+    const b = await build(variants.small);
+    results.sameProcess = compare(a, b);
+  } catch (err) {
+    results.sameProcess = { error: String(err) };
+  }
   console.log('same-process', JSON.stringify(results.sameProcess));
   fs.writeFileSync(path.join(evidence, 'summary.json'), JSON.stringify(results, null, 2));
 })().catch(err => { console.error(err); process.exitCode = 1; });
