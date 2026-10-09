@@ -1,7 +1,8 @@
 //! Opt-in, process-global slow-path measurements. Not a scheduling policy.
 use std::{
-  fs::{File, OpenOptions},
+  fs::OpenOptions,
   io::Write,
+  path::PathBuf,
   sync::{
     Mutex, OnceLock,
     atomic::{
@@ -34,9 +35,10 @@ pub(crate) static WAKES: Counter = Counter::new();
 pub(crate) static SLEEPS: Counter = Counter::new();
 static HIST: [Counter; 7] = [const { Counter::new() }; 7];
 static ENABLED: OnceLock<bool> = OnceLock::new();
-static OUTPUT: OnceLock<Mutex<File>> = OnceLock::new();
+static OUTPUT: OnceLock<PathBuf> = OnceLock::new();
+static OUTPUT_MUTEX: Mutex<()> = Mutex::new(());
 static STOP: AtomicBool = AtomicBool::new(false);
-const HEADER: &str = "timestamp_ns,cold_ops,cold_ns,cross_ops,injected,wakes,sleeps,hist_0_10_us,hist_10_30_us,hist_30_100_us,hist_100_300_us,hist_300_1000_us,hist_1000_3000_us,hist_3000_inf_us,user_cpu_ns,system_cpu_ns,voluntary_context_switches,minor_faults,major_faults\n";
+const HEADER: &str = "timestamp_ns,pid,cold_ops,cold_ns,cross_ops,injected,wakes,sleeps,hist_0_10_us,hist_10_30_us,hist_30_100_us,hist_100_300_us,hist_300_1000_us,hist_1000_3000_us,hist_3000_inf_us,user_cpu_ns,system_cpu_ns,voluntary_context_switches,minor_faults,major_faults\n";
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn now_ns() -> u64 {
@@ -108,35 +110,43 @@ fn process_usage() -> (u64, u64, u64, u64, u64) {
 }
 
 fn sample(final_sample: bool) {
-  if let Some(output) = OUTPUT.get() {
-    if let Ok(mut file) = output.lock() {
+  if let Some(path) = OUTPUT.get() {
+    let usage = process_usage();
+    let line = format!(
+      "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+      now_ns(),
+      std::process::id(),
+      COLD_OPS.get(),
+      COLD_NS.get(),
+      CROSS_OPS.get(),
+      INJECTED.get(),
+      WAKES.get(),
+      SLEEPS.get(),
+      HIST[0].get(),
+      HIST[1].get(),
+      HIST[2].get(),
+      HIST[3].get(),
+      HIST[4].get(),
+      HIST[5].get(),
+      HIST[6].get(),
+      usage.0,
+      usage.1,
+      usage.2,
+      usage.3,
+      usage.4
+    );
+    if let Ok(_guard) = OUTPUT_MUTEX.lock() {
       if STOP.load(Acquire) && !final_sample {
         return;
       }
-      let usage = process_usage();
-      let line = format!(
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-        now_ns(),
-        COLD_OPS.get(),
-        COLD_NS.get(),
-        CROSS_OPS.get(),
-        INJECTED.get(),
-        WAKES.get(),
-        SLEEPS.get(),
-        HIST[0].get(),
-        HIST[1].get(),
-        HIST[2].get(),
-        HIST[3].get(),
-        HIST[4].get(),
-        HIST[5].get(),
-        HIST[6].get(),
-        usage.0,
-        usage.1,
-        usage.2,
-        usage.3,
-        usage.4
-      );
-      let _ = file.write_all(line.as_bytes());
+      if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let mut bytes = Vec::with_capacity(HEADER.len() + line.len());
+        if file.metadata().map(|m| m.len() == 0).unwrap_or(false) {
+          bytes.extend_from_slice(HEADER.as_bytes());
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        let _ = file.write_all(&bytes);
+      }
     }
   }
 }
@@ -158,21 +168,25 @@ pub(crate) fn enabled() -> bool {
     if path.is_empty() {
       return false;
     }
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+    let path = match path.to_str() {
+      Some(path) => PathBuf::from(path.replace("{pid}", &std::process::id().to_string())),
+      None => PathBuf::from(path),
+    };
+    if OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&path)
+      .is_err()
+    {
       eprintln!("Rayon measurement output could not be opened");
       return false;
-    };
-    if file.metadata().map(|m| m.len() == 0).unwrap_or(false) {
-      if file.write_all(HEADER.as_bytes()).is_err() {
-        return false;
-      }
     }
     let interval = std::env::var("RSPACK_RAYON_STATS_INTERVAL_MS")
       .ok()
       .and_then(|s| s.parse::<u64>().ok())
       .filter(|n| *n > 0)
       .unwrap_or(5);
-    let _ = OUTPUT.set(Mutex::new(file));
+    let _ = OUTPUT.set(path);
     sample(false);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     unsafe {

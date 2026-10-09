@@ -3,7 +3,7 @@ use std::{
   fs::OpenOptions,
   io::Write,
   path::{Path, PathBuf},
-  sync::LazyLock,
+  sync::{LazyLock, Mutex},
 };
 
 use crate::Compilation;
@@ -13,6 +13,8 @@ static OUTPUT: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
     .filter(|path| !path.is_empty())
     .map(PathBuf::from)
 });
+
+static OUTPUT_MUTEX: Mutex<()> = Mutex::new(());
 
 pub(super) struct PassMarks {
   output: &'static Path,
@@ -68,6 +70,7 @@ impl PassMarks {
       None
     };
     let line = serde_json::json!({
+      "pid": std::process::id(),
       "timestamp_ns": counters["wall_ns"].as_u64().expect("clock").to_string(),
       "counters": counters,
       "delta": delta,
@@ -80,13 +83,17 @@ impl PassMarks {
       "event": event,
       "hook": format!("{pass}:{event}"),
     });
+    let mut bytes = line.to_string().into_bytes();
+    bytes.push(b'\n');
+    let Ok(_guard) = OUTPUT_MUTEX.lock() else {
+      eprintln!("Rayon pass marks output lock is poisoned");
+      return;
+    };
     if let Ok(mut output) = OpenOptions::new()
       .create(true)
       .append(true)
       .open(self.output)
     {
-      let mut bytes = line.to_string().into_bytes();
-      bytes.push(b'\n');
       if output.write_all(&bytes).is_err() {
         eprintln!("Rayon pass mark could not be written");
       }
