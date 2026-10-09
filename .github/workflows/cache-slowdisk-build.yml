@@ -3,73 +3,16 @@ name: Cache slow-disk bindings
 on:
   push:
     branches: [bench/newcache-e-slowdisk]
-  workflow_dispatch:
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  build:
+  probe:
     if: github.repository == 'guru-irl/rspack'
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arm: round2
-            sha: cd54a74cafbc4477fb732bf0146bad6fb218a9f6
-          - arm: round3
-            sha: 6f6f7a9076d8b76c43e4c46be024fded987396f7
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '11.26.0'
-          run_install: false
-      - name: Toolchain and dependencies
-        run: |
-          set -euo pipefail
-          rustup show
-          pnpm install --frozen-lockfile
-      - name: Build ci-profile binding
-        env:
-          CARGO_BUILD_JOBS: '4'
-        run: |
-          set -euo pipefail
-          pnpm run build:binding:ci
-          mkdir -p artifacts
-          cp crates/node_binding/rspack.linux-x64-gnu.node artifacts/${{ matrix.arm }}.node
-          git rev-parse HEAD > artifacts/${{ matrix.arm }}-sha.txt
-          rustc --version > artifacts/${{ matrix.arm }}-toolchain.txt
-          printf 'ci: opt-level=2, lto=false, codegen-units=256, debug=false\n' > artifacts/${{ matrix.arm }}-profile.txt
-          sha256sum artifacts/${{ matrix.arm }}.node > artifacts/${{ matrix.arm }}-hash.txt
-      - name: Build shared JavaScript
-        if: matrix.arm == 'round3'
-        run: |
-          set -euo pipefail
-          pnpm run build:js
-          tar -czf artifacts/javascript.tar.gz packages/rspack/dist packages/rspack/compiled
-          sha256sum artifacts/javascript.tar.gz > artifacts/javascript-hash.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: slowdisk-binding-${{ matrix.arm }}
-          path: artifacts/
-          compression-level: 0
-          retention-days: 14
-
-  measure:
-    needs: build
-    if: github.repository == 'guru-irl/rspack'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,51 +28,39 @@ jobs:
         run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
-          pattern: slowdisk-binding-*
+          name: slowdisk-binding-round3
           path: artifacts
-          merge-multiple: true
-          run-id: ${{ github.run_id }}
+          run-id: 37869022928
           github-token: ${{ github.token }}
-      - name: Verify artifacts and generate fixture
-        env:
-          MODULES: '60000'
-          BUILD_RUN_ID: ${{ github.run_id }}
+      - name: Verify existing artifacts and generate fixture
         run: |
           set -euo pipefail
           mkdir -p results results/temp slow-mount
-          sha256sum --check artifacts/round2-hash.txt
           sha256sum --check artifacts/round3-hash.txt
           sha256sum --check artifacts/javascript-hash.txt
-          test "$(tr -d '\n' < artifacts/round2-sha.txt)" = cd54a74cafbc4477fb732bf0146bad6fb218a9f6
           test "$(tr -d '\n' < artifacts/round3-sha.txt)" = 6f6f7a9076d8b76c43e4c46be024fded987396f7
           tar -xzf artifacts/javascript.tar.gz
-          cp artifacts/*-sha.txt artifacts/*-hash.txt artifacts/*-toolchain.txt artifacts/*-profile.txt results/
           git rev-parse HEAD > results/measurement-sha.txt
-          printf '%s\n' "$BUILD_RUN_ID" > results/build-run-id.txt
-          printf '%s\n' "$MODULES" > results/module-count.txt
-          FIXTURE="$GITHUB_WORKSPACE/fixture" node .github/scripts/cache-slowdisk/gen.mjs "$MODULES"
+          FIXTURE="$GITHUB_WORKSPACE/fixture" node .github/scripts/cache-slowdisk/gen.mjs 60000
       - name: Prepare dm-delay device
         run: bash .github/scripts/cache-slowdisk/device.sh setup
-      - name: Run interleaved measurements
-        env:
-          MODULES: '60000'
+      - name: Seed and probe
         run: |
           set -euo pipefail
           export TMPDIR="$GITHUB_WORKSPACE/results/temp"
-          export RESULTS="$GITHUB_WORKSPACE/results"
-          export SLOW_ROOT="$GITHUB_WORKSPACE/slow-mount"
           export FIXTURE="$GITHUB_WORKSPACE/fixture"
           export RSPACK_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js"
-          export BINDING_ROUND2="$GITHUB_WORKSPACE/artifacts/round2.node"
-          export BINDING_ROUND3="$GITHUB_WORKSPACE/artifacts/round3.node"
-          python3 .github/scripts/cache-slowdisk/measure.py
-          python3 .github/scripts/cache-slowdisk/analyze.py results/runs.jsonl > results/summary.md
-      - name: Final device record and cleanup
+          export CACHE_DIR="$GITHUB_WORKSPACE/slow-mount/seed"
+          export NAPI_RS_NATIVE_LIBRARY_PATH="$GITHUB_WORKSPACE/artifacts/round3.node"
+          node .github/scripts/cache-slowdisk/run.mjs seed > results/seed.stdout.log 2> results/seed.stderr.log
+          sync
+          python3 .github/scripts/cache-slowdisk/probe.py slow-mount/seed slow-mount/probe results | tee results/probe.log
+      - name: Cleanup
         if: always()
         run: bash .github/scripts/cache-slowdisk/device.sh cleanup
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slowdisk-results
+          name: slowdisk-probe-results
           path: results/
           retention-days: 14
