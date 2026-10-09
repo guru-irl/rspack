@@ -13,7 +13,6 @@ impl NoopDatabase {
     _base_path: rspack_paths::Utf8PathBuf,
     _path: rspack_paths::Utf8PathBuf,
     _readonly: bool,
-    _logger: std::sync::Arc<crate::InfrastructureLogger>,
   ) -> Result<Self> {
     Ok(Self)
   }

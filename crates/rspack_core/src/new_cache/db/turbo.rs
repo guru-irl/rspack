@@ -1,12 +1,9 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::Arc;
 use std::{
   fmt,
   hash::Hasher,
-  io::Read,
-  sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-  },
-  time::{Instant, SystemTime, UNIX_EPOCH},
+  time::{SystemTime, UNIX_EPOCH},
 };
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -17,12 +14,11 @@ use turbo_persistence::{
   StoreKey, TurboPersistence,
 };
 
-use crate::{
-  InfrastructureLogger, Logger,
-  new_cache::{
-    CacheKey,
-    db::{DatabaseFamily, DatabaseValue},
-  },
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::InfrastructureLogger;
+use crate::new_cache::{
+  CacheKey,
+  db::{DatabaseFamily, DatabaseValue},
 };
 
 const STALE_DIRECTORY: &str = "_stale";
@@ -197,12 +193,13 @@ pub struct TurboDatabase {
   base_path: Utf8PathBuf,
   path: Utf8PathBuf,
   readonly: bool,
-  prefetch_cancelled: Option<Arc<AtomicBool>>,
+  prefetch: prefetch::Prefetch,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for TurboDatabase {
   fn drop(&mut self) {
-    self.cancel_prefetch();
+    self.prefetch.cancel();
   }
 }
 
@@ -222,7 +219,7 @@ impl TurboDatabase {
     base_path: Utf8PathBuf,
     path: Utf8PathBuf,
     readonly: bool,
-    logger: Arc<InfrastructureLogger>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))] logger: Arc<InfrastructureLogger>,
   ) -> Result<Self> {
     let prefetch_mode = std::env::var("RSPACK_NEWCACHE_PREFETCH").ok();
     let prefetch_mode = match prefetch_mode.as_deref() {
@@ -230,34 +227,25 @@ impl TurboDatabase {
       Some("read") => Some("read"),
       _ => None,
     };
-    let warm = path.join("CURRENT").is_file();
+    let bench_warm = path.join("CURRENT").is_file();
+    let warm = prefetch::is_warm(&path);
     let inner = open_database(&path, readonly)
       .map_err(|error| rspack_error::error!("Open cache database from {path} failed: {error}"))?;
-    if warm && let Some(mode) = prefetch_mode {
+    if bench_warm && let Some(mode) = prefetch_mode {
       prefetch_database(path.as_std_path().to_path_buf(), mode);
     }
-    let prefetch_cancelled = if warm && std::env::var_os("RSPACK_DISABLE_CACHE_PREFETCH").is_none()
-    {
-      let cancelled = Arc::new(AtomicBool::new(false));
-      let thread_cancelled = cancelled.clone();
-      let thread_path = path.clone();
-      // A dedicated I/O thread keeps sequential reads off the compilation pools.
-      // The buffer lives on its bounded stack and is released when prefetch ends.
-      let _ = std::thread::Builder::new()
-        .name("rspack-cache-prefetch".into())
-        .stack_size(512 * 1024)
-        .spawn(move || prefetch_files(thread_path, thread_cancelled, logger));
-      Some(cancelled)
-    } else {
-      None
-    };
-
+    let prefetch = prefetch::Prefetch::start(
+      warm,
+      &path,
+      #[cfg(any(target_os = "linux", target_os = "macos"))]
+      logger,
+    );
     Ok(Self {
       inner,
       base_path,
       path,
       readonly,
-      prefetch_cancelled,
+      prefetch,
     })
   }
 
@@ -301,14 +289,8 @@ impl TurboDatabase {
     self.inner.has_unrecoverable_write_error()
   }
 
-  fn cancel_prefetch(&self) {
-    if let Some(cancelled) = &self.prefetch_cancelled {
-      cancelled.store(true, Ordering::Relaxed);
-    }
-  }
-
   pub fn reset(&mut self) -> Result<()> {
-    self.cancel_prefetch();
+    self.prefetch.cancel_and_join();
     let old_database = std::mem::replace(
       &mut self.inner,
       Inner::empty_in_memory_with_config(database_config()),
@@ -334,61 +316,185 @@ impl TurboDatabase {
   }
 
   pub fn shutdown(self) -> Result<()> {
-    self.cancel_prefetch();
+    self.prefetch.cancel();
     self.inner.clear_cache();
     self.inner.shutdown()?;
     Ok(())
   }
 }
 
-#[allow(
-  clippy::large_stack_arrays,
-  reason = "The prefetch thread reserves an explicitly sized stack for this fixed buffer"
-)]
-fn prefetch_files(
-  path: Utf8PathBuf,
-  cancelled: Arc<AtomicBool>,
-  logger: Arc<InfrastructureLogger>,
-) {
-  let start = Instant::now();
-  let mut buffer = [0_u8; 256 * 1024];
-  let mut files = 0;
-  let mut bytes = 0_u64;
-  // Blobs already read sequentially on lookup; prefetch would also read dead blobs.
-  // Stream directory entries rather than retaining a list of cache files.
-  if let Ok(entries) = std::fs::read_dir(&path) {
-    for entry in entries.flatten() {
-      if cancelled.load(Ordering::Relaxed) {
-        break;
-      }
-      let file_path = entry.path();
-      let extension = file_path
-        .extension()
-        .and_then(|extension| extension.to_str());
-      if !matches!(extension, Some("sst" | "meta"))
-        || !entry.file_type().is_ok_and(|kind| kind.is_file())
-      {
-        continue;
-      }
-      // Compaction may remove a file between the directory scan and the read.
-      let Ok(mut file) = std::fs::File::open(file_path) else {
-        continue;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod prefetch {
+  use std::{
+    os::fd::AsRawFd,
+    sync::{
+      Arc,
+      atomic::{AtomicBool, Ordering},
+    },
+    thread::JoinHandle,
+    time::Instant,
+  };
+
+  use rspack_paths::Utf8PathBuf;
+
+  use super::MB;
+  use crate::{InfrastructureLogger, Logger};
+
+  pub(super) struct Prefetch {
+    thread: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
+  }
+
+  pub(super) fn is_warm(path: &Utf8PathBuf) -> bool {
+    // Any value, including empty or "0", disables prefetch.
+    std::env::var_os("RSPACK_DISABLE_CACHE_PREFETCH").is_none() && path.join("CURRENT").is_file()
+  }
+
+  impl Prefetch {
+    pub(super) fn start(warm: bool, path: &Utf8PathBuf, logger: Arc<InfrastructureLogger>) -> Self {
+      let thread = if warm {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let thread_cancelled = cancelled.clone();
+        let thread_path = path.clone();
+        // Advisory readahead skips resident pages without a userspace read buffer.
+        // Keep this I/O off the compilation pools with a small, fixed thread stack.
+        std::thread::Builder::new()
+          .name("rspack-cache-prefetch".into())
+          .stack_size(64 * 1024)
+          .spawn(move || prefetch_files(thread_path, thread_cancelled, logger))
+          .ok()
+          .map(|thread| (cancelled, thread))
+      } else {
+        None
       };
-      files += 1;
-      while !cancelled.load(Ordering::Relaxed) {
-        match file.read(&mut buffer) {
-          Ok(0) => break,
-          Ok(read) => bytes += read as u64,
-          Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-          Err(_) => break,
-        }
+      Self { thread }
+    }
+
+    pub(super) fn cancel(&self) {
+      if let Some((cancelled, _)) = &self.thread {
+        cancelled.store(true, Ordering::Relaxed);
+      }
+    }
+
+    pub(super) fn cancel_and_join(&mut self) {
+      self.cancel();
+      if let Some((_, thread)) = self.thread.take() {
+        // Keep reset deterministic and stop advising files that are being discarded.
+        // This runs on the idle-cache thread, waiting only for in-flight I/O.
+        let _ = thread.join();
       }
     }
   }
-  logger.debug(format!(
-    "Prefetched cache ({files} files, {bytes} bytes, {} ms)",
-    start.elapsed().as_millis()
-  ));
+
+  fn prefetch_files(
+    path: Utf8PathBuf,
+    cancelled: Arc<AtomicBool>,
+    logger: Arc<InfrastructureLogger>,
+  ) {
+    const CHUNK_SIZE: u64 = 4 * MB;
+    let start = Instant::now();
+    let mut files = 0;
+    let mut bytes = 0_u64;
+    // Blobs already read sequentially on lookup; prefetch would also read dead blobs.
+    // Stream metadata first, then SSTs, without retaining a list of cache files.
+    for extension in ["meta", "sst"] {
+      if cancelled.load(Ordering::Relaxed) {
+        break;
+      }
+      if let Ok(entries) = std::fs::read_dir(&path) {
+        for entry in entries.flatten() {
+          if cancelled.load(Ordering::Relaxed) {
+            break;
+          }
+          let file_path = entry.path();
+          if file_path.extension().and_then(|ext| ext.to_str()) != Some(extension)
+            || !entry.file_type().is_ok_and(|kind| kind.is_file())
+          {
+            continue;
+          }
+          // Compaction may remove a file between the directory scan and the advice.
+          let Ok(file) = std::fs::File::open(file_path) else {
+            continue;
+          };
+          let Ok(metadata) = file.metadata() else {
+            continue;
+          };
+          files += 1;
+          let mut offset = 0_u64;
+          while offset < metadata.len() && !cancelled.load(Ordering::Relaxed) {
+            let length = CHUNK_SIZE.min(metadata.len() - offset);
+            let Ok(advice_offset) = libc::off_t::try_from(offset) else {
+              break;
+            };
+            let result = advise_file(&file, advice_offset, length);
+            if result != 0 {
+              break;
+            }
+            offset += length;
+            bytes += length;
+          }
+        }
+      }
+    }
+    // Bytes count advisory ranges, not confirmed I/O or completed residency.
+    logger.debug(format!(
+      "Prefetched cache ({files} files, {bytes} bytes, {} ms)",
+      start.elapsed().as_millis()
+    ));
+  }
+
+  #[cfg(target_os = "linux")]
+  fn advise_file(file: &std::fs::File, offset: libc::off_t, length: u64) -> libc::c_int {
+    // Returns zero on success or an error number; nonzero stops advice for this file.
+    // SAFETY: the file owns a live descriptor and the checked offset and bounded
+    // length describe only the advisory range; no pointer is used.
+    unsafe {
+      libc::posix_fadvise(
+        file.as_raw_fd(),
+        offset,
+        length as libc::off_t,
+        libc::POSIX_FADV_WILLNEED,
+      )
+    }
+  }
+
+  #[cfg(target_os = "macos")]
+  fn advise_file(file: &std::fs::File, offset: libc::off_t, length: u64) -> libc::c_int {
+    // Returns zero on success or -1 with errno; nonzero stops advice for this file.
+    let advice = libc::radvisory {
+      ra_offset: offset,
+      ra_count: length as libc::c_int,
+    };
+    // SAFETY: the file owns a live descriptor and advice points to an initialized
+    // radvisory that remains valid for this non-retaining fcntl call.
+    unsafe {
+      libc::fcntl(
+        file.as_raw_fd(),
+        libc::F_RDADVISE,
+        &advice as *const libc::radvisory,
+      )
+    }
+  }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+mod prefetch {
+  use rspack_paths::Utf8PathBuf;
+
+  pub(super) struct Prefetch;
+
+  pub(super) fn is_warm(_path: &Utf8PathBuf) -> bool {
+    false
+  }
+
+  impl Prefetch {
+    pub(super) fn start(_warm: bool, _path: &Utf8PathBuf) -> Self {
+      Self
+    }
+
+    pub(super) fn cancel(&self) {}
+
+    pub(super) fn cancel_and_join(&mut self) {}
+  }
 }
 
 fn move_to_stale(base_path: &Utf8PathBuf, path: &Utf8PathBuf) -> Result<()> {
@@ -448,7 +554,6 @@ fn database_config() -> DbConfig<{ DatabaseFamily::COUNT }> {
   }
 }
 
-// Measurement-only opt-in: overlap sequential cache I/O with a warm database open.
 fn prefetch_database(path: std::path::PathBuf, mode: &'static str) {
   if mode == "willneed" && !cfg!(target_os = "linux") {
     return;
