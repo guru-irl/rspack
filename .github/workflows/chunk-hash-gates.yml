@@ -1,0 +1,92 @@
+name: Chunk hash gates
+on:
+  push:
+    branches: [bench/chunk-hash-determinism]
+    paths: [.github/workflows/chunk-hash-gates.yml]
+permissions:
+  contents: read
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0ad4e2c28191734fd8974c4095459f7033ca744c
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 24
+      - name: Prepare writable directories
+        run: |
+          mkdir -p .hash-tmp .hash-evidence .hash-repro/package
+          echo "TMPDIR=$GITHUB_WORKSPACE/.hash-tmp" >> "$GITHUB_ENV"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build JavaScript and load published main binding
+        run: |
+          npm install --prefix .hash-repro/package --no-audit --no-fund '@rspack/core@npm:@rspack-canary/core@2.2.9-canary-5f616c06-20261009174021'
+          cp .hash-repro/package/node_modules/@rspack-canary/binding-linux-x64-gnu/rspack.linux-x64-gnu.node crates/node_binding/rspack.linux-x64-gnu.node
+          pnpm run build:js
+      - name: Verify regression case fails on main
+        run: |
+          set +e
+          pnpm --dir tests/rspack-test run test --project base -t 'hashCases/static-url-dependency-order' > .hash-evidence/red.log 2>&1
+          rc=$?
+          set -e
+          cat .hash-evidence/red.log
+          echo "$rc" > .hash-evidence/red.exit
+          test "$rc" -ne 0
+          grep -E 'AssertionError|expected .*to (deeply )?equal|toEqual|Expected' .hash-evidence/red.log
+      - name: Record main cross-process matrix
+        run: |
+          git fetch origin bench/chunk-hash-determinism
+          git show FETCH_HEAD:.github/scripts/chunk-hash-determinism.cjs > .hash-repro/cross-process.cjs
+          mkdir -p .hash-repro/evidence
+          node .hash-repro/cross-process.cjs > .hash-evidence/main-matrix.log 2>&1
+          mv .hash-repro/evidence .hash-repro/main-evidence
+      - name: Install Rust toolchain
+        run: rustup toolchain install nightly-2026-04-16 --profile minimal --component rustfmt --component clippy --component rust-src
+      - name: Generate Rust files
+        run: cargo codegen 2>&1 | tee .hash-evidence/codegen.log
+      - name: Check Rust formatting
+        run: cargo fmt --all --check 2>&1 | tee .hash-evidence/fmt.log
+      - name: Build fixed development binding
+        run: pnpm run build:binding:dev 2>&1 | tee .hash-evidence/build.log
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee .hash-evidence/clippy.log
+      - name: Hash, contenthash, CSS, asset and runtime cases
+        run: pnpm --dir tests/rspack-test run test --project base -t 'hashCases|configCases/(contenthash|css|asset|runtime|hash)' 2>&1 | tee .hash-evidence/cases.log
+      - name: Fixed cross-process matrix and output parity
+        run: |
+          rm -rf .hash-repro/package/node_modules/@rspack/core
+          ln -s "$GITHUB_WORKSPACE/packages/rspack" .hash-repro/package/node_modules/@rspack/core
+          mkdir -p .hash-repro/evidence
+          node .hash-repro/cross-process.cjs > .hash-evidence/fixed-matrix.log 2>&1
+          node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const summary = JSON.parse(fs.readFileSync('.hash-repro/evidence/summary.json'));
+          for (const [name, result] of Object.entries(summary.variants)) {
+            if (result.error) continue;
+            assert.equal(result.fullHashEqual, true, name);
+            assert.equal(result.changedChunkHashes, 0, name);
+            assert.equal(result.changedContentHashes, 0, name);
+            const before = JSON.parse(fs.readFileSync(`.hash-repro/main-evidence/${name}-1.json`));
+            const after = JSON.parse(fs.readFileSync(`.hash-repro/evidence/${name}-1.json`));
+            assert.deepEqual(before.files.map(f => [f[0], f[2]]), after.files.map(f => [f[0], f[2]]), name);
+          }
+          assert.equal(summary.sameProcess.fullHashEqual, true);
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hash-gates
+          path: |
+            .hash-evidence
+            .hash-repro/main-evidence
+            .hash-repro/evidence
