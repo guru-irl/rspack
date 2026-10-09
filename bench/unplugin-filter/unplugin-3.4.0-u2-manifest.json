@@ -19,7 +19,7 @@
     },
     "unpackedSize": 79838
   },
-  "patch_sha256": "c8b214c9300ec69af83f64fa17b5c0763044b3e0bc2b8900598992b5c050beea",
+  "patch_sha256": "5d8c0dd2cb9f7693c8ce1b103d56c1ccb022503ad9ecc5238db138108cb00b69",
   "files": [
     {
       "path": "dist/index.mjs",
@@ -29,7 +29,7 @@
     {
       "path": "dist/rspack/loaders/load.mjs",
       "sha256_before": "7ac88e24f6faeb503f9c32889f4e86bc25c9f010e48ed329c6338bed8360c386",
-      "sha256_after": "531798d0937dd706d4bbd091df4082b6b223733e12ccbe3717eb735ec0378a52"
+      "sha256_after": "840cdeca9d59889f1102b70a468d140cd621ea82ab0213cd88321a16d938117f"
     },
     {
       "path": "dist/rspack/loaders/transform.mjs",
@@ -39,7 +39,7 @@
     {
       "path": "dist/webpack/loaders/load.mjs",
       "sha256_before": "91fb1c6be0c96c2c4611a440935a583855212d553c5afc44f6020e705a283458",
-      "sha256_after": "4187c1f23eec42fd4bc8ef7e8798461f04c211246ca43073ff0947e6db9e9eca"
+      "sha256_after": "ba57730cc7dc40ddac6decbcf87864383ce2e46e5b43db45de8ecc0ccfefc2c6"
     },
     {
       "path": "dist/webpack/loaders/transform.mjs",

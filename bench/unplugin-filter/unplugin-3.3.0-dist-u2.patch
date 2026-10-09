@@ -99,7 +99,7 @@ diff --git a/dist/rspack/loaders/load.mjs b/dist/rspack/loaders/load.mjs
  async function load(source, map) {
  	const callback = this.async();
  	const { plugin } = this.query;
-@@ -10,7 +11,18 @@
+@@ -10,7 +11,17 @@
  	if (!plugin?.load || !id) return callback(null, source, map);
  	if (isVirtualModuleId(id, plugin)) id = decodeVirtualModuleId(id, plugin);
  	const context = createContext(this);
@@ -115,7 +115,6 @@ diff --git a/dist/rspack/loaders/load.mjs b/dist/rspack/loaders/load.mjs
 +		cached = { cwd, filter: normalized.filter };
 +		filters.set(hook, cached);
 +	}
-+	const { filter } = cached;
  	try {
  		const res = await handler.call(Object.assign({}, this._compilation && createBuildContext(this._compiler, this._compilation, this), context), normalizeAbsolutePath(id));
  		if (res == null) callback(null, source, map);
@@ -160,7 +159,7 @@ diff --git a/dist/webpack/loaders/load.mjs b/dist/webpack/loaders/load.mjs
  async function load(source, map) {
  	const callback = this.async();
  	const { plugin } = this.query;
-@@ -9,7 +10,18 @@
+@@ -9,7 +10,17 @@
  	if (!plugin?.load || !id) return callback(null, source, map);
  	if (id.startsWith(plugin.__virtualModulePrefix)) id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length));
  	const context = createContext(this);
@@ -176,7 +175,6 @@ diff --git a/dist/webpack/loaders/load.mjs b/dist/webpack/loaders/load.mjs
 +		cached = { cwd, filter: normalized.filter };
 +		filters.set(hook, cached);
 +	}
-+	const { filter } = cached;
  	const res = await handler.call(Object.assign({}, createBuildContext({
  		addWatchFile: (file) => {
  			this.addDependency(file);

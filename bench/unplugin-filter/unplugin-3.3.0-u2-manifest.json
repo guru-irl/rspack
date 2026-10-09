@@ -19,7 +19,7 @@
     },
     "unpackedSize": 79903
   },
-  "patch_sha256": "1e85de661c3347c246215aa4b1e9b513ae90d10a2b7f1ebd62b61abbc5ec74b8",
+  "patch_sha256": "d83cee4e4521a631679e5fe0ce5d2840c8b3d7fcd8007aa492f94a2779ad1969",
   "files": [
     {
       "path": "dist/index.mjs",
@@ -29,7 +29,7 @@
     {
       "path": "dist/rspack/loaders/load.mjs",
       "sha256_before": "3d61b895c396e60683601f492a6d6cc3638d88cfb5fbbab6164650d7583999e0",
-      "sha256_after": "d06dbd271e32decc69e34fcebfcaeef8fb8b4c65893dc6dd0e657c919153020b"
+      "sha256_after": "62491c915c71d5f5f250602ae3095b47de20fddc8667ce2d4383fe8e9d0ace3f"
     },
     {
       "path": "dist/rspack/loaders/transform.mjs",
@@ -39,7 +39,7 @@
     {
       "path": "dist/webpack/loaders/load.mjs",
       "sha256_before": "c465a74d2b21a2cee0739a81f14896c95e75b8465b0953b2732bf895ded5a8ba",
-      "sha256_after": "0a5a54b9ddfad4e7df5833f013d790cde8ff966ac8c6a1979c755df35684e5c6"
+      "sha256_after": "82e5f21b47c8a953548ff0bd0a87962648e94d196061c808910e009d93c5dcf5"
     },
     {
       "path": "dist/webpack/loaders/transform.mjs",

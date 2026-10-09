@@ -42,7 +42,7 @@ index 2fdefc1..ad82ca6 100644
        })
      }
 diff --git a/src/rspack/loaders/load.ts b/src/rspack/loaders/load.ts
-index acd32fe..1ecf6a0 100644
+index acd32fe..a76c84e 100644
 --- a/src/rspack/loaders/load.ts
 +++ b/src/rspack/loaders/load.ts
 @@ -1,10 +1,16 @@
@@ -63,7 +63,7 @@ index acd32fe..1ecf6a0 100644
  export default async function load(this: LoaderContext, source: string, map: any): Promise<void> {
    const callback = this.async()
    const { plugin } = this.query as { plugin: ResolvedUnpluginOptions }
-@@ -17,7 +23,20 @@ export default async function load(this: LoaderContext, source: string, map: any
+@@ -17,7 +23,19 @@ export default async function load(this: LoaderContext, source: string, map: any
      id = decodeVirtualModuleId(id, plugin)
  
    const context = createContext(this)
@@ -81,7 +81,6 @@ index acd32fe..1ecf6a0 100644
 +    cached = { cwd, filter: normalized.filter }
 +    filters.set(hook, cached)
 +  }
-+  const { filter } = cached
    try {
      const res = await handler.call(
        Object.assign(
@@ -230,7 +229,7 @@ index 62fa8e4..95a0313 100644
      return false
  
 diff --git a/src/webpack/loaders/load.ts b/src/webpack/loaders/load.ts
-index e2fd10f..c266382 100644
+index e2fd10f..7d2880a 100644
 --- a/src/webpack/loaders/load.ts
 +++ b/src/webpack/loaders/load.ts
 @@ -1,9 +1,15 @@
@@ -250,7 +249,7 @@ index e2fd10f..c266382 100644
  export default async function load(this: LoaderContext<any>, source: string, map: any): Promise<void> {
    const callback = this.async()
    const { plugin } = this.query as { plugin: ResolvedUnpluginOptions }
-@@ -16,7 +22,20 @@ export default async function load(this: LoaderContext<any>, source: string, map
+@@ -16,7 +22,19 @@ export default async function load(this: LoaderContext<any>, source: string, map
      id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length))
  
    const context = createContext(this)
@@ -268,7 +267,6 @@ index e2fd10f..c266382 100644
 +    cached = { cwd, filter: normalized.filter }
 +    filters.set(hook, cached)
 +  }
-+  const { filter } = cached
    const res = await handler.call(
      Object.assign({}, createBuildContext({
        addWatchFile: (file) => {
