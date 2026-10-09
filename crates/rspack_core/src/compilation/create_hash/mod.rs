@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use rspack_hash::RspackHasher;
+use rspack_error::Diagnostic;
+use rspack_hash::{HashFunction, RspackHasher};
 use rustc_hash::FxHashSet;
 
 use super::*;
@@ -28,6 +29,29 @@ impl PassExt for CreateHashPass {
     runtime_modules_code_generation(compilation).await?;
     Ok(())
   }
+}
+
+fn hash_diagnostics<'a>(
+  compilation_hasher: &mut RspackHasher,
+  hash_function: &HashFunction,
+  diagnostics: impl Iterator<Item = &'a Diagnostic>,
+) -> Result<()> {
+  let mut hashes = diagnostics
+    .map(|diagnostic| {
+      // Match the uncolored message exposed to JavaScript, not just its summary.
+      let message = diagnostic.render_report(false)?;
+      let mut hasher = RspackHasher::new(hash_function);
+      hasher.update(&message);
+      Ok(hasher.finish())
+    })
+    .collect::<Result<Vec<_>>>()?;
+  // Diagnostics may arrive from parallel tasks. Keep their order deterministic
+  // without retaining all rendered messages.
+  hashes.sort_unstable();
+  for hash in hashes {
+    compilation_hasher.write(&hash.to_be_bytes());
+  }
+  Ok(())
 }
 
 #[instrument(name = "Compilation:create_hash",target=TRACING_BENCH_TARGET, skip_all)]
@@ -379,6 +403,18 @@ pub async fn create_hash(
     }
   }
   logger.time_end(start);
+
+  // Hash raw diagnostics after seal and chunk hashing, before stats filtering.
+  hash_diagnostics(
+    &mut compilation_hasher,
+    &compilation.options.output.hash_function,
+    compilation.get_warnings(),
+  )?;
+  hash_diagnostics(
+    &mut compilation_hasher,
+    &compilation.options.output.hash_function,
+    compilation.get_errors(),
+  )?;
 
   // create full hash
   compilation
