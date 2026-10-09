@@ -48,14 +48,21 @@ jobs:
         run: |
           node check-loaders.mjs U2 | tee results/loader-green.log
           node check-loaders.mjs U2-3.3.0 | tee results/loader-green-3.3.0.log
-      - name: Measure interleaved series and excluded forced-GC controls
-        run: python3 -u series.py
-      - name: Summarize exact paired statistics
-        run: python3 summarize.py
+      - name: Observe expected cwd regression failure
+        run: |
+          node check-cwd.mjs U0 | tee results/cwd-stock.log
+          node check-cwd.mjs U2 | tee results/cwd-old-u2.log
+          set +e
+          python3 compare-cwd.py > results/cwd-red.log 2>&1
+          rc=$?
+          set -e
+          cat results/cwd-red.log
+          test "$rc" -ne 0
+          grep -q 'U2 cwd filter parity mismatch' results/cwd-red.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unplugin-filter-u2
+          name: unplugin-filter-u2-cwd-red
           path: bench/unplugin-filter/results/
           retention-days: 30
   source-validation:
