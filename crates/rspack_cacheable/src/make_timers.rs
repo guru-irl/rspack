@@ -13,6 +13,7 @@ use std::{
 
 static OUTPUT: OnceLock<Option<PathBuf>> = OnceLock::new();
 static MAKE_SEQ: AtomicU64 = AtomicU64::new(0);
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[inline]
 pub fn enabled() -> bool {
@@ -366,11 +367,19 @@ impl Drop for MakeTimer {
     );
     let line = serde_json::Value::Object(fields);
     let path = output().as_ref().expect("make timers enabled");
-    let result = OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(path)
-      .and_then(|mut file| writeln!(file, "{line}"));
+    let result = serde_json::to_vec(&line)
+      .map_err(std::io::Error::other)
+      .and_then(|mut buffer| {
+        buffer.push(b'\n');
+        let _guard = WRITE_LOCK
+          .lock()
+          .unwrap_or_else(std::sync::PoisonError::into_inner);
+        OpenOptions::new()
+          .create(true)
+          .append(true)
+          .open(path)
+          .and_then(|mut file| file.write_all(&buffer))
+      });
     if let Err(error) = result {
       eprintln!("Failed to write make timers: {error}");
     }
