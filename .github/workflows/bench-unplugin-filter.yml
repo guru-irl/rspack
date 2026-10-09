@@ -1,11 +1,11 @@
 name: Synthetic unplugin filter benchmark
 on:
   push:
-    branches: [bench/unplugin-filter]
+    branches: [bench/unplugin-filter-u2]
 permissions:
   contents: read
 concurrency:
-  group: synthetic-unplugin-filter
+  group: synthetic-unplugin-filter-u2
   cancel-in-progress: false
 jobs:
   benchmark:
@@ -24,32 +24,20 @@ jobs:
           node-version: 22.18.0
       - name: Install released packages
         run: npm install --workspaces=false --ignore-scripts --registry=https://registry.npmjs.org
-      - name: Record host and validate syntax
+      - name: Prepare verified stock dist
+        run: python3 setup.py
+      - name: Observe expected stock regression failure
         run: |
-          mkdir -p results
-          python3 - <<'PY'
-          import json, os, pathlib, platform, subprocess
-          cpu = next(line.split(':', 1)[1].strip() for line in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name'))
-          ram = next(float(line.split()[1]) / 1024 for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:'))
-          host = {'cpu_model': cpu, 'cpus': os.cpu_count(), 'ram_mib': ram, 'node': subprocess.check_output(['node', '--version'], text=True).strip(), 'platform': platform.platform(), 'load': os.getloadavg(), 'commit': os.environ['GITHUB_SHA'], 'run_url': 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID']}
-          pathlib.Path('results/host.json').write_text(json.dumps(host, indent=2))
-          print(json.dumps(host))
-          PY
-          python3 -m py_compile setup.py series.py summarize.py
-          node --check run.mjs
-          node --check loader-wrapper.mjs
-      - name: Prepare verified dist arms and fixture
-        run: |
-          python3 setup.py
-          node generate.mjs
-          cp package-lock.json results/package-lock.json
-      - name: Measure interleaved series and conditional semi-space probe
-        run: python3 -u series.py
-      - name: Summarize exact paired statistics
-        run: python3 summarize.py
+          set +e
+          node check-loaders.mjs stock > results/loader-red.log 2>&1
+          rc=$?
+          set -e
+          cat results/loader-red.log
+          test "$rc" -ne 0
+          grep -q 'filter must be normalized once per hook' results/loader-red.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unplugin-filter-followup
+          name: unplugin-filter-u2-red
           path: bench/unplugin-filter/results/
           retention-days: 30
