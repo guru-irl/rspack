@@ -339,10 +339,10 @@ index 247250d..789e8cb 100644
      return callback(null, source, map)
  
 diff --git a/test/unit-tests/rspack/loaders/transform.test.ts b/test/unit-tests/rspack/loaders/transform.test.ts
-index c6e85b3..410359a 100644
+index c6e85b3..5b68848 100644
 --- a/test/unit-tests/rspack/loaders/transform.test.ts
 +++ b/test/unit-tests/rspack/loaders/transform.test.ts
-@@ -1,8 +1,91 @@
+@@ -1,8 +1,94 @@
  import type { NativeBuildContext, UnpluginBuildContext } from '../../../../src/types'
 +import { resolve } from 'node:path'
 +import process from 'node:process'
@@ -364,7 +364,10 @@ index c6e85b3..410359a 100644
 +        let reads = 0
 +        const filter = { id: { include: [] as string[], exclude: ['not-expect.js'] }, code: { include: 'allowed' } }
 +        const hook = {
-+          get filter() { reads++; return filter },
++          get filter() {
++            reads++
++            return filter
++          },
 +          handler: (code: string) => `${code}:first`,
 +        }
 +        let start: (compilation: any) => Promise<unknown>

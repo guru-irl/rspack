@@ -27,3 +27,6 @@ counts.update({'install': 'pass', 'build': 'pass', 'typecheck': 'pass', 'lint': 
 (root / 'validation.json').write_text(json.dumps(counts, indent=2))
 print(json.dumps(counts, indent=2))
 PY
+cp -R dist "$logs/source-dist"
+cd "$base"
+python3 regenerate-dist.py > "$logs/regenerate-dist.log" 2>&1

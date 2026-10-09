@@ -1,0 +1,56 @@
+{
+  "version": "3.3.0",
+  "registry": {
+    "shasum": "18de476b6130a6cde94db87f70ac32b97757f3c9",
+    "tarball": "https://registry.npmjs.org/unplugin/-/unplugin-3.3.0.tgz",
+    "fileCount": 18,
+    "integrity": "sha512-qa66K+crbfyE6JK10GjvbJeRrOsuC/JpbnHctfyp/i4oBTxWOzJfRZyDiOk1PtErMFRu8JhsU/wPvOdBNWe5Rg==",
+    "signatures": [
+      {
+        "sig": "MEQCIFtmWcIRXg9YlRLAe2cfZI8hBtuclMu9lypRyOzJqVdyAiA+pr1Cel9beCW8qqoIamuHjJLMvsy4KM1glSpIr3FflQ==",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/unplugin@3.3.0",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "unpackedSize": 79903
+  },
+  "patch_sha256": "d83cee4e4521a631679e5fe0ce5d2840c8b3d7fcd8007aa492f94a2779ad1969",
+  "files": [
+    {
+      "path": "dist/index.mjs",
+      "sha256_before": "05c8f48e637f30753f8e0e5b05776b823c47b2d1421326adad7b87160c553e07",
+      "sha256_after": "69fdd7ebdda9515ae5681dbeb056df2f571a465c3fcf79d1f065e871197bb33e"
+    },
+    {
+      "path": "dist/rspack/loaders/load.mjs",
+      "sha256_before": "3d61b895c396e60683601f492a6d6cc3638d88cfb5fbbab6164650d7583999e0",
+      "sha256_after": "62491c915c71d5f5f250602ae3095b47de20fddc8667ce2d4383fe8e9d0ace3f"
+    },
+    {
+      "path": "dist/rspack/loaders/transform.mjs",
+      "sha256_before": "b9af275bfeeaa8ff6d04058e476ec8b870da62594d91338d24728d40b1a855b9",
+      "sha256_after": "9a904f6a03e483d8247792887e8325278467c5cf9ef40f74f522a2d1504216b6"
+    },
+    {
+      "path": "dist/webpack/loaders/load.mjs",
+      "sha256_before": "c465a74d2b21a2cee0739a81f14896c95e75b8465b0953b2732bf895ded5a8ba",
+      "sha256_after": "82e5f21b47c8a953548ff0bd0a87962648e94d196061c808910e009d93c5dcf5"
+    },
+    {
+      "path": "dist/webpack/loaders/transform.mjs",
+      "sha256_before": "b35e9c0fa1f289eb70b81b30b9b4b5ad928228ce7e706e50dfb84f7cdf0161f2",
+      "sha256_after": "213c20567e255f1b917a1ae4ebea17aa9639b7d7659c95df8879f2b89a875591"
+    },
+    {
+      "path": "dist/webpack-like-BSQQnmcP.mjs",
+      "sha256_before": "4d4b709a779d6f42ab6b3238db79f4c84fa7b81f4b33672da82403f22ea41e80",
+      "sha256_after": "382ae7fdf6de16d3a49374cfe4c7f125524be573be009bebf936f58faf4ed85b"
+    }
+  ],
+  "semantics": "Filters cached per hook and cwd; cwd changes rebuild the filter. Handler read fresh per loader invocation. Filter mutations with unchanged cwd after preparation are not seen."
+}
