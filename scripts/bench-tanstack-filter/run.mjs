@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const output = path.resolve('../benchmark-results');
 fs.mkdirSync(output, { recursive: true });
 const scripts = path.resolve('../scripts/bench-tanstack-filter');
+for (const file of ['build.mjs', 'vite-check.mjs']) fs.copyFileSync(path.join(scripts, file), path.resolve(file));
 const pluginFile = path.resolve('node_modules/@tanstack/router-plugin/dist/esm/core/router-code-splitter-plugin.js');
 const original = fs.readFileSync(pluginFile, 'utf8');
 const needle = 'exclude: [tsrSplit, tsrShared],';
@@ -24,7 +25,7 @@ function rss(pid) {
 function runChild(file, env, label) {
   return new Promise((resolve, reject) => {
     const log = fs.openSync(path.join(output, `${label}.log`), 'w');
-    const child = fork(path.join(scripts, file), [], { env: { ...process.env, ...env }, stdio: ['ignore', log, log, 'ipc'] });
+    const child = fork(path.resolve(file), [], { env: { ...process.env, ...env }, stdio: ['ignore', log, log, 'ipc'] });
     fs.closeSync(log);
     let active = false;
     let peak = 0;
