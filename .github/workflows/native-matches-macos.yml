@@ -1,0 +1,32 @@
+name: Native matches macOS benchmark
+on:
+  push:
+    branches: [bench/split-chunks-native-matches-macos]
+permissions:
+  contents: read
+concurrency:
+  group: native-matches-macos
+  cancel-in-progress: true
+jobs:
+  paired-benchmark:
+    runs-on: macos-15-arm64
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Build both revisions and measure alternating pairs
+        shell: bash
+        run: bash scripts/native-matches-bench/macos.sh
+      - name: Upload raw records and paired statistics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-matches-macos-arm64
+          path: .bench-native-matches/
+          retention-days: 14
