@@ -1,12 +1,18 @@
 diff --git a/src/rspack/index.ts b/src/rspack/index.ts
-index 2fdefc1..f750f2b 100644
+index 2fdefc1..0bc0045 100644
 --- a/src/rspack/index.ts
 +++ b/src/rspack/index.ts
-@@ -7,12 +7,14 @@ import type {
+@@ -1,5 +1,6 @@
+ import type { Compiler, RspackPluginInstance } from '@rspack/core'
+ import type {
++  HookFnMap,
+   ResolvedUnpluginOptions,
+   UnpluginContext,
+   UnpluginContextMeta,
+@@ -7,12 +8,13 @@ import type {
    UnpluginInstance,
    UnpluginOptions,
  } from '../types'
-+import type { HookFnMap } from '../types'
 +import type { PluginFilter } from '../utils/filter'
  import fs from 'node:fs'
  import { resolve } from 'node:path'
@@ -184,14 +190,14 @@ index 3e09f4b..3d6e6f0 100644
      return []
  
 diff --git a/src/webpack/index.ts b/src/webpack/index.ts
-index 62fa8e4..796e007 100644
+index 62fa8e4..5c48a0d 100644
 --- a/src/webpack/index.ts
 +++ b/src/webpack/index.ts
-@@ -1,13 +1,15 @@
+@@ -1,13 +1,14 @@
  import type { ResolvePluginInstance, Resolver } from 'webpack'
  import type VirtualModulesPluginType from 'webpack-virtual-modules'
- import type { ResolvedUnpluginOptions, UnpluginContext, UnpluginContextMeta, UnpluginFactory, UnpluginInstance, WebpackCompiler } from '../types'
-+import type { HookFnMap } from '../types'
+-import type { ResolvedUnpluginOptions, UnpluginContext, UnpluginContextMeta, UnpluginFactory, UnpluginInstance, WebpackCompiler } from '../types'
++import type { HookFnMap, ResolvedUnpluginOptions, UnpluginContext, UnpluginContextMeta, UnpluginFactory, UnpluginInstance, WebpackCompiler } from '../types'
 +import type { PluginFilter } from '../utils/filter'
  import fs from 'node:fs'
  import { resolve } from 'node:path'
@@ -204,7 +210,7 @@ index 62fa8e4..796e007 100644
  import { contextOptionsFromCompilation, createBuildContext, normalizeMessage } from './context'
  
  const TRANSFORM_LOADER = resolve(
-@@ -57,6 +59,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -57,6 +58,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
  
            // resolveId hook
            if (plugin.resolveId) {
@@ -212,7 +218,7 @@ index 62fa8e4..796e007 100644
              let vfs = compiler.options.plugins.find(i => i instanceof VirtualModulesPlugin)
              if (!vfs) {
                vfs = new VirtualModulesPlugin()
-@@ -115,7 +118,18 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -115,7 +117,18 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
                        },
                      }
  
@@ -232,7 +238,7 @@ index 62fa8e4..796e007 100644
                      if (!filter(id))
                        return callback()
  
-@@ -166,9 +180,10 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -166,9 +179,10 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
  
            // load hook
            if (plugin.load) {
@@ -244,7 +250,7 @@ index 62fa8e4..796e007 100644
                },
                enforce: plugin.enforce,
                use: [{
-@@ -183,10 +198,12 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -183,10 +197,12 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
  
            // transform hook
            if (plugin.transform) {
@@ -258,7 +264,7 @@ index 62fa8e4..796e007 100644
                },
              })
            }
-@@ -234,7 +251,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -234,7 +250,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
    }
  }
  
@@ -267,7 +273,7 @@ index 62fa8e4..796e007 100644
    if (id.startsWith(plugin.__virtualModulePrefix))
      id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length))
  
-@@ -242,7 +259,6 @@ export function shouldLoad(id: string, plugin: ResolvedUnpluginOptions, external
+@@ -242,7 +258,6 @@ export function shouldLoad(id: string, plugin: ResolvedUnpluginOptions, external
    if (plugin.loadInclude && !plugin.loadInclude(id))
      return false
  
@@ -339,7 +345,7 @@ index 247250d..789e8cb 100644
      return callback(null, source, map)
  
 diff --git a/test/unit-tests/rspack/loaders/transform.test.ts b/test/unit-tests/rspack/loaders/transform.test.ts
-index c6e85b3..5b68848 100644
+index c6e85b3..195ecf6 100644
 --- a/test/unit-tests/rspack/loaders/transform.test.ts
 +++ b/test/unit-tests/rspack/loaders/transform.test.ts
 @@ -1,8 +1,94 @@
@@ -381,7 +387,7 @@ index c6e85b3..5b68848 100644
 +          name: 'lazy-filter',
 +          transform: hook,
 +          buildStart() { filter.id.include.push('*.js') },
-+        }))().apply(compiler as any)
++        }))(undefined).apply(compiler as any)
 +        expect(reads).toBe(0)
 +        await start!({ fileDependencies: new Set() })
 +        const rule = compiler.options.module.rules[0]
@@ -391,7 +397,7 @@ index c6e85b3..5b68848 100644
 +          if (!uses.length)
 +            return source
 +          let result: unknown
-+          await loader.call({
++          await (loader as typeof transform).call({
 +            query: uses[0].options,
 +            resource: id,
 +            async: () => (error: Error | null, code: string) => {
