@@ -8,7 +8,7 @@ concurrency:
   group: synthetic-unplugin-filter-u2
   cancel-in-progress: false
 jobs:
-  source-red:
+  source-validation:
     if: github.repository == 'guru-irl/rspack'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -22,11 +22,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
-      - name: Confirm regression fails on stock upstream main
-        run: bash validate-red.sh
+      - name: Build, lint, typecheck and run full upstream test suite
+        run: bash validate-source.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unplugin-u2r2-red
+          name: unplugin-u2r2-source
           path: bench/unplugin-filter/source-results/
           retention-days: 30

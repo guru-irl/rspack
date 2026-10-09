@@ -3,53 +3,27 @@ set -euo pipefail
 base="$GITHUB_WORKSPACE/bench/unplugin-filter"
 logs="$base/source-results"
 mkdir -p "$logs"
-git clone --depth 1 --branch v3.4.0 https://github.com/unjs/unplugin.git "$GITHUB_WORKSPACE/unplugin-source"
+git clone https://github.com/unjs/unplugin.git "$GITHUB_WORKSPACE/unplugin-source"
 cd "$GITHUB_WORKSPACE/unplugin-source"
-git rev-parse HEAD > "$logs/tag-sha.txt"
+git checkout f2acf00e1f8e4fbeaa28f6660545c70c43cb2d73
+git rev-parse HEAD > "$logs/main-sha.txt"
 git apply --check "$base/unplugin-filters-once-src.patch"
 git apply "$base/unplugin-filters-once-src.patch"
-npm install -g pnpm@12.4.2 --registry=https://registry.npmjs.org
+npm install -g pnpm@12.5.0 --registry=https://registry.npmjs.org
 pnpm install --frozen-lockfile > "$logs/install.log" 2>&1
+pnpm run lint:fix > "$logs/lint-fix.log" 2>&1
+pnpm run lint > "$logs/lint.log" 2>&1
+git diff -- src test/unit-tests > "$logs/unplugin-filters-once-src.patch"
 pnpm run build > "$logs/build.log" 2>&1
 pnpm run typecheck > "$logs/typecheck.log" 2>&1
-set +e
-pnpm exec vitest run test/unit-tests --reporter=json --outputFile="$logs/patched-unit.json" > "$logs/patched-unit.log" 2>&1
-unit_rc=$?
-set -e
-printf '%s\n' "$unit_rc" > "$logs/patched-unit-exit.txt"
-if [ "$unit_rc" -ne 0 ]; then
-  git apply -R "$base/unplugin-filters-once-src.patch"
-  pnpm run build > "$logs/stock-build.log" 2>&1
-  set +e
-  pnpm exec vitest run test/unit-tests --reporter=json --outputFile="$logs/stock-unit.json" > "$logs/stock-unit.log" 2>&1
-  baseline_rc=$?
-  set -e
-  printf '%s\n' "$baseline_rc" > "$logs/stock-unit-exit.txt"
-  python3 - "$logs" <<'PY'
+pnpm test --reporter=json --outputFile="$logs/full-test.json" > "$logs/full-test.log" 2>&1
+python3 - "$logs" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-def failures(name):
-    data = json.loads((root / name).read_text())
-    return sorted(assertion['fullName'] for suite in data['testResults'] for assertion in suite['assertionResults'] if assertion['status'] == 'failed')
-a, b = failures('patched-unit.json'), failures('stock-unit.json')
-assert a and a == b, f'Unexpected source failures: patched={a}, stock={b}'
-(root / 'baseline-failures.json').write_text(json.dumps(a, indent=2))
-print('Same unit failures on patched source and stock:', a)
+d = json.loads((root / 'full-test.json').read_text())
+counts = {k: d[k] for k in ['numTotalTests', 'numPassedTests', 'numFailedTests', 'numPendingTests', 'numTotalTestSuites', 'numPassedTestSuites']}
+assert d['success'] and counts['numFailedTests'] == 0
+counts.update({'install': 'pass', 'build': 'pass', 'typecheck': 'pass', 'lint': 'pass', 'full_pnpm_test': 'pass'})
+(root / 'validation.json').write_text(json.dumps(counts, indent=2))
+print(json.dumps(counts, indent=2))
 PY
-  git apply "$base/unplugin-filters-once-src.patch"
-  pnpm run build > "$logs/rebuilt.log" 2>&1
-fi
-cd "$base"
-ln -s "$GITHUB_WORKSPACE/unplugin-source/node_modules" node_modules
-python3 setup.py > "$logs/dist-setup.log" 2>&1
-mkdir -p variants/source-built
-ln -s "$GITHUB_WORKSPACE/unplugin-source" variants/source-built/package
-ln -s "$GITHUB_WORKSPACE/unplugin-source/node_modules" variants/source-built/node_modules
-node check-loaders.mjs source-built > "$logs/source-built-loader-check.log" 2>&1
-cat "$logs/source-built-loader-check.log"
-
-node check-cwd.mjs U0 > "$logs/cwd-stock.log" 2>&1
-node check-cwd.mjs source-built > "$logs/cwd-source-built.log" 2>&1
-python3 compare-cwd.py source-built > "$logs/cwd-parity.log" 2>&1
-cp results/cwd-U0.json results/cwd-source-built.json results/cwd-parity-source-built.json "$logs/"
-cat "$logs/cwd-parity.log"

@@ -1,8 +1,15 @@
 diff --git a/src/rspack/index.ts b/src/rspack/index.ts
-index 2fdefc1..ad82ca6 100644
+index 2fdefc1..f750f2b 100644
 --- a/src/rspack/index.ts
 +++ b/src/rspack/index.ts
-@@ -12,7 +12,7 @@ import { resolve } from 'node:path'
+@@ -7,12 +7,14 @@ import type {
+   UnpluginInstance,
+   UnpluginOptions,
+ } from '../types'
++import type { HookFnMap } from '../types'
++import type { PluginFilter } from '../utils/filter'
+ import fs from 'node:fs'
+ import { resolve } from 'node:path'
  import { version as unpluginVersion } from '../../package.json'
  import { normalizeObjectHook } from '../utils/filter'
  import { toArray } from '../utils/general'
@@ -11,15 +18,43 @@ index 2fdefc1..ad82ca6 100644
  import { createBuildContext, normalizeMessage } from './context'
  import { decodeVirtualModuleId, encodeVirtualModuleId, FakeVirtualModulesPlugin, isVirtualModuleId } from './utils'
  
-@@ -183,6 +183,7 @@ function applyRspackPlugins(
+@@ -94,6 +96,7 @@ function applyRspackPlugins(
+ 
+     // resolveId hook
+     if (plugin.resolveId) {
++      let cachedResolveId: { hook: NonNullable<ResolvedUnpluginOptions['resolveId']>, cwd: string, filter: PluginFilter } | undefined
+       // rspack >= 1.5.0: use native virtual modules plugin
+       // rspack < 1.5.0: use fake virtual modules plugin
+       const vfs = compiler.rspack.experiments.VirtualModulesPlugin
+@@ -129,7 +132,18 @@ function applyRspackPlugins(
+             },
+           }
+ 
+-          const { handler, filter } = normalizeObjectHook('resolveId', plugin.resolveId!)
++          const hook = plugin.resolveId!
++          const cwd = process.cwd()
++          let handler: HookFnMap['resolveId']
++          if (cachedResolveId?.hook === hook && cachedResolveId.cwd === cwd) {
++            handler = typeof hook === 'function' ? hook : hook.handler
++          }
++          else {
++            const normalized = normalizeObjectHook('resolveId', hook)
++            handler = normalized.handler
++            cachedResolveId = { hook, cwd, filter: normalized.filter }
++          }
++          const { filter } = cachedResolveId
+           if (!filter(id))
+             return
+ 
+@@ -183,6 +197,7 @@ function applyRspackPlugins(
  
      // load hook
      if (plugin.load) {
-+      const filter = createCachedIdFilter(plugin.load)
++      const filter = createCachedIdFilter(() => plugin.load!)
        compiler.options.module.rules.unshift({
          enforce: plugin.enforce,
          include(id) {
-@@ -193,7 +194,6 @@ function applyRspackPlugins(
+@@ -193,7 +208,6 @@ function applyRspackPlugins(
            if (plugin.loadInclude && !plugin.loadInclude(id))
              return false
  
@@ -27,12 +62,12 @@ index 2fdefc1..ad82ca6 100644
            if (!filter(id))
              return false
  
-@@ -212,10 +212,12 @@ function applyRspackPlugins(
+@@ -212,10 +226,12 @@ function applyRspackPlugins(
  
      // transform hook
      if (plugin.transform) {
 +      // Only the id filter applies here; the loader checks the code filter.
-+      const filter = createCachedIdFilter(plugin.transform)
++      const filter = createCachedIdFilter(() => plugin.transform!)
        compiler.options.module.rules.unshift({
          enforce: plugin.enforce,
          use(data) {
@@ -42,45 +77,23 @@ index 2fdefc1..ad82ca6 100644
        })
      }
 diff --git a/src/rspack/loaders/load.ts b/src/rspack/loaders/load.ts
-index acd32fe..a76c84e 100644
+index acd32fe..3241e77 100644
 --- a/src/rspack/loaders/load.ts
 +++ b/src/rspack/loaders/load.ts
-@@ -1,10 +1,16 @@
+@@ -1,6 +1,5 @@
  import type { LoaderContext } from '@rspack/core'
--import type { ResolvedUnpluginOptions } from '../../types'
-+import type { HookFnMap, ResolvedUnpluginOptions } from '../../types'
-+import type { PluginFilter } from '../../utils/filter'
- import { normalizeObjectHook } from '../../utils/filter'
+ import type { ResolvedUnpluginOptions } from '../../types'
+-import { normalizeObjectHook } from '../../utils/filter'
  import { normalizeAbsolutePath } from '../../utils/webpack-like'
  import { createBuildContext, createContext } from '../context'
  import { decodeVirtualModuleId, isVirtualModuleId } from '../utils'
- 
-+const filters = new WeakMap<
-+  NonNullable<ResolvedUnpluginOptions['load']>,
-+  { cwd: string, filter: PluginFilter }
-+>()
-+
- export default async function load(this: LoaderContext, source: string, map: any): Promise<void> {
-   const callback = this.async()
-   const { plugin } = this.query as { plugin: ResolvedUnpluginOptions }
-@@ -17,7 +23,19 @@ export default async function load(this: LoaderContext, source: string, map: any
+@@ -17,7 +16,8 @@ export default async function load(this: LoaderContext, source: string, map: any
      id = decodeVirtualModuleId(id, plugin)
  
    const context = createContext(this)
 -  const { handler } = normalizeObjectHook('load', plugin.load)
 +  const hook = plugin.load
-+  const cwd = process.cwd()
-+  let cached = filters.get(hook)
-+  let handler: HookFnMap['load']
-+  if (cached?.cwd === cwd) {
-+    handler = typeof hook === 'function' ? hook : hook.handler
-+  }
-+  else {
-+    const normalized = normalizeObjectHook('load', hook)
-+    handler = normalized.handler
-+    cached = { cwd, filter: normalized.filter }
-+    filters.set(hook, cached)
-+  }
++  const handler = typeof hook === 'function' ? hook : hook.handler
    try {
      const res = await handler.call(
        Object.assign(
@@ -127,23 +140,24 @@ index 43cbd34..5e399bd 100644
      return callback(null, source, map)
  
 diff --git a/src/utils/webpack-like.ts b/src/utils/webpack-like.ts
-index 3e09f4b..92307d0 100644
+index 3e09f4b..3d6e6f0 100644
 --- a/src/utils/webpack-like.ts
 +++ b/src/utils/webpack-like.ts
-@@ -1,12 +1,24 @@
+@@ -1,12 +1,25 @@
  import type { RuleSetUseItem } from '@rspack/core'
 -import type { ResolvedUnpluginOptions } from '../types'
 +import type { Hook, LoadHookFilter, ResolvedUnpluginOptions } from '../types'
- import { isAbsolute, normalize } from 'node:path'
 +import type { PluginFilter } from './filter'
+ import { isAbsolute, normalize } from 'node:path'
  import { normalizeObjectHook } from './filter'
  
-+export function createCachedIdFilter<T extends (...args: any[]) => any>(hook: Hook<T, LoadHookFilter>): PluginFilter {
-+  let cached = { cwd: process.cwd(), filter: normalizeObjectHook('load', hook).filter }
++export function createCachedIdFilter<T extends (...args: any[]) => any>(getHook: () => Hook<T, LoadHookFilter>): PluginFilter {
++  let cached: { hook: Hook<T, LoadHookFilter>, cwd: string, filter: PluginFilter } | undefined
 +  return (id) => {
++    const hook = getHook()
 +    const cwd = process.cwd()
-+    if (cached.cwd !== cwd)
-+      cached = { cwd, filter: normalizeObjectHook('load', hook).filter }
++    if (cached?.hook !== hook || cached.cwd !== cwd)
++      cached = { hook, cwd, filter: normalizeObjectHook('load', hook).filter }
 +    return cached.filter(id)
 +  }
 +}
@@ -156,7 +170,7 @@ index 3e09f4b..92307d0 100644
  ): RuleSetUseItem[] {
    if (data.resource == null)
      return []
-@@ -15,12 +27,6 @@ export function transformUse(
+@@ -15,12 +28,6 @@ export function transformUse(
    if (plugin.transformInclude && !plugin.transformInclude(id))
      return []
  
@@ -170,14 +184,19 @@ index 3e09f4b..92307d0 100644
      return []
  
 diff --git a/src/webpack/index.ts b/src/webpack/index.ts
-index 62fa8e4..95a0313 100644
+index 62fa8e4..796e007 100644
 --- a/src/webpack/index.ts
 +++ b/src/webpack/index.ts
-@@ -5,9 +5,10 @@ import fs from 'node:fs'
+@@ -1,13 +1,15 @@
+ import type { ResolvePluginInstance, Resolver } from 'webpack'
+ import type VirtualModulesPluginType from 'webpack-virtual-modules'
+ import type { ResolvedUnpluginOptions, UnpluginContext, UnpluginContextMeta, UnpluginFactory, UnpluginInstance, WebpackCompiler } from '../types'
++import type { HookFnMap } from '../types'
++import type { PluginFilter } from '../utils/filter'
+ import fs from 'node:fs'
  import { resolve } from 'node:path'
  import process from 'node:process'
  import { version as unpluginVersion } from '../../package.json'
-+import type { PluginFilter } from '../utils/filter'
  import { normalizeObjectHook } from '../utils/filter'
  import { toArray } from '../utils/general'
 -import { normalizeAbsolutePath, transformUse } from '../utils/webpack-like'
@@ -185,11 +204,39 @@ index 62fa8e4..95a0313 100644
  import { contextOptionsFromCompilation, createBuildContext, normalizeMessage } from './context'
  
  const TRANSFORM_LOADER = resolve(
-@@ -166,9 +167,10 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -57,6 +59,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+ 
+           // resolveId hook
+           if (plugin.resolveId) {
++            let cachedResolveId: { hook: NonNullable<ResolvedUnpluginOptions['resolveId']>, cwd: string, filter: PluginFilter } | undefined
+             let vfs = compiler.options.plugins.find(i => i instanceof VirtualModulesPlugin)
+             if (!vfs) {
+               vfs = new VirtualModulesPlugin()
+@@ -115,7 +118,18 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+                       },
+                     }
+ 
+-                    const { handler, filter } = normalizeObjectHook('resolveId', plugin.resolveId!)
++                    const hook = plugin.resolveId!
++                    const cwd = process.cwd()
++                    let handler: HookFnMap['resolveId']
++                    if (cachedResolveId?.hook === hook && cachedResolveId.cwd === cwd) {
++                      handler = typeof hook === 'function' ? hook : hook.handler
++                    }
++                    else {
++                      const normalized = normalizeObjectHook('resolveId', hook)
++                      handler = normalized.handler
++                      cachedResolveId = { hook, cwd, filter: normalized.filter }
++                    }
++                    const { filter } = cachedResolveId
+                     if (!filter(id))
+                       return callback()
+ 
+@@ -166,9 +180,10 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
  
            // load hook
            if (plugin.load) {
-+            const filter = createCachedIdFilter(plugin.load)
++            const filter = createCachedIdFilter(() => plugin.load!)
              compiler.options.module.rules.unshift({
                include(id) {
 -                return shouldLoad(id, plugin, externalModules)
@@ -197,12 +244,12 @@ index 62fa8e4..95a0313 100644
                },
                enforce: plugin.enforce,
                use: [{
-@@ -183,10 +185,12 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -183,10 +198,12 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
  
            // transform hook
            if (plugin.transform) {
 +            // Only the id filter applies here; the loader checks the code filter.
-+            const filter = createCachedIdFilter(plugin.transform)
++            const filter = createCachedIdFilter(() => plugin.transform!)
              compiler.options.module.rules.unshift({
                enforce: plugin.enforce,
                use(data: { resource?: string, resourceQuery?: string }) {
@@ -211,7 +258,7 @@ index 62fa8e4..95a0313 100644
                },
              })
            }
-@@ -234,7 +238,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
+@@ -234,7 +251,7 @@ export function getWebpackPlugin<UserOptions = Record<string, never>>(
    }
  }
  
@@ -220,7 +267,7 @@ index 62fa8e4..95a0313 100644
    if (id.startsWith(plugin.__virtualModulePrefix))
      id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length))
  
-@@ -242,7 +246,6 @@ export function shouldLoad(id: string, plugin: ResolvedUnpluginOptions, external
+@@ -242,7 +259,6 @@ export function shouldLoad(id: string, plugin: ResolvedUnpluginOptions, external
    if (plugin.loadInclude && !plugin.loadInclude(id))
      return false
  
@@ -229,44 +276,23 @@ index 62fa8e4..95a0313 100644
      return false
  
 diff --git a/src/webpack/loaders/load.ts b/src/webpack/loaders/load.ts
-index e2fd10f..7d2880a 100644
+index e2fd10f..b90a13a 100644
 --- a/src/webpack/loaders/load.ts
 +++ b/src/webpack/loaders/load.ts
-@@ -1,9 +1,15 @@
+@@ -1,6 +1,5 @@
  import type { LoaderContext } from 'webpack'
--import type { ResolvedUnpluginOptions } from '../../types'
-+import type { HookFnMap, ResolvedUnpluginOptions } from '../../types'
-+import type { PluginFilter } from '../../utils/filter'
- import { normalizeObjectHook } from '../../utils/filter'
+ import type { ResolvedUnpluginOptions } from '../../types'
+-import { normalizeObjectHook } from '../../utils/filter'
  import { normalizeAbsolutePath } from '../../utils/webpack-like'
  import { createBuildContext, createContext } from '../context'
  
-+const filters = new WeakMap<
-+  NonNullable<ResolvedUnpluginOptions['load']>,
-+  { cwd: string, filter: PluginFilter }
-+>()
-+
- export default async function load(this: LoaderContext<any>, source: string, map: any): Promise<void> {
-   const callback = this.async()
-   const { plugin } = this.query as { plugin: ResolvedUnpluginOptions }
-@@ -16,7 +22,19 @@ export default async function load(this: LoaderContext<any>, source: string, map
+@@ -16,7 +15,8 @@ export default async function load(this: LoaderContext<any>, source: string, map
      id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length))
  
    const context = createContext(this)
 -  const { handler } = normalizeObjectHook('load', plugin.load)
 +  const hook = plugin.load
-+  const cwd = process.cwd()
-+  let cached = filters.get(hook)
-+  let handler: HookFnMap['load']
-+  if (cached?.cwd === cwd) {
-+    handler = typeof hook === 'function' ? hook : hook.handler
-+  }
-+  else {
-+    const normalized = normalizeObjectHook('load', hook)
-+    handler = normalized.handler
-+    cached = { cwd, filter: normalized.filter }
-+    filters.set(hook, cached)
-+  }
++  const handler = typeof hook === 'function' ? hook : hook.handler
    const res = await handler.call(
      Object.assign({}, createBuildContext({
        addWatchFile: (file) => {
@@ -312,3 +338,99 @@ index 247250d..789e8cb 100644
    if (!filter(this.resource, source))
      return callback(null, source, map)
  
+diff --git a/test/unit-tests/rspack/loaders/transform.test.ts b/test/unit-tests/rspack/loaders/transform.test.ts
+index c6e85b3..410359a 100644
+--- a/test/unit-tests/rspack/loaders/transform.test.ts
++++ b/test/unit-tests/rspack/loaders/transform.test.ts
+@@ -1,8 +1,91 @@
+ import type { NativeBuildContext, UnpluginBuildContext } from '../../../../src/types'
++import { resolve } from 'node:path'
++import process from 'node:process'
+ import { assert, describe, expect, it, vi } from 'vitest'
++import { getRspackPlugin } from '../../../../src/rspack'
+ import transform from '../../../../src/rspack/loaders/transform'
++import { normalizeObjectHook } from '../../../../src/utils/filter'
++import { getWebpackPlugin } from '../../../../src/webpack'
++import webpackTransform from '../../../../src/webpack/loaders/transform'
+ 
+ describe('transform', () => {
++  it('caches lazy filters per hook and cwd while reading handlers fresh', async () => {
++    const originalCwd = process.cwd()
++    const firstCwd = resolve(import.meta.dirname, '../../filter/test-src')
++    const secondCwd = resolve(import.meta.dirname, '../../resolve-id/test-src')
++    try {
++      for (const [getPlugin, loader] of [[getRspackPlugin, transform], [getWebpackPlugin, webpackTransform]] as const) {
++        process.chdir(firstCwd)
++        let reads = 0
++        const filter = { id: { include: [] as string[], exclude: ['not-expect.js'] }, code: { include: 'allowed' } }
++        const hook = {
++          get filter() { reads++; return filter },
++          handler: (code: string) => `${code}:first`,
++        }
++        let start: (compilation: any) => Promise<unknown>
++        const compiler = {
++          options: { context: firstCwd, module: { rules: [] as any[] } },
++          rspack: { version: '2.0.0', experiments: {} },
++          webpack: { version: '5.0.0' },
++          hooks: { make: { tapPromise(_name: string, callback: typeof start) { start = callback } } },
++        }
++        getPlugin(() => ({
++          name: 'lazy-filter',
++          transform: hook,
++          buildStart() { filter.id.include.push('*.js') },
++        }))().apply(compiler as any)
++        expect(reads).toBe(0)
++        await start!({ fileDependencies: new Set() })
++        const rule = compiler.options.module.rules[0]
++        const accepted = resolve(firstCwd, 'mod.js')
++        const invoke = async (id: string, source: string) => {
++          const uses = rule.use({ resource: id })
++          if (!uses.length)
++            return source
++          let result: unknown
++          await loader.call({
++            query: uses[0].options,
++            resource: id,
++            async: () => (error: Error | null, code: string) => {
++              if (error)
++                throw error
++              result = code
++            },
++          } as any, source, undefined)
++          return result
++        }
++        const cases = [
++          [accepted, 'allowed', 'allowed:first'],
++          [resolve(firstCwd, 'not-expect.js'), 'allowed', 'allowed'],
++          [resolve(firstCwd, 'mod.ts'), 'allowed', 'allowed'],
++          [accepted, 'denied', 'denied'],
++        ] as const
++        for (const [id, code, expected] of cases) {
++          const stock = normalizeObjectHook('transform', { handler: hook.handler, filter }).filter(id, code)
++          expect(await invoke(id, code)).toBe(stock ? hook.handler(code) : code)
++          expect(await invoke(id, code)).toBe(expected)
++        }
++        expect(reads).toBe(2) // One rule filter and one loader filter.
++        hook.handler = code => `${code}:second`
++        expect(await invoke(accepted, 'allowed')).toBe('allowed:second')
++        expect(reads).toBe(2)
++
++        process.chdir(secondCwd)
++        expect(await invoke(accepted, 'allowed')).toBe('allowed')
++        expect(await invoke(resolve(secondCwd, 'mod.js'), 'allowed')).toBe('allowed:second')
++        expect(reads).toBe(4)
++
++        const plugin = rule.use({ resource: resolve(secondCwd, 'mod.js') })[0].options.plugin
++        plugin.transform = { filter: { id: '*.ts' }, handler: () => 'replacement' }
++        expect(await invoke(resolve(secondCwd, 'mod.js'), 'allowed')).toBe('allowed')
++        expect(await invoke(resolve(secondCwd, 'mod.ts'), 'allowed')).toBe('replacement')
++      }
++    }
++    finally {
++      process.chdir(originalCwd)
++    }
++  })
++
+   it('should call callback with source and map if plugin.transform is not defined', async () => {
+     const mockCallback = vi.fn()
+     const mockLoaderContext = {
