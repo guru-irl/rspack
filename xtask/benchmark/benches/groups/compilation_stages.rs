@@ -1856,7 +1856,7 @@ async fn compute_concatenated_module_codegen(
     code_generation_result
       .runtime_requirements_mut()
       .extend(*runtime_template.runtime_requirements());
-    code_generation_result.set_hash_for_concatenated_module(
+    code_generation_result.set_hash_from_module_hash(
       &job.hash,
       &compilation.options.output.hash_function,
       &compilation.options.output.hash_digest,

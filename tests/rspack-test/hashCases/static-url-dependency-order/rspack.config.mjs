@@ -18,11 +18,13 @@ function config(delayed) {
       rules: [
         {
           test: /\.js$/,
-          use: [{
-            loader: path.resolve(import.meta.dirname, 'delay.cjs'),
-            ident: 'delay',
-            options: { delayed },
-          }],
+          use: [
+            {
+              loader: path.resolve(import.meta.dirname, 'delay.cjs'),
+              ident: 'delay',
+              options: { delayed },
+            },
+          ],
         },
         { test: /\.svg$/, type: 'asset/resource' },
       ],
