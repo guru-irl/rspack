@@ -22,11 +22,68 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
-      - name: Build, lint, typecheck and run full upstream test suite
+      - name: Build, lint, typecheck, full upstream test and dist/source parity
         run: bash validate-source.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: unplugin-u2r2-source
           path: bench/unplugin-filter/source-results/
+          retention-days: 30
+  measure:
+    if: github.repository == 'guru-irl/rspack'
+    needs: source-validation
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [speed, fixed-young, watch]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: bench/unplugin-filter
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: bench/unplugin-filter
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: unplugin-u2r2-source
+          path: bench/unplugin-filter/validated-source
+      - name: Install released packages and prepare verified arms
+        run: |
+          cp validated-source/unplugin-3.*-dist-u2.patch validated-source/unplugin-3.*-u2-manifest.json .
+          npm install --workspaces=false --ignore-scripts --registry=https://registry.npmjs.org
+          python3 record-host.py
+          python3 -m py_compile setup.py series.py summarize.py memory-series.py summarize-memory.py paired_stats.py
+          node --check run.mjs
+          node --check loader-wrapper.mjs
+          node --check check-loaders.mjs
+          python3 setup.py
+          node generate.mjs
+          cp package-lock.json results/package-lock.json
+          cp unplugin-3.*-dist-u2.patch unplugin-3.*-u2-manifest.json results/
+      - name: Check loaders and excluded cwd parity
+        run: |
+          set -o pipefail
+          node check-loaders.mjs U2r2 | tee results/loader-green.log
+          node check-loaders.mjs U2-3.3.0 | tee results/loader-green-3.3.0.log
+          node check-cwd.mjs U0 | tee results/cwd-stock.log
+          node check-cwd.mjs U2r2 | tee results/cwd-patched.log
+          python3 compare-cwd.py
+          node check-node-cwd.mjs
+      - name: Measure speed and parity
+        if: matrix.mode == 'speed'
+        run: python3 -u series.py && python3 summarize.py
+      - name: Measure fixed-generation or steady-watch triples
+        if: matrix.mode != 'speed'
+        run: python3 -u memory-series.py ${{ matrix.mode }} && python3 summarize-memory.py ${{ matrix.mode }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unplugin-u2r2-${{ matrix.mode }}
+          path: bench/unplugin-filter/results/
           retention-days: 30

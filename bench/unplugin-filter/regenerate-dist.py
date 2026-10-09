@@ -57,6 +57,9 @@ for version in ['3.4.0', '3.3.0']:
         a = text.index('\tconst hook = plugin.load;')
         b = text.index('\n\ttry {' if adapter == 'rspack' else '\n\tconst res =', a)
         text = text[:a] + '\tconst hook = plugin.load;\n\tconst handler = typeof hook === "function" ? hook : hook.handler;' + text[b:]
+        if adapter == 'webpack':
+            text = replace(text, '\tconst handler = typeof hook === "function" ? hook : hook.handler;\n', '')
+            text = replace(text, 'await handler.call(', 'await (typeof hook === "function" ? hook : hook.handler).call(')
         load.write_text(text)
     index = package / 'dist/index.mjs'
     text = index.read_text()
