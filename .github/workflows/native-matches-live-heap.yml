@@ -4,6 +4,7 @@ on:
     branches: [bench/split-chunks-native-matches-live-heap]
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: native-matches-live-heap
   cancel-in-progress: false
@@ -20,7 +21,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - name: Build two exact-counter revisions and run callback triples
+      - name: Reuse matched counter builds and run callback triples
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: bash scripts/native-matches-bench/macos.sh
       - name: Upload synthetic records and logs

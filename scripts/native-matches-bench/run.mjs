@@ -156,11 +156,11 @@ async function runOnce(run) {
       record.peakFootprint = Number(peak[1].replaceAll(',', ''));
     }
     if (process.env.RSPACK_LIVE_HEAP_LOG) {
-      const lines = fs.readFileSync(process.env.RSPACK_LIVE_HEAP_LOG, utf8).trim().split(
-);
-      const row = lines.at(-1).split(	).map(Number);
-      if (row.length !== 5 || !row.every(Number.isFinite)) throw new Error(Invalid live heap sample);
-      if (Date.now() - row[0] > 250) throw new Error(Live heap sample is stale);
+      const lines = fs.readFileSync(process.env.RSPACK_LIVE_HEAP_LOG, 'utf8').trim().split('\n');
+      const complete = lines.filter(line => /^\d+\t\d+\t\d+\t-?\d+\t-?\d+$/.test(line));
+      if (!complete.length) throw new Error('Missing live heap samples');
+      const row = complete.at(-1).split('\t').map(Number);
+      if (Date.now() - row[0] > 250) throw new Error('Live heap sample is stale');
       record.liveHeap = { epochMs: row[0], liveBytes: row[3], peakBytes: row[4] };
       record.jsMemory = process.memoryUsage();
     }
