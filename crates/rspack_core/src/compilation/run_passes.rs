@@ -19,6 +19,7 @@ use super::{
   optimize_modules::OptimizeModulesPass,
   optimize_tree::OptimizeTreePass,
   pass::{PassExt, run_with_incremental_artifacts},
+  pass_marks::PassMarks,
   process_assets::ProcessAssetsPass,
   runtime_requirements::RuntimeRequirementsPass,
   seal::SealPass,
@@ -80,12 +81,20 @@ impl Compilation {
     ];
     self.module_static_cache.enable_new_cache();
 
+    let marks = PassMarks::new(self);
     for pass in &passes {
-      if let Some(incremental_artifacts) = incremental_artifacts.as_deref_mut() {
-        run_with_incremental_artifacts(&**pass, self, incremental_artifacts, cache).await?;
-      } else {
-        pass.run(self, cache).await?;
+      if let Some(marks) = &marks {
+        marks.mark(pass.name(), "start");
       }
+      let result = if let Some(incremental_artifacts) = incremental_artifacts.as_deref_mut() {
+        run_with_incremental_artifacts(&**pass, self, incremental_artifacts, cache).await
+      } else {
+        pass.run(self, cache).await
+      };
+      if let Some(marks) = &marks {
+        marks.mark(pass.name(), "end");
+      }
+      result?;
     }
 
     self.module_static_cache.disable_cache();

@@ -21,6 +21,7 @@ mod optimize_dependencies;
 mod optimize_modules;
 mod optimize_tree;
 pub mod pass;
+mod pass_marks;
 mod process_assets;
 mod run_passes;
 mod runtime_requirements;

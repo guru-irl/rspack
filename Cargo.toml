@@ -1,6 +1,10 @@
 [workspace]
 members  = ["crates/*", "xtask/benchmark", "xtask"]
+exclude  = ["vendor/rayon-core"]
 resolver = "2"                                      # See https://doc.rust-lang.org/cargo/reference/resolver.html#feature-resolver-version-2
+
+[patch.crates-io]
+rayon-core = { path = "vendor/rayon-core" }
 
 [workspace.package]
 authors = ["Rspack Teams"]
