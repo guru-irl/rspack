@@ -380,8 +380,9 @@ mod prefetch {
     cancelled: Arc<AtomicBool>,
     logger: Arc<InfrastructureLogger>,
   ) {
-    // Linux caps each call at max(max_sectors_kb, read_ahead_kb).
-    // Use the default 128 KiB read_ahead_kb lower bound across devices.
+    // Linux silently drops WILLNEED advice past max(max_sectors_kb, read_ahead_kb)
+    // per call. 128 KiB, the default read_ahead_kb, fits that limit on any device
+    // with default settings. macOS F_RDADVISE honors the full range.
     #[cfg(target_os = "linux")]
     const CHUNK_SIZE: u64 = MB / 8;
     #[cfg(target_os = "macos")]
