@@ -25,6 +25,10 @@ pub struct OverwriteTask(Box<dyn Task<TaskContext>>);
 
 #[async_trait::async_trait]
 impl Task<ExecutorTaskContext> for OverwriteTask {
+  fn make_timer_metric(&self) -> &'static rspack_cacheable::make_timers::Metric {
+    &rspack_cacheable::make_timers::MAIN_OVERWRITE
+  }
+
   fn get_task_type(&self) -> TaskType {
     self.0.get_task_type()
   }

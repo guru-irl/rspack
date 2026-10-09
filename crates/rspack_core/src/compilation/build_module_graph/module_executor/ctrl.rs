@@ -20,6 +20,10 @@ pub struct CtrlTask {
 
 #[async_trait::async_trait]
 impl Task<ExecutorTaskContext> for CtrlTask {
+  fn make_timer_metric(&self) -> &'static rspack_cacheable::make_timers::Metric {
+    &rspack_cacheable::make_timers::MAIN_CTRL
+  }
+
   fn get_task_type(&self) -> TaskType {
     TaskType::Background
   }

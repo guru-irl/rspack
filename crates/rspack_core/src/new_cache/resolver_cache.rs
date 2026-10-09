@@ -17,7 +17,7 @@ use crate::{
 };
 
 #[cacheable]
-struct CachedResolution {
+pub(crate) struct CachedResolution {
   result: ResolveResult,
   dependencies: ResolveDependencies,
   snapshot: Snapshot,
@@ -30,7 +30,7 @@ pub struct ResolverCache {
   file_system_info: FileSystemInfo,
   strategy: SnapshotStrategyOptions,
   counter: Arc<CacheCount>,
-  locks: Arc<FxDashMap<u64, Arc<Mutex<()>>>>,
+  locks: Arc<FxDashMap<u64, Arc<Mutex<bool>>>>,
 }
 
 impl ResolverCache {
@@ -84,8 +84,13 @@ impl ResolverCache {
     // Keep the lock until the result is stored, so waiting requests can hit the cache.
     // Retain locks for this compilation so queued and new requests share the same lock.
     let lock = Arc::clone(self.locks.entry(key).or_default().value());
-    let _guard = lock.lock().await;
+    let mut counted_ready = lock.lock().await;
     let item = self.cache.get_item_cache(&format!("{key:016x}"), None);
+    let timers_enabled = rspack_cacheable::make_timers::enabled();
+    if timers_enabled {
+      rspack_cacheable::make_timers::RESOLVER_GETS
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Some(cached) = item.get::<CachedResolution>()
       && matches!(
         self
@@ -95,6 +100,15 @@ impl ResolverCache {
         Ok(SnapshotValidationResult::Valid)
       )
     {
+      if timers_enabled {
+        rspack_cacheable::make_timers::RESOLVER_HITS
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
+      if timers_enabled && !*counted_ready {
+        *counted_ready = true;
+        rspack_cacheable::make_timers::RESOLVER_READY_ENTRIES
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
       self.counter.hit();
       return (Ok(cached.result.clone()), cached.dependencies.clone());
     }
@@ -114,6 +128,15 @@ impl ResolverCache {
         )
         .await
     {
+      if timers_enabled {
+        rspack_cacheable::make_timers::RESOLVER_SETS
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
+      if timers_enabled && !*counted_ready {
+        *counted_ready = true;
+        rspack_cacheable::make_timers::RESOLVER_READY_ENTRIES
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
       item.store(CacheValue::new(CachedResolution {
         result: result.clone(),
         dependencies: dependencies.clone(),

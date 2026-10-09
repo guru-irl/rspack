@@ -20,6 +20,10 @@ pub struct EntryTask {
 }
 #[async_trait::async_trait]
 impl Task<ExecutorTaskContext> for EntryTask {
+  fn make_timer_metric(&self) -> &'static rspack_cacheable::make_timers::Metric {
+    &rspack_cacheable::make_timers::MAIN_ENTRY
+  }
+
   fn get_task_type(&self) -> TaskType {
     TaskType::Main
   }

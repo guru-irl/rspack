@@ -223,9 +223,22 @@ impl IdleFileCache {
     key: CacheKey,
     etag: Option<Etag>,
   ) -> Option<CacheValue<T>> {
+    use rspack_cacheable::make_timers::{StorageKind, enabled};
+    let kind = if enabled() {
+      let type_id = std::any::TypeId::of::<T>();
+      if type_id == std::any::TypeId::of::<crate::ModuleRef>() {
+        StorageKind::Module
+      } else if type_id == std::any::TypeId::of::<super::resolver_cache::CachedResolution>() {
+        StorageKind::Resolver
+      } else {
+        StorageKind::Other
+      }
+    } else {
+      StorageKind::Other
+    };
     let restored = self
       .strategy
-      .restore(&key, etag.as_ref(), CacheValue::<T>::decoder());
+      .restore(&key, etag.as_ref(), CacheValue::<T>::decoder(), kind);
     restored.and_then(ErasedCacheValue::downcast)
   }
 

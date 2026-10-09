@@ -275,8 +275,12 @@ impl FileCacheStrategy {
     key: &CacheKey,
     etag: Option<&Etag>,
     decoder: CacheValueDecoder,
+    kind: rspack_cacheable::make_timers::StorageKind,
   ) -> Option<ErasedCacheValue> {
+    use rspack_cacheable::make_timers as timers;
+    let timer = timers::STORAGE_WAIT.start_with(kind.wait_metric());
     let state_guard = self.read_state();
+    drop(timer);
     let state = state_guard.as_ref()?;
     if let Some(pending) = state.pending_writes.entries.get(key) {
       return pending
@@ -285,7 +289,9 @@ impl FileCacheStrategy {
         .then(|| pending.entry.value().clone());
     }
 
+    let timer = timers::STORAGE_READ.start_with(kind.read_metric());
     let result = state.database.get(DatabaseFamily::Cache, key);
+    drop(timer);
     let entry = match result {
       Ok(entry) => entry,
       Err(e) => {
@@ -295,7 +301,15 @@ impl FileCacheStrategy {
       }
     };
     let entry = entry?;
-    match decoder(&entry, etag, &self.codec) {
+    let timer = timers::STORAGE_DECODE.start_with(kind.decode_metric());
+    let decoded = decoder(&entry, etag, &self.codec);
+    if timer.is_some() && matches!(kind, timers::StorageKind::Resolver) {
+      timers::RESOLVER_DECODED_BYTES
+        .fetch_add(entry.len() as u64, std::sync::atomic::Ordering::Relaxed);
+      timers::RESOLVER_DECODED_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    drop(timer);
+    match decoded {
       Ok(decoded) => decoded,
       Err(e) => {
         self

@@ -27,6 +27,11 @@ pub async fn build_module_graph_pass(compilation: &mut Compilation) -> Result<()
 
 #[instrument("Compilation:build_module_graph",target=TRACING_BENCH_TARGET, skip_all)]
 pub async fn do_build_module_graph(compilation: &mut Compilation) -> Result<()> {
+  let _timer = rspack_cacheable::make_timers::MakeTimer::start(
+    compilation.options.name.as_deref(),
+    compilation.id().0,
+    make_monotonic_ns,
+  );
   // run module_executor
   if let Some(module_executor) = &mut compilation.module_executor {
     let mut module_executor = std::mem::take(module_executor);
@@ -113,4 +118,20 @@ pub async fn finish_build_module_graph(
     )],
   )
   .await
+}
+
+// Linux uses the same clock domain as process.hrtime.bigint().
+fn make_monotonic_ns() -> u64 {
+  #[cfg(any(target_os = "linux", target_os = "macos"))]
+  {
+    let mut time = libc::timespec {
+      tv_sec: 0,
+      tv_nsec: 0,
+    };
+    // SAFETY: the output points to an initialized timespec.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } == 0 {
+      return time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64;
+    }
+  }
+  0
 }

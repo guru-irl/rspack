@@ -173,7 +173,12 @@ impl Resolver {
     path: &Path,
     request: &str,
   ) -> Result<ResolveResult, ResolveInnerError> {
-    match self.resolver.resolve(path, request).await {
+    let _timer = rspack_cacheable::make_timers::RESOLVE.start();
+    let result = {
+      let _timer = rspack_cacheable::make_timers::RESOLVE_UNCACHED.start();
+      self.resolver.resolve(path, request).await
+    };
+    match result {
       Ok(r) => Ok(ResolveResult::Resource(Resource {
         path: r.path().to_path_buf().assert_utf8(),
         query: r.query().unwrap_or_default().to_string(),
@@ -197,9 +202,12 @@ impl Resolver {
   ) {
     let resolver = &self.resolver;
     let mut context = Default::default();
-    let result = resolver
-      .resolve_with_context(path, request, &mut context)
-      .await;
+    let result = {
+      let _timer = rspack_cacheable::make_timers::RESOLVE_UNCACHED.start();
+      resolver
+        .resolve_with_context(path, request, &mut context)
+        .await
+    };
     let dependencies = ResolveDependencies {
       file_dependencies: context.file_dependencies,
       missing_dependencies: context.missing_dependencies,
@@ -228,6 +236,7 @@ impl Resolver {
     Result<ResolveResult, ResolveInnerError>,
     ResolveDependencies,
   ) {
+    let _timer = rspack_cacheable::make_timers::RESOLVE.start();
     let cache = self.cache.read().clone();
     match cache {
       Some(cache) => {

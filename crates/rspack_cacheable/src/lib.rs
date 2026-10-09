@@ -10,6 +10,8 @@ pub use rspack_cacheable_macros::{
   enable_cacheable as cacheable, enable_cacheable_dyn as cacheable_dyn,
 };
 pub mod r#dyn;
+#[doc(hidden)]
+pub mod make_timers;
 pub mod utils;
 pub mod with;
 

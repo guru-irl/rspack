@@ -17,6 +17,10 @@ pub struct ProcessDependenciesTask {
 
 #[async_trait::async_trait]
 impl Task<TaskContext> for ProcessDependenciesTask {
+  fn make_timer_metric(&self) -> &'static rspack_cacheable::make_timers::Metric {
+    &rspack_cacheable::make_timers::MAIN_PROCESS_DEPENDENCIES
+  }
+
   fn get_task_type(&self) -> TaskType {
     TaskType::Main
   }

@@ -42,20 +42,27 @@ impl Task<TaskContext> for BuildTask {
     } = *self;
     let plugin_driver = build_context.plugin_driver.clone();
 
-    if let Some(module_build_cache) = &module_build_cache
-      && let Some(cached_module) = module_build_cache
+    if let Some(module_build_cache) = &module_build_cache {
+      let timer = rspack_cacheable::make_timers::RESTORE.start();
+      let result = module_build_cache
         .restore(
           &module,
           &build_context.file_system_info,
           &value_cache_versions,
         )
-        .await?
-    {
-      return Ok(vec![Box::new(BuildResultTask {
-        build_result: ModuleBuildResult::Cached(cached_module),
-        plugin_driver,
-        forwarded_ids,
-      })]);
+        .await;
+      if timer.is_some() && matches!(&result, Ok(Some(_))) {
+        rspack_cacheable::make_timers::RESTORE_HITS
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
+      drop(timer);
+      if let Some(cached_module) = result? {
+        return Ok(vec![Box::new(BuildResultTask {
+          build_result: ModuleBuildResult::Cached(cached_module),
+          plugin_driver,
+          forwarded_ids,
+        })]);
+      }
     }
 
     let build_start_time = module_build_cache.as_ref().map(|_| current_time());
@@ -101,6 +108,10 @@ pub(super) struct BuildResultTask {
 
 #[async_trait::async_trait]
 impl Task<TaskContext> for BuildResultTask {
+  fn make_timer_metric(&self) -> &'static rspack_cacheable::make_timers::Metric {
+    &rspack_cacheable::make_timers::MAIN_BUILD_RESULT
+  }
+
   fn get_task_type(&self) -> TaskType {
     TaskType::Main
   }

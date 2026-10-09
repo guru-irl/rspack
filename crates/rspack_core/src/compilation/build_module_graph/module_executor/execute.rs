@@ -188,6 +188,10 @@ impl ExecuteTask {
 
 #[async_trait::async_trait]
 impl Task<ExecutorTaskContext> for ExecuteTask {
+  fn make_timer_metric(&self) -> &'static rspack_cacheable::make_timers::Metric {
+    &rspack_cacheable::make_timers::MAIN_EXECUTE
+  }
+
   fn get_task_type(&self) -> TaskType {
     TaskType::Main
   }

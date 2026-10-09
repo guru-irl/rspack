@@ -723,6 +723,9 @@ impl ModuleGraph {
       .dependency_id_to_connection_id
       .insert(dependency_id, new_connection.id);
     self.insert_connection(new_connection);
+    if rspack_cacheable::make_timers::enabled() {
+      rspack_cacheable::make_timers::CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 
     Ok(())
   }
