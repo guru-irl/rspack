@@ -14,6 +14,7 @@ for (const name of ['left', 'right']) {
 fs.writeFileSync(path.join(fixture, 'delay.cjs'), `const path = require('node:path');\nmodule.exports = function(source) {\n const callback = this.async();\n setTimeout(() => callback(null, source), path.basename(this.resourcePath) === this.getOptions().delayed ? 100 : 0);\n};\n`);
 async function build(delayed, url) {
   const generated = {};
+  const moduleHashes = {};
   const compiler = rspack({
     context: fixture, mode: 'development', cache: false, devtool: false,
     entry: { left: './left.js', right: './right.js' },
@@ -24,11 +25,12 @@ async function build(delayed, url) {
     ] },
     plugins: [{ apply(compiler) {
       compiler.hooks.compilation.tap('CaptureGeneratedSource', compilation => {
-        compilation.hooks.afterCodeGeneration.tap('CaptureGeneratedSource', () => {
+        compilation.hooks.processAssets.tap('CaptureGeneratedSource', () => {
           for (const module of compilation.modules) {
             if (module.resource && /\/(left|right)\.js$/.test(module.resource)) {
               const source = compilation.codeGenerationResults.get(module, undefined).sources.get('javascript');
               generated[path.basename(module.resource)] = source.source().toString();
+              moduleHashes[path.basename(module.resource)] = compilation.chunkGraph.getModuleHash(module, undefined);
             }
           }
         });
@@ -39,7 +41,7 @@ async function build(delayed, url) {
   if (stats.hasErrors()) throw new Error(stats.toString({ all: false, errors: true }));
   const chunks = Array.from(stats.compilation.chunks, c => ({ id: c.id, hash: c.hash, contentHash: { ...c.contentHash } })).sort((a, b) => String(a.id).localeCompare(String(b.id)));
   const files = fs.readdirSync(path.join(fixture, 'dist')).sort().map(name => [name, crypto.createHash('sha256').update(fs.readFileSync(path.join(fixture, 'dist', name))).digest('hex')]);
-  const result = { fullHash: stats.hash, chunks, files, generated };
+  const result = { fullHash: stats.hash, chunks, files, generated, moduleHashes };
   await new Promise((resolve, reject) => compiler.close(err => err ? reject(err) : resolve()));
   return result;
 }
