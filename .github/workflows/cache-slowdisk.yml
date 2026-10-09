@@ -51,10 +51,10 @@ jobs:
           set -euo pipefail
           mkdir -p results results/temp slow-mount
           sha256sum --check artifacts/round2-hash.txt
-          sha256sum --check artifacts/round3-hash.txt
+          sha256sum --check artifacts/round4-hash.txt
           sha256sum --check artifacts/javascript-hash.txt
           test "$(tr -d '\n' < artifacts/round2-sha.txt)" = cd54a74cafbc4477fb732bf0146bad6fb218a9f6
-          test "$(tr -d '\n' < artifacts/round3-sha.txt)" = 6f6f7a9076d8b76c43e4c46be024fded987396f7
+          test "$(tr -d '\n' < artifacts/round4-sha.txt)" = 98cb37928bae5dfd7a368d7859fd06e61038dd5f
           tar -xzf artifacts/javascript.tar.gz
           cp artifacts/*-sha.txt artifacts/*-hash.txt artifacts/*-toolchain.txt artifacts/*-profile.txt results/
           git rev-parse HEAD > results/measurement-sha.txt
@@ -74,7 +74,7 @@ jobs:
           export FIXTURE="$GITHUB_WORKSPACE/fixture"
           export RSPACK_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js"
           export BINDING_ROUND2="$GITHUB_WORKSPACE/artifacts/round2.node"
-          export BINDING_ROUND3="$GITHUB_WORKSPACE/artifacts/round3.node"
+          export BINDING_ROUND4="$GITHUB_WORKSPACE/artifacts/round4.node"
           python3 .github/scripts/cache-slowdisk/measure.py
           python3 .github/scripts/cache-slowdisk/analyze.py results/runs.jsonl > results/summary.md
       - name: Final device record and cleanup

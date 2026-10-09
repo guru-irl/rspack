@@ -4,7 +4,7 @@ from pathlib import Path
 import statistics
 import sys
 
-ARMS = ['round3', 'round2', 'off']
+ARMS = ['round4', 'round2', 'off']
 FIELDS = [
     ('buildMs', 'Build ms', 1), ('makeMs', 'Make ms', 1), ('wallMs', 'Process wall ms', 1),
     ('userMs', 'User CPU ms', 1), ('systemMs', 'System CPU ms', 1),
@@ -43,17 +43,17 @@ def wilcoxon(differences):
 
 
 def validate(rows):
-    if len(rows) != 45:
-        raise ValueError(f'need 45 successful rows, got {len(rows)}')
-    keys = {(row['delayMs'], row['round'], row['arm']) for row in rows}
-    expected = set(itertools.product([0, 1, 3], range(1, 6), ARMS))
+    if len(rows) != 60:
+        raise ValueError(f'need 60 successful rows, got {len(rows)}')
+    keys = {(row['condition'], row['delayMs'], row['round'], row['arm']) for row in rows}
+    expected = {(condition, delay, repetition, arm) for condition, delay in [('evicted', 0), ('evicted', 1), ('evicted', 3), ('cached', 0)] for repetition in range(1, 6) for arm in ARMS}
     if keys != expected:
         raise ValueError('missing or duplicate arm/round/delay')
     graphs = {row['modules'] for row in rows}
     if len(graphs) != 1 or not graphs <= {72061, 36061}:
         raise ValueError('invalid graph counts')
     for row in rows:
-        if row['residencyPercent'] != 0 or row['counts'] != {'buildModule': 0, 'stillValidModule': row['modules']}:
+        if row['residencyPercent'] != (0 if row['condition'] == 'evicted' else 100) or row['counts'] != {'buildModule': 0, 'stillValidModule': row['modules']}:
             raise ValueError('invalid cold-page warm start')
         if row['arm'] == 'off' and row['prefetch']:
             raise ValueError('disabled prefetch logged')
@@ -62,42 +62,47 @@ def validate(rows):
                 raise ValueError(f'invalid metric {field}')
 
 
-def analyze(rows):
-    validate(rows)
-    print('# Fixed-latency warm-open comparison\n')
+def analyze_series(rows, condition):
+    print(f'# {condition.title()} warm-open comparison\n')
     print('All values are median [minimum, maximum], n=5 per arm and delay.\n')
     print('| Read delay ms | Arm | Build ms | Make ms | Wall ms | Peak RssAnon MiB | End RssAnon MiB | Read MiB |')
     print('| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |')
-    for delay in [0, 1, 3]:
+    for delay in sorted({row['delayMs'] for row in rows}):
         for arm in ARMS:
             group = [row for row in rows if row['delayMs'] == delay and row['arm'] == arm]
             metrics = [('buildMs', 1), ('makeMs', 1), ('wallMs', 1), ('rssAnonPeakKiB', 1/1024),
                        ('rssAnonEndKiB', 1/1024), ('readMiB', 1)]
             cells = [distribution([row[field] * scale for row in group]) for field, scale in metrics]
             print(f'| {delay} | {arm} | ' + ' | '.join(cells) + ' |')
-    for delay in [0, 1, 3]:
+    for delay in sorted({row['delayMs'] for row in rows}):
         print(f'\n## {delay} ms added read delay\n')
-        print('| Metric | Round 3 | Round 2 | Prefetch off |\n| --- | ---: | ---: | ---: |')
+        print('| Metric | Round 4 | Round 2 | Prefetch off |\n| --- | ---: | ---: | ---: |')
         for field, title, scale in FIELDS:
             cells = [distribution([row[field] * scale for row in rows if row['delayMs'] == delay and row['arm'] == arm]) for arm in ARMS]
             print(f'| {title} | ' + ' | '.join(cells) + ' |')
         print('\n### Paired differences\n')
-        print('Round 3 minus comparator within the same round; negative means lower. Exact two-sided Wilcoxon signed-rank p, average ranks for ties, zero differences omitted. With five nonzero pairs the minimum possible p is 0.0625.\n')
-        print('| Comparator | Metric | Difference | Wilcoxon p | Nonzero pairs |\n| --- | --- | ---: | ---: | ---: |')
+        print('Round 4 minus comparator within the same round; negative means lower. Exact two-sided Wilcoxon signed-rank p, average ranks for ties, zero differences omitted. With five nonzero pairs the minimum possible p is 0.0625.\n')
+        print('| Comparator | Metric | Difference | Wilcoxon p | Nonzero pairs | Lower / equal / higher |\n| --- | --- | ---: | ---: | ---: | --- |')
         lookup = {(row['round'], row['arm']): row for row in rows if row['delayMs'] == delay}
         for comparator in ['round2', 'off']:
             for field, title, scale in FIELDS:
-                diffs = [(lookup[rep, 'round3'][field] - lookup[rep, comparator][field]) * scale for rep in range(1, 6)]
+                diffs = [(lookup[rep, 'round4'][field] - lookup[rep, comparator][field]) * scale for rep in range(1, 6)]
                 p, n = wilcoxon(diffs)
-                print(f'| {comparator} | {title} | {distribution(diffs)} | {p:.4f} | {n} |')
+                print(f'| {comparator} | {title} | {distribution(diffs)} | {p:.4f} | {n} | {sum(x < 0 for x in diffs)} / {sum(x == 0 for x in diffs)} / {sum(x > 0 for x in diffs)} |')
         print('\n### Prefetch log\n')
-        print('| Round | Arm | Files | Bytes | Log time ms |\n| ---: | --- | ---: | ---: | ---: |')
+        print('| Round | Arm | Files | Bytes | Log time ms | Advice calls |\n| ---: | --- | ---: | ---: | ---: | ---: |')
         for row in sorted([row for row in rows if row['delayMs'] == delay], key=lambda row: (row['round'], ARMS.index(row['arm']))):
             if row['prefetch']:
                 for event in row['prefetch']:
-                    print(f'| {row["round"]} | {row["arm"]} | {event["files"]} | {event["bytes"]} | {event["ms"]} |')
+                    print(f'| {row["round"]} | {row["arm"]} | {event["files"]} | {event["bytes"]} | {event["ms"]} | {row['adviceCalls']} |')
             else:
-                print(f'| {row["round"]} | {row["arm"]} | absent | absent | absent |')
+                print(f'| {row["round"]} | {row["arm"]} | absent | absent | absent | 0 |')
+
+
+def analyze(rows):
+    validate(rows)
+    for condition in ['evicted', 'cached']:
+        analyze_series([row for row in rows if row['condition'] == condition], condition)
 
 
 if __name__ == '__main__':
