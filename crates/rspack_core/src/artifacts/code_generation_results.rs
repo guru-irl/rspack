@@ -365,11 +365,11 @@ impl CodeGenerationResultBuilder {
     self.value.hash = Some(hasher.digest(hash_digest));
   }
 
-  /// Concatenated modules already encode the generated module bodies into
-  /// `ConcatenatedModule::get_runtime_hash`, so we can reuse that digest here
-  /// and only mix in codegen-specific metadata instead of hashing the large
-  /// concatenated source again.
-  pub fn set_hash_for_concatenated_module(
+  /// Reuse the module hash that fingerprints the code generation inputs, mixing
+  /// in codegen-specific metadata without hashing the generated source graph.
+  /// This avoids rehashing concatenated bodies and excludes allocation-dependent
+  /// IDs in static URL placeholders that are replaced during chunk rendering.
+  pub fn set_hash_from_module_hash(
     &mut self,
     runtime_hash: &RspackHashDigest,
     hash_function: &HashFunction,
