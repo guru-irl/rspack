@@ -5,7 +5,7 @@ use std::{
   future::Future,
   sync::{
     Arc,
-    atomic::{AtomicPtr, AtomicU32},
+    atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
   },
 };
 
@@ -106,12 +106,21 @@ where
   CURRENT_COMPILER_CONTEXT.scope(Arc::new(CompilerContext::new()), f)
 }
 
+// Measurement-only process-global count. No environment disables this relaxed increment.
+static SPAWNED_TASKS: AtomicU64 = AtomicU64::new(0);
+
+/// Measurement-only count of tasks dispatched through Rspack context helpers.
+pub fn spawned_tasks_count() -> u64 {
+  SPAWNED_TASKS.load(Ordering::Relaxed)
+}
+
 pub fn spawn_in_compiler_context<F>(future: F) -> JoinHandle<F::Output>
 where
   F: Future + Send + 'static,
   F::Output: Send + 'static,
 {
   let compiler_context = CURRENT_COMPILER_CONTEXT.get();
+  SPAWNED_TASKS.fetch_add(1, Ordering::Relaxed);
 
   tokio::spawn(CURRENT_COMPILER_CONTEXT.scope(compiler_context, future))
 }
@@ -124,6 +133,7 @@ where
   F: Future + Send + 'static,
   F::Output: Send + 'static,
 {
+  SPAWNED_TASKS.fetch_add(1, Ordering::Relaxed);
   match CURRENT_COMPILER_CONTEXT.try_get() {
     Ok(compiler_context) => tokio::spawn(CURRENT_COMPILER_CONTEXT.scope(compiler_context, future)),
     Err(_) => tokio::spawn(future),

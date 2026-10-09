@@ -48,6 +48,9 @@ impl PassMarks {
       self.before.borrow_mut().take().map(|before| {
         let mut delta = serde_json::Map::new();
         for (key, value) in counters.as_object().expect("snapshot is an object") {
+          if key == "tokio_global_queue_depth" {
+            continue;
+          }
           delta.insert(
             key.clone(),
             serde_json::json!(
@@ -134,12 +137,11 @@ fn snapshot() -> serde_json::Value {
     "system_cpu_ns": system,
     "voluntary_context_switches": voluntary,
     "involuntary_context_switches": involuntary,
-    "tokio_spawned_tasks": metrics.spawned_tasks_count(),
+    "rspack_spawned_tasks": rspack_tasks::spawned_tasks_count(),
     "tokio_worker_parks": sum(tokio::runtime::RuntimeMetrics::worker_park_count),
     "tokio_worker_park_unparks": sum(tokio::runtime::RuntimeMetrics::worker_park_unpark_count),
-    "tokio_worker_steals": sum(tokio::runtime::RuntimeMetrics::worker_steal_count),
-    "tokio_worker_noops": sum(tokio::runtime::RuntimeMetrics::worker_noop_count),
-    "tokio_remote_schedules": metrics.remote_schedule_count(),
+    "tokio_worker_busy_ns": (0..workers).map(|worker| metrics.worker_total_busy_duration(worker).as_nanos() as u64).sum::<u64>(),
+    "tokio_global_queue_depth": metrics.global_queue_depth(),
   })
 }
 
