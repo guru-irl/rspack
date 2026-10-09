@@ -345,7 +345,7 @@ index 247250d..789e8cb 100644
      return callback(null, source, map)
  
 diff --git a/test/unit-tests/rspack/loaders/transform.test.ts b/test/unit-tests/rspack/loaders/transform.test.ts
-index c6e85b3..195ecf6 100644
+index c6e85b3..dd2b6d7 100644
 --- a/test/unit-tests/rspack/loaders/transform.test.ts
 +++ b/test/unit-tests/rspack/loaders/transform.test.ts
 @@ -1,8 +1,94 @@
@@ -387,7 +387,7 @@ index c6e85b3..195ecf6 100644
 +          name: 'lazy-filter',
 +          transform: hook,
 +          buildStart() { filter.id.include.push('*.js') },
-+        }))(undefined).apply(compiler as any)
++        }))({}).apply(compiler as any)
 +        expect(reads).toBe(0)
 +        await start!({ fileDependencies: new Set() })
 +        const rule = compiler.options.module.rules[0]
