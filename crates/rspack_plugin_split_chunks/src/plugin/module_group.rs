@@ -852,7 +852,7 @@ impl SplitChunksPlugin {
       .batch_getters
       .as_deref()
       .and_then(|getters| getters.get(indexed.cache_group_index as usize));
-    (is_default_module_layer_filter(&group.layer) || group.layer.is_native())
+    is_default_module_layer_filter(&group.layer)
       && !matches!(group.test, CacheGroupTest::Fn(_))
       && !group.chunk_filter.is_func()
       && !matches!(group.name, ChunkNameGetter::Fn(_))
@@ -930,13 +930,6 @@ impl SplitChunksPlugin {
           .as_ref();
         let mut name_for_condition = None;
         for (group, words) in &mut groups {
-          if !is_default_module_layer_filter(&group.layer)
-            && !group
-              .layer
-              .test_native(module.get_layer().map(|layer| layer.as_str()))
-          {
-            continue;
-          }
           let name = if matches!(
             group.test,
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
@@ -1017,13 +1010,11 @@ impl SplitChunksPlugin {
     // on Rayon instead of allocating and joining one Tokio task per module.
     let use_native_preparation = native_positions.len() == cache_groups.len();
     const TYPE_FILTER: u8 = 1;
-    const LAYER_FILTER: u8 = 2;
     let native_filters = native_positions
       .iter()
       .map(|position| {
         let group = cache_groups[*position].cache_group;
-        (u8::from(!is_default_module_type_filter(&group.r#type)) * TYPE_FILTER)
-          | (u8::from(!is_default_module_layer_filter(&group.layer)) * LAYER_FILTER)
+        u8::from(!is_default_module_type_filter(&group.r#type)) * TYPE_FILTER
       })
       .collect::<Vec<_>>();
     let candidates = native_matches.as_ref().and_then(|matches| {
@@ -1071,13 +1062,6 @@ impl SplitChunksPlugin {
           // A custom type filter is a closure. Keep its calls, predicate order
           // and stage-local module-chunk checks exactly as before.
           if filters & TYPE_FILTER != 0 && !(cache_group.r#type)(module) {
-            continue;
-          }
-          if filters & LAYER_FILTER != 0
-            && !cache_group
-              .layer
-              .test_native(module.get_layer().map(|layer| layer.as_str()))
-          {
             continue;
           }
           let name = if matches!(

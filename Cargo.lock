@@ -4238,7 +4238,6 @@ dependencies = [
 name = "rspack_core"
 version = "0.102.8"
 dependencies = [
- "libc",
  "anymap3",
  "arc-swap",
  "async-recursion",
@@ -4261,6 +4260,7 @@ dependencies = [
  "inventory",
  "itertools 0.14.0",
  "json",
+ "libc",
  "memchr",
  "mime_guess",
  "napi",
@@ -4644,6 +4644,7 @@ dependencies = [
  "futures",
  "rayon",
  "rspack_tasks",
+ "serde_json",
  "tokio",
 ]
 

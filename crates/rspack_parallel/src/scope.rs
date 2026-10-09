@@ -239,18 +239,34 @@ where
   output
 }
 
-fn record_tasks(site: &str, items: usize, tasks: usize) {
+static MARK_RECORD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn append_mark_record(
+  path: &std::path::Path,
+  record: &serde_json::Value,
+) -> std::io::Result<()> {
   use std::io::Write;
+  let mut bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+  bytes.push(b'\n');
+  let _guard = MARK_RECORD_MUTEX
+    .lock()
+    .map_err(|_| std::io::Error::other("measurement mark output lock is poisoned"))?;
+  std::fs::OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(path)?
+    .write_all(&bytes)
+}
+
+fn record_tasks(site: &str, items: usize, tasks: usize) {
   if let Some(path) = std::env::var_os("RSPACK_RAYON_MARKS").filter(|p| !p.is_empty()) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(path)
-    {
-      let _ = writeln!(
-        file,
-        "{{\"source\":\"seal_tasks\",\"site\":\"{site}\",\"items\":{items},\"tasks\":{tasks}}}"
-      );
-    }
+    let record = serde_json::json!({
+      "pid": std::process::id(),
+      "source": "seal_tasks",
+      "site": site,
+      "items": items,
+      "tasks": tasks,
+    });
+    let _ = append_mark_record(std::path::Path::new(&path), &record);
   }
 }

@@ -1,9 +1,7 @@
 use std::{
   cell::RefCell,
-  fs::OpenOptions,
-  io::Write,
   path::{Path, PathBuf},
-  sync::{LazyLock, Mutex},
+  sync::LazyLock,
 };
 
 use crate::Compilation;
@@ -13,8 +11,6 @@ static OUTPUT: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
     .filter(|path| !path.is_empty())
     .map(PathBuf::from)
 });
-
-static OUTPUT_MUTEX: Mutex<()> = Mutex::new(());
 
 pub(super) struct PassMarks {
   output: &'static Path,
@@ -83,22 +79,8 @@ impl PassMarks {
       "event": event,
       "hook": format!("{pass}:{event}"),
     });
-    let mut bytes = line.to_string().into_bytes();
-    bytes.push(b'\n');
-    let Ok(_guard) = OUTPUT_MUTEX.lock() else {
-      eprintln!("Rayon pass marks output lock is poisoned");
-      return;
-    };
-    if let Ok(mut output) = OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(self.output)
-    {
-      if output.write_all(&bytes).is_err() {
-        eprintln!("Rayon pass mark could not be written");
-      }
-    } else {
-      eprintln!("Rayon pass marks output could not be opened");
+    if rspack_parallel::scope::append_mark_record(self.output, &line).is_err() {
+      eprintln!("Rayon pass mark could not be written");
     }
   }
 }

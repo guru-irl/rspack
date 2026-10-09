@@ -15,6 +15,7 @@ class RayonMarksPlugin {
     const mark = hook => {
       const row = {
         ...(typeof getContext === 'function' ? getContext() : {}),
+        pid: process.pid,
         timestamp_ns: process.hrtime.bigint().toString(),
         compiler: compiler.name || null,
         compiler_id: id,
@@ -26,7 +27,8 @@ class RayonMarksPlugin {
         hook,
       };
       // One append syscall per complete JSON line. No shared buffered writer.
-      fs.appendFileSync(file, `${JSON.stringify(row)}\n`);
+      const line = `${JSON.stringify(row)}\n`;
+      fs.appendFileSync(file, line);
     };
     compiler.hooks.compile.tap({ name: 'RayonMarksPlugin', stage: -100000 }, () => {
       build++;
