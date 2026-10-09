@@ -4238,6 +4238,7 @@ dependencies = [
 name = "rspack_core"
 version = "0.102.8"
 dependencies = [
+ "libc",
  "anymap3",
  "arc-swap",
  "async-recursion",
@@ -4640,6 +4641,7 @@ dependencies = [
 name = "rspack_parallel"
 version = "0.102.8"
 dependencies = [
+ "futures",
  "rayon",
  "rspack_tasks",
  "tokio",

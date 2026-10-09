@@ -194,96 +194,97 @@ pub async fn process_modules_runtime_requirements(
   let start = logger.time("runtime requirements.modules");
 
   let compilation_ref = &*compilation;
-  let module_results = rspack_parallel::scope::<_, Result<_>>(|token| {
-    modules
-      .into_iter()
-      .filter(|module| {
-        compilation
-          .build_chunk_graph_artifact
-          .chunk_graph
-          .get_number_of_module_chunks(*module)
-          > 0
-      })
-      .for_each(|module| {
-        let s = unsafe { token.used((compilation_ref, &plugin_driver)) };
-        s.spawn(move |(compilation, plugin_driver)| async move {
-          let mut map = RuntimeSpecMap::new();
-          let runtimes = compilation
+  let module_results =
+    rspack_parallel::scope_batched::<_, Result<_>>("runtime_requirements.modules", |token| {
+      modules
+        .into_iter()
+        .filter(|module| {
+          compilation
             .build_chunk_graph_artifact
             .chunk_graph
-            .get_module_runtimes_iter(
-              module,
-              &compilation.build_chunk_graph_artifact.chunk_by_ukey,
-            );
-          for runtime in runtimes {
-            let runtime_requirements = compilation
-              .process_runtime_requirements_cache_artifact
-              .use_cache(module, runtime, compilation, || async {
-                let mut runtime_requirements = compilation
-                  .code_generation_results
-                  .get_runtime_requirements(&module, Some(runtime));
+            .get_number_of_module_chunks(*module)
+            > 0
+        })
+        .for_each(|module| {
+          let s = unsafe { token.used((compilation_ref, &plugin_driver)) };
+          s.spawn(move |(compilation, plugin_driver)| async move {
+            let mut map = RuntimeSpecMap::new();
+            let runtimes = compilation
+              .build_chunk_graph_artifact
+              .chunk_graph
+              .get_module_runtimes_iter(
+                module,
+                &compilation.build_chunk_graph_artifact.chunk_by_ukey,
+              );
+            for runtime in runtimes {
+              let runtime_requirements = compilation
+                .process_runtime_requirements_cache_artifact
+                .use_cache(module, runtime, compilation, || async {
+                  let mut runtime_requirements = compilation
+                    .code_generation_results
+                    .get_runtime_requirements(&module, Some(runtime));
 
-                plugin_driver
-                  .compilation_hooks
-                  .additional_module_runtime_requirements
-                  .call(compilation, &module, &mut runtime_requirements)
-                  .await
-                  .map_err(|e| {
-                    e.wrap_err(
+                  plugin_driver
+                    .compilation_hooks
+                    .additional_module_runtime_requirements
+                    .call(compilation, &module, &mut runtime_requirements)
+                    .await
+                    .map_err(|e| {
+                      e.wrap_err(
                       "caused by plugins in Compilation.hooks.additionalModuleRuntimeRequirements",
                     )
-                  })?;
+                    })?;
 
-                process_runtime_requirement_hook(
-                  compilation,
-                  &mut runtime_requirements,
-                  &mut (),
-                  {
-                    let plugin_driver = plugin_driver.clone();
-                    move |compilation,
-                          all_runtime_requirements,
-                          runtime_requirements,
-                          runtime_requirements_mut,
-                          _| {
-                      Box::pin({
-                        let plugin_driver = plugin_driver.clone();
-                        async move {
-                          plugin_driver
-                            .compilation_hooks
-                            .runtime_requirement_in_module
-                            .call(
-                              compilation,
-                              &module,
-                              all_runtime_requirements,
-                              runtime_requirements,
-                              runtime_requirements_mut,
-                            )
-                            .await
-                            .map_err(|e| {
-                              e.wrap_err(
+                  process_runtime_requirement_hook(
+                    compilation,
+                    &mut runtime_requirements,
+                    &mut (),
+                    {
+                      let plugin_driver = plugin_driver.clone();
+                      move |compilation,
+                            all_runtime_requirements,
+                            runtime_requirements,
+                            runtime_requirements_mut,
+                            _| {
+                        Box::pin({
+                          let plugin_driver = plugin_driver.clone();
+                          async move {
+                            plugin_driver
+                              .compilation_hooks
+                              .runtime_requirement_in_module
+                              .call(
+                                compilation,
+                                &module,
+                                all_runtime_requirements,
+                                runtime_requirements,
+                                runtime_requirements_mut,
+                              )
+                              .await
+                              .map_err(|e| {
+                                e.wrap_err(
                                 "caused by plugins in Compilation.hooks.runtimeRequirementInModule",
                               )
-                            })?;
-                          Ok(())
-                        }
-                      })
-                    }
-                  },
-                )
+                              })?;
+                            Ok(())
+                          }
+                        })
+                      }
+                    },
+                  )
+                  .await?;
+                  Ok(runtime_requirements)
+                })
                 .await?;
-                Ok(runtime_requirements)
-              })
-              .await?;
-            map.set(runtime.clone(), runtime_requirements);
-          }
-          Ok((module, map))
+              map.set(runtime.clone(), runtime_requirements);
+            }
+            Ok((module, map))
+          });
         });
-      });
-  })
-  .await
-  .into_iter()
-  .map(|r| r.to_rspack_result())
-  .collect::<Result<Vec<_>>>()?;
+    })
+    .await
+    .into_iter()
+    .map(|r| r.to_rspack_result())
+    .collect::<Result<Vec<_>>>()?;
 
   for entry in module_results {
     let (module, map) = entry?;

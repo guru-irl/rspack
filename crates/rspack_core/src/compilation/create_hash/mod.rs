@@ -158,28 +158,29 @@ pub async fn create_hash(
 
   // create hash for runtime modules in other chunks
   let compilation_ref = &*compilation;
-  let other_chunk_runtime_module_hashes = rspack_parallel::scope::<_, Result<_>>(|token| {
-    other_chunks
-      .iter()
-      .flat_map(|chunk| {
-        compilation
-          .build_chunk_graph_artifact
-          .chunk_graph
-          .get_chunk_runtime_modules_iterable(chunk)
-      })
-      .for_each(|runtime_module_identifier| {
-        let s = unsafe { token.used((compilation_ref, runtime_module_identifier)) };
-        s.spawn(|(compilation, runtime_module_identifier)| async {
-          let runtime_module = &compilation.runtime_modules[runtime_module_identifier];
-          let digest = runtime_module.get_runtime_hash(compilation, None).await?;
-          Ok((*runtime_module_identifier, digest))
-        });
-      })
-  })
-  .await
-  .into_iter()
-  .map(|res| res.to_rspack_result())
-  .collect::<Result<Vec<_>>>()?;
+  let other_chunk_runtime_module_hashes =
+    rspack_parallel::scope_batched::<_, Result<_>>("hash.other_runtime_modules", |token| {
+      other_chunks
+        .iter()
+        .flat_map(|chunk| {
+          compilation
+            .build_chunk_graph_artifact
+            .chunk_graph
+            .get_chunk_runtime_modules_iterable(chunk)
+        })
+        .for_each(|runtime_module_identifier| {
+          let s = unsafe { token.used((compilation_ref, runtime_module_identifier)) };
+          s.spawn(|(compilation, runtime_module_identifier)| async {
+            let runtime_module = &compilation.runtime_modules[runtime_module_identifier];
+            let digest = runtime_module.get_runtime_hash(compilation, None).await?;
+            Ok((*runtime_module_identifier, digest))
+          });
+        })
+    })
+    .await
+    .into_iter()
+    .map(|res| res.to_rspack_result())
+    .collect::<Result<Vec<_>>>()?;
 
   for res in other_chunk_runtime_module_hashes {
     let (runtime_module_identifier, digest) = res?;
@@ -190,19 +191,20 @@ pub async fn create_hash(
 
   // create hash for other chunks
   let compilation_ref = &*compilation;
-  let other_chunks_hash_results = rspack_parallel::scope::<_, Result<_>>(|token| {
-    for chunk in other_chunks {
-      let s = unsafe { token.used((compilation_ref, chunk, plugin_driver.clone())) };
-      s.spawn(|(compilation, chunk, plugin_driver)| async move {
-        let hash_result = process_chunk_hash(compilation, *chunk, &plugin_driver).await?;
-        Ok((*chunk, hash_result))
-      });
-    }
-  })
-  .await
-  .into_iter()
-  .map(|res| res.to_rspack_result())
-  .collect::<Result<Vec<_>>>()?;
+  let other_chunks_hash_results =
+    rspack_parallel::scope_batched::<_, Result<_>>("hash.other_chunks", |token| {
+      for chunk in other_chunks {
+        let s = unsafe { token.used((compilation_ref, chunk, plugin_driver.clone())) };
+        s.spawn(|(compilation, chunk, plugin_driver)| async move {
+          let hash_result = process_chunk_hash(compilation, *chunk, &plugin_driver).await?;
+          Ok((*chunk, hash_result))
+        });
+      }
+    })
+    .await
+    .into_iter()
+    .map(|res| res.to_rspack_result())
+    .collect::<Result<Vec<_>>>()?;
 
   try_process_chunk_hash_results(compilation, other_chunks_hash_results)?;
   logger.time_end(start);
@@ -337,24 +339,25 @@ pub async fn create_hash(
   let start = logger.time("hashing: hash runtime chunks");
   for runtime_chunk_ukey in runtime_chunks {
     let compilation_ref = &*compilation;
-    let runtime_module_hashes = rspack_parallel::scope::<_, Result<_>>(|token| {
-      compilation
-        .build_chunk_graph_artifact
-        .chunk_graph
-        .get_chunk_runtime_modules_iterable(&runtime_chunk_ukey)
-        .for_each(|runtime_module_identifier| {
-          let s = unsafe { token.used((compilation_ref, runtime_module_identifier)) };
-          s.spawn(|(compilation, runtime_module_identifier)| async {
-            let runtime_module = &compilation.runtime_modules[runtime_module_identifier];
-            let digest = runtime_module.get_runtime_hash(compilation, None).await?;
-            Ok((*runtime_module_identifier, digest))
-          });
-        })
-    })
-    .await
-    .into_iter()
-    .map(|res| res.to_rspack_result())
-    .collect::<Result<Vec<_>>>()?;
+    let runtime_module_hashes =
+      rspack_parallel::scope_batched::<_, Result<_>>("hash.runtime_chunk_modules", |token| {
+        compilation
+          .build_chunk_graph_artifact
+          .chunk_graph
+          .get_chunk_runtime_modules_iterable(&runtime_chunk_ukey)
+          .for_each(|runtime_module_identifier| {
+            let s = unsafe { token.used((compilation_ref, runtime_module_identifier)) };
+            s.spawn(|(compilation, runtime_module_identifier)| async {
+              let runtime_module = &compilation.runtime_modules[runtime_module_identifier];
+              let digest = runtime_module.get_runtime_hash(compilation, None).await?;
+              Ok((*runtime_module_identifier, digest))
+            });
+          })
+      })
+      .await
+      .into_iter()
+      .map(|res| res.to_rspack_result())
+      .collect::<Result<Vec<_>>>()?;
 
     for res in runtime_module_hashes {
       let (mid, digest) = res?;
@@ -475,7 +478,7 @@ pub async fn create_hash(
 #[instrument(skip_all)]
 pub async fn runtime_modules_code_generation(compilation: &mut Compilation) -> Result<()> {
   let compilation_ref = &*compilation;
-  let results = rspack_parallel::scope::<_, Result<_>>(|token| {
+  let results = rspack_parallel::scope_batched::<_, Result<_>>("hash.runtime_codegen", |token| {
     compilation
       .runtime_modules
       .iter()

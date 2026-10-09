@@ -172,7 +172,7 @@ pub(crate) async fn code_generation_modules(
   }
 
   let compilation_ref = &*compilation;
-  let results = rspack_parallel::scope::<_, _>(|token| {
+  let results = rspack_parallel::scope_batched::<_, _>("code_generation.jobs", |token| {
     jobs.into_iter().for_each(|job| {
       // SAFETY: await immediately and trust caller to poll future entirely
       let s = unsafe {

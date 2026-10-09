@@ -1,16 +1,21 @@
-use std::{cell::RefCell, future::Future, marker::PhantomData, pin::Pin};
+use std::{cell::RefCell, future::Future, marker::PhantomData, panic::AssertUnwindSafe, pin::Pin};
 
+use futures::FutureExt;
 use tokio::task::{JoinError, JoinHandle};
+
+type ScopedFuture<O> = Pin<Box<dyn Future<Output = O> + Send + 'static>>;
 
 /// Scope Token
 pub struct Token<'scope, 'spawner, O> {
   list: &'spawner RefCell<Vec<JoinHandle<O>>>,
+  queued: Option<&'spawner RefCell<Vec<ScopedFuture<O>>>>,
   _phantom: PhantomData<&'scope mut &'scope ()>,
 }
 
 /// Scope Spawner
 pub struct Spawner<'scope, 'spawner, T, O> {
   list: &'spawner RefCell<Vec<JoinHandle<O>>>,
+  queued: Option<&'spawner RefCell<Vec<ScopedFuture<O>>>>,
   used: T,
   _phantom: PhantomData<&'scope mut &'scope ()>,
 }
@@ -95,6 +100,7 @@ where
 
   let token = Token {
     list: &list,
+    queued: None,
     _phantom: PhantomData,
   };
 
@@ -125,6 +131,7 @@ impl<'scope, 'spawner, O> Token<'scope, 'spawner, O> {
   pub unsafe fn used<T: 'scope>(&self, used: T) -> Spawner<'scope, 'spawner, T, O> {
     Spawner {
       list: self.list,
+      queued: self.queued,
       used,
       _phantom: PhantomData,
     }
@@ -151,7 +158,99 @@ impl<'scope, T, O> Spawner<'scope, '_, T, O> {
     let fut: Pin<Box<dyn Future<Output = O> + Send + 'static>> =
       unsafe { std::mem::transmute(fut) };
 
+    if let Some(queued) = self.queued {
+      queued.borrow_mut().push(fut);
+      return;
+    }
+
     let j = rspack_tasks::spawn_in_compiler_context(fut);
     self.list.borrow_mut().push(j);
+  }
+}
+
+/// Spawn contiguous batches of scoped futures, preserving submission order.
+///
+/// Items in each batch are awaited sequentially. The same lifetime and polling
+/// requirements as [`scope`] apply. Each item is polled in the compiler context.
+pub async fn scope_batched<'scope, F, O>(site: &'static str, f: F) -> Vec<Result<O, JoinError>>
+where
+  for<'spawner> F: FnOnce(Token<'scope, 'spawner, O>),
+  O: Send + 'static,
+{
+  // Measurement only: off must enter the original per-item scope, not batches of one.
+  if std::env::var_os("RSPACK_SEAL_TASK_BATCH").is_some_and(|v| v == "0") {
+    return scope(|token| {
+      let list = token.list;
+      f(token);
+      record_tasks(site, list.borrow().len(), list.borrow().len());
+    })
+    .await;
+  }
+
+  struct Guard;
+  impl Drop for Guard {
+    fn drop(&mut self) {
+      std::process::abort();
+    }
+  }
+  let guard = Guard;
+  let list = RefCell::new(Vec::new());
+  let queued = RefCell::new(Vec::new());
+  f(Token {
+    list: &list,
+    queued: Some(&queued),
+    _phantom: PhantomData,
+  });
+  let queued = queued.into_inner();
+  let n = queued.len();
+  let workers = tokio::runtime::Handle::current().metrics().num_workers();
+  let batch_size = n.div_ceil(workers.saturating_mul(4).max(1)).max(1);
+  let mut tasks = Vec::with_capacity(n.div_ceil(batch_size));
+  let mut items = queued.into_iter();
+  while items.len() > 0 {
+    let batch: Vec<_> = items.by_ref().take(batch_size).collect();
+    tasks.push(rspack_tasks::spawn_in_compiler_context(async move {
+      let mut results = Vec::with_capacity(batch.len());
+      for item in batch {
+        // One panicking item must not drop the remaining items in its batch.
+        // Re-raise it in a Tokio task to retain scope's JoinError interface.
+        let result = match AssertUnwindSafe(item).catch_unwind().await {
+          Ok(value) => Ok(value),
+          Err(panic) => {
+            rspack_tasks::spawn_in_compiler_context(async move { std::panic::resume_unwind(panic) })
+              .await
+          }
+        };
+        results.push(result);
+      }
+      results
+    }));
+  }
+  record_tasks(site, n, tasks.len());
+  let mut output = Vec::with_capacity(n);
+  for task in tasks {
+    match task.await {
+      Ok(results) => output.extend(results),
+      Err(error) => output.push(Err(error)),
+    }
+  }
+  #[allow(clippy::disallowed_methods)]
+  std::mem::forget(guard);
+  output
+}
+
+fn record_tasks(site: &str, items: usize, tasks: usize) {
+  use std::io::Write;
+  if let Some(path) = std::env::var_os("RSPACK_RAYON_MARKS").filter(|p| !p.is_empty()) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(path)
+    {
+      let _ = writeln!(
+        file,
+        "{{\"source\":\"seal_tasks\",\"site\":\"{site}\",\"items\":{items},\"tasks\":{tasks}}}"
+      );
+    }
   }
 }

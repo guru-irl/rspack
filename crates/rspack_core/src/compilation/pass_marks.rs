@@ -1,4 +1,5 @@
 use std::{
+  cell::RefCell,
   fs::OpenOptions,
   io::Write,
   path::{Path, PathBuf},
@@ -18,6 +19,7 @@ pub(super) struct PassMarks {
   compiler: String,
   compiler_id: u32,
   compilation_id: u32,
+  before: RefCell<Option<serde_json::Value>>,
 }
 
 impl PassMarks {
@@ -36,12 +38,36 @@ impl PassMarks {
         .unwrap_or_else(|| format!("compiler-{compiler_id}")),
       compiler_id,
       compilation_id: compilation.id().0,
+      before: RefCell::new(None),
     })
   }
 
   pub(super) fn mark(&self, pass: &str, event: &str) {
+    let counters = snapshot();
+    let delta = if event == "end" {
+      self.before.borrow_mut().take().map(|before| {
+        let mut delta = serde_json::Map::new();
+        for (key, value) in counters.as_object().expect("snapshot is an object") {
+          delta.insert(
+            key.clone(),
+            serde_json::json!(
+              value
+                .as_u64()
+                .expect("counter")
+                .saturating_sub(before[key].as_u64().expect("counter"))
+            ),
+          );
+        }
+        serde_json::Value::Object(delta)
+      })
+    } else {
+      self.before.replace(Some(counters.clone()));
+      None
+    };
     let line = serde_json::json!({
-      "timestamp_ns": now_ns().to_string(),
+      "timestamp_ns": counters["wall_ns"].as_u64().expect("clock").to_string(),
+      "counters": counters,
+      "delta": delta,
       "compiler": self.compiler,
       "compiler_id": format!("rust:{}", self.compiler_id),
       "compilation_id": self.compilation_id,
@@ -91,4 +117,49 @@ fn now_ns() -> u64 {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn now_ns() -> u64 {
   0
+}
+
+fn snapshot() -> serde_json::Value {
+  let metrics = tokio::runtime::Handle::current().metrics();
+  let workers = metrics.num_workers();
+  let sum = |read: fn(&tokio::runtime::RuntimeMetrics, usize) -> u64| {
+    (0..workers)
+      .map(|worker| read(&metrics, worker))
+      .sum::<u64>()
+  };
+  let (user, system, voluntary, involuntary) = process_usage();
+  serde_json::json!({
+    "wall_ns": now_ns(),
+    "user_cpu_ns": user,
+    "system_cpu_ns": system,
+    "voluntary_context_switches": voluntary,
+    "involuntary_context_switches": involuntary,
+    "tokio_spawned_tasks": metrics.spawned_tasks_count(),
+    "tokio_worker_parks": sum(tokio::runtime::RuntimeMetrics::worker_park_count),
+    "tokio_worker_park_unparks": sum(tokio::runtime::RuntimeMetrics::worker_park_unpark_count),
+    "tokio_worker_steals": sum(tokio::runtime::RuntimeMetrics::worker_steal_count),
+    "tokio_worker_noops": sum(tokio::runtime::RuntimeMetrics::worker_noop_count),
+    "tokio_remote_schedules": metrics.remote_schedule_count(),
+  })
+}
+
+#[cfg(unix)]
+fn process_usage() -> (u64, u64, u64, u64) {
+  let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+  assert_eq!(
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) },
+    0,
+    "process usage unavailable"
+  );
+  let ns = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1_000;
+  (
+    ns(usage.ru_utime),
+    ns(usage.ru_stime),
+    usage.ru_nvcsw as u64,
+    usage.ru_nivcsw as u64,
+  )
+}
+#[cfg(not(unix))]
+fn process_usage() -> (u64, u64, u64, u64) {
+  (0, 0, 0, 0)
 }
