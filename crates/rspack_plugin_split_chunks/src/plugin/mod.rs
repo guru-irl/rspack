@@ -183,6 +183,7 @@ impl SplitChunksPlugin {
 
     let start = logger.time("prepare cache groups");
     let mut priority_cache_groups = vec![];
+    let mut precompute_groups = vec![false; self.cache_groups.len()];
 
     for (priority, cache_groups) in &self
       .cache_groups
@@ -198,7 +199,16 @@ impl SplitChunksPlugin {
       })
       .chunk_by(|v| v.cache_group.priority)
     {
-      priority_cache_groups.push((priority, cache_groups.into_iter().collect::<Vec<_>>()));
+      let cache_groups = cache_groups.into_iter().collect::<Vec<_>>();
+      // A custom type filter or any callback keeps the entire stage's original
+      // evaluation path, including its module-chunk checks and predicate order.
+      let precompute = self.can_precompute_native_cache_groups(&cache_groups);
+      if precompute {
+        for indexed in &cache_groups {
+          precompute_groups[indexed.cache_group_index as usize] = true;
+        }
+      }
+      priority_cache_groups.push((priority, cache_groups, precompute));
     }
 
     let mut max_size_setting_map: FxHashMap<ChunkUkey, MaxSizeSetting> = Default::default();
@@ -210,8 +220,15 @@ impl SplitChunksPlugin {
     logger.time_end(start);
 
     let start = logger.time("process cache groups");
+    let mut native_matches = precompute_groups
+      .iter()
+      .any(|precompute| *precompute)
+      .then(|| {
+        self.prepare_native_cache_group_matches(&all_modules, &precompute_groups, compilation)
+      });
+    drop(precompute_groups);
     let priority_len = priority_cache_groups.len();
-    for (index, (_, cache_groups)) in priority_cache_groups.into_iter().enumerate() {
+    for (index, (_, cache_groups, precompute)) in priority_cache_groups.into_iter().enumerate() {
       for (module, removed) in removed_module_chunks.drain() {
         let remaining = &mut module_chunks[module_indices[&module]];
         for chunk in removed {
@@ -300,12 +317,22 @@ impl SplitChunksPlugin {
         .prepare_module_group_map(
           &combinator,
           &all_modules,
-          cache_groups,
+          &cache_groups,
+          if precompute {
+            native_matches.as_deref()
+          } else {
+            None
+          },
           compilation,
           available_module_chunks,
           &chunk_index_map,
         )
         .await?;
+      if let Some(matches) = &mut native_matches {
+        for indexed in &cache_groups {
+          matches[indexed.cache_group_index as usize] = None;
+        }
+      }
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
       module_group_map
