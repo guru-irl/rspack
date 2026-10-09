@@ -93,6 +93,25 @@ def probe(seed, root, results):
         raise RuntimeError(f"positive control incomplete: {positive}")
     (results / "probe-positive.json").write_text(json.dumps(positive, indent=2))
     print(json.dumps({"sysfs": topology, "coverage": [{k: r[k] for k in ["rangeKiB", "sequential", "calls", "loopMs", "settled"]} for r in rows]}, indent=2))
+    cached = []
+    size = 128 * 1024
+    total_bytes = target.stat().st_size
+    for repetition in range(5):
+        before = residency(root)
+        assert before["percent"] == 100
+        with target.open("rb") as f:
+            start = time.monotonic_ns()
+            calls = 0
+            for offset in range(0, total_bytes, size):
+                os.posix_fadvise(f.fileno(), offset, min(size, total_bytes-offset), os.POSIX_FADV_WILLNEED)
+                calls += 1
+            loop_ms = (time.monotonic_ns()-start)/1e6
+        after = residency(root)
+        assert after["percent"] == 100
+        cached.append({"round": repetition+1, "rangeKiB": 128, "calls": calls, "loopMs": loop_ms,
+                       "beforePercent": before["percent"], "afterPercent": after["percent"]})
+    (results / "probe-cached.json").write_text(json.dumps(cached, indent=2))
+    print(json.dumps({"cached128KiB": cached}, indent=2))
     target.unlink()
 
 
