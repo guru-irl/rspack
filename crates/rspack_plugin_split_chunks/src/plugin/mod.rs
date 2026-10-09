@@ -218,8 +218,11 @@ impl SplitChunksPlugin {
       .iter()
       .map(|(_, groups, precompute)| precompute.then_some(groups.as_slice()))
       .collect::<Vec<_>>();
-    let native_matches =
-      self.prepare_native_cache_group_matches(&all_modules, &stages, compilation);
+    let native_matches = if stages.iter().any(Option::is_some) {
+      self.prepare_native_cache_group_matches(&all_modules, &stages, compilation)
+    } else {
+      stages.iter().map(|_| None).collect()
+    };
     let priority_len = priority_cache_groups.len();
     for (index, ((_, cache_groups, _), native_matches)) in priority_cache_groups
       .into_iter()

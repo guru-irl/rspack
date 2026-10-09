@@ -29,4 +29,6 @@ jobs:
         with:
           name: native-matches-macos-arm64
           path: .bench-native-matches/
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14

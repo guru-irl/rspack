@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 test "$(uname -m)" = arm64
+printf "Runner logical CPUs: %s\n" "$(sysctl -n hw.logicalcpu)"
 BASE=60fd7496544878aea7aca8bd2d876d7518297c08
 CHANGE=$(cat scripts/native-matches-bench/change.sha)
 ROOT=$PWD/.bench-native-matches
@@ -25,7 +26,9 @@ pnpm --dir crates/node_binding run build:ci > "$ROOT/change-build.log" 2>&1
 cp crates/node_binding/rspack.darwin-arm64.node "$ROOT/artifacts/change/binding.node"
 mkdir -p "$ROOT/fixture"
 cp "$ROOT/scripts/gen.mjs" "$ROOT/scripts/run.mjs" "$ROOT/fixture/"
+node "$ROOT/scripts/qualifying-stages.cjs" "$ROOT/fixture/run.mjs" > "$ROOT/qualifying-stages.json"
+cat "$ROOT/qualifying-stages.json"
 node "$ROOT/fixture/gen.mjs" --modules 60000
-python3 "$ROOT/scripts/macos-series.py" "$ROOT" "$PWD/packages/rspack"
+python3 "$ROOT/scripts/macos-series-aa.py" "$ROOT" "$PWD/packages/rspack"
 # Keep only public synthetic measurements, not multi-GB build artifacts.
 rm -rf "$ROOT/target" "$ROOT/fixture/src" "$ROOT/fixture/dist" "$ROOT/artifacts/base/binding.node" "$ROOT/artifacts/change/binding.node"

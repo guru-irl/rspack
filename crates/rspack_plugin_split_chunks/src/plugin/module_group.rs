@@ -818,6 +818,10 @@ impl Combinator {
   }
 }
 
+fn matches_all_native_modules(group: &CacheGroup) -> bool {
+  is_default_module_layer_filter(&group.layer) && matches!(group.test, CacheGroupTest::Enabled)
+}
+
 impl SplitChunksPlugin {
   // #[tracing::instrument(skip_all)]
   pub(crate) fn find_best_module_group(
@@ -862,6 +866,7 @@ impl SplitChunksPlugin {
     cache_groups.iter().all(|indexed| {
       self.is_native_cache_group(indexed)
         && is_default_module_type_filter(&indexed.cache_group.r#type)
+        && !matches_all_native_modules(indexed.cache_group)
     })
   }
 
@@ -871,21 +876,14 @@ impl SplitChunksPlugin {
     stages: &[Option<&[IndexedCacheGroup<'_>]>],
     compilation: &Compilation,
   ) -> Vec<Option<Vec<NativeCacheGroupMatches>>> {
-    let matches_all = |group: &CacheGroup| {
-      is_default_module_layer_filter(&group.layer) && matches!(group.test, CacheGroupTest::Enabled)
-    };
     let mut matches = stages
       .iter()
       .map(|stage| {
         stage.map(|groups| {
           groups
             .iter()
-            .map(|indexed| {
-              if matches_all(indexed.cache_group) {
-                NativeCacheGroupMatches::All
-              } else {
-                NativeCacheGroupMatches::Modules(FixedBitSet::with_capacity(all_modules.len()))
-              }
+            .map(|_| {
+              NativeCacheGroupMatches::Modules(FixedBitSet::with_capacity(all_modules.len()))
             })
             .collect::<Vec<_>>()
         })
