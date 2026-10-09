@@ -58,6 +58,7 @@ fs.copyFileSync(pluginFile, path.join(output, 'published-router-code-splitter-pl
 const instrumented = new Map();
 for (const file of walk(unpluginDir).filter(f => /\.(mjs|js)$/.test(f))) {
   let text = fs.readFileSync(file, 'utf8');
+  if (text.includes('function patternToIdFilter(')) fs.writeFileSync(path.join(output, 'published-unplugin-filter.js'), text);
   if (text.includes('function transformUse(')) {
     fs.writeFileSync(path.join(output, 'published-unplugin-adapter.js'), text);
     const start = text.indexOf('function transformUse(');
@@ -91,6 +92,8 @@ for (const name of ['S', 'R', 'N']) {
 }
 for (const [file, text] of instrumented) fs.writeFileSync(file, text);
 function accepted(diag, stage) { return diag.records[stage].filter(r => r.accepted).map(r => r.id).sort(); }
+if (diagnostics.S.records.rule.some(r => r.stockExcludeMatch)) throw new Error('Stock exclude matched an observed rule ID');
+for (const token of ['tsr-split', 'tsr-shared']) if (!diagnostics.S.records.rule.some(r => r.id.includes(token))) throw new Error(`Missing ${token} rule IDs`);
 for (const name of ['R', 'N']) {
   for (const stage of ['rule', 'transform']) if (JSON.stringify(accepted(diagnostics.S, stage)) !== JSON.stringify(accepted(diagnostics[name], stage))) throw new Error(`Accepted ID mismatch ${name} ${stage}`);
   if (JSON.stringify(diagnostics.S.emitted) !== JSON.stringify(diagnostics[name].emitted)) throw new Error(`Diagnostic output mismatch ${name}`);
@@ -113,6 +116,7 @@ for (const file of viteFiles) {
 if (!foundVite) throw new Error('Vite hook-filter implementation not found');
 const vite = JSON.parse(fs.readFileSync(path.join(output, 'vite-diagnostic.json'), 'utf8'));
 if (vite.ids.some(r => r.stockExcludeMatch || r.S !== r.R || r.S !== r.N)) throw new Error('Vite fixture filter mismatch');
+for (const token of ['tsr-split', 'tsr-shared']) if (!vite.ids.some(r => r.id.includes(token))) throw new Error(`Missing Vite ${token} IDs`);
 const samples = [];
 const referenceManifests = {};
 for (let round = 0; round < 5; round++) {

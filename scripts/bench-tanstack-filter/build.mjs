@@ -7,7 +7,7 @@ const records = { rule: [], transform: [] };
 const root = process.cwd();
 const cleanId = id => id.split(root).join('<app>').split(encodeURIComponent(root)).join('%3Capp%3E');
 if (diagnostic) globalThis.__referenceProbe = (name, id, accepted, stage) => {
-  if (name === 'tanstack-router:code-splitter:compile-reference-file') records[stage].push({ id: cleanId(id), accepted });
+  if (name === 'tanstack-router:code-splitter:compile-reference-file') records[stage].push({ id: cleanId(id), accepted, stockExcludeMatch: ['tsr-split', 'tsr-shared'].some(p => globalThis.__idFilterFactory(p)(id)) });
 };
 const { rspack } = await import('@rspack/core');
 const routerPlugin = await import('@tanstack/router-plugin/rspack');
@@ -85,7 +85,7 @@ async function done(error, stats) {
     if (watcher) await new Promise((resolve, reject) => watcher.close(e => e ? reject(e) : resolve()));
     else await new Promise((resolve, reject) => compiler.close(e => e ? reject(e) : resolve()));
     process.disconnect();
-  } catch (error) { console.error(error); process.exitCode = 1; process.disconnect(); }
+  } catch (error) { console.error(error); process.exit(1); }
 }
 let watcher;
 if (condition === 'cold') {
