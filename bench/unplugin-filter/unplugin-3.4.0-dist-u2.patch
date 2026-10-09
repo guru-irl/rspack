@@ -8,13 +8,39 @@ diff --git a/dist/index.mjs b/dist/index.mjs
  import { r as normalizeMessage$1, t as createBuildContext$2 } from "./context-AOdkHe_5.mjs";
  import { i as isVirtualModuleId, n as decodeVirtualModuleId, r as encodeVirtualModuleId, t as FakeVirtualModulesPlugin } from "./utils-CfJoYofY.mjs";
  import { i as normalizeMessage$2, n as createBuildContext$3, t as contextOptionsFromCompilation } from "./context-CjyN3JjT.mjs";
-@@ -1004,12 +1004,13 @@
+@@ -951,6 +951,7 @@
+ 		});
+ 		const externalModules = /* @__PURE__ */ new Set();
+ 		if (plugin.resolveId) {
++			let cachedResolveId;
+ 			const vfs = compiler.rspack.experiments.VirtualModulesPlugin ? new compiler.rspack.experiments.VirtualModulesPlugin() : new FakeVirtualModulesPlugin(plugin);
+ 			vfs.apply(compiler);
+ 			const vfsModules = /* @__PURE__ */ new Map();
+@@ -974,7 +975,16 @@
+ 							console.warn(`unplugin/rspack: warning from resolveId hook: ${msg}`);
+ 						}
+ 					};
+-					const { handler, filter } = normalizeObjectHook("resolveId", plugin.resolveId);
++					const hook = plugin.resolveId;
++					const cwd = process.cwd();
++					let handler;
++					if (cachedResolveId?.hook === hook && cachedResolveId.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
++					else {
++						const normalized = normalizeObjectHook("resolveId", hook);
++						handler = normalized.handler;
++						cachedResolveId = { hook, cwd, filter: normalized.filter };
++					}
++					const { filter } = cachedResolveId;
+ 					if (!filter(id)) return;
+ 					const resolveIdResult = await handler.call({
+ 						...context,
+@@ -1004,12 +1014,13 @@
  				});
  			});
  		}
 -		if (plugin.load) compiler.options.module.rules.unshift({
 +		if (plugin.load) {
-+			const filter = createCachedIdFilter(plugin.load);
++			const filter = createCachedIdFilter(() => plugin.load);
 +			compiler.options.module.rules.unshift({
  			enforce: plugin.enforce,
  			include(id) {
@@ -24,14 +50,14 @@ diff --git a/dist/index.mjs b/dist/index.mjs
  				if (!filter(id)) return false;
  				return !externalModules.has(id);
  			},
-@@ -1019,12 +1020,16 @@
+@@ -1019,12 +1030,16 @@
  			}],
  			type: "javascript/auto"
  		});
 -		if (plugin.transform) compiler.options.module.rules.unshift({
 +		}
 +		if (plugin.transform) {
-+			const filter = createCachedIdFilter(plugin.transform);
++			const filter = createCachedIdFilter(() => plugin.transform);
 +			compiler.options.module.rules.unshift({
  			enforce: plugin.enforce,
  			use(data) {
@@ -43,13 +69,39 @@ diff --git a/dist/index.mjs b/dist/index.mjs
  		if (meta.framework === "rspack" && plugin.rspack) plugin.rspack(compiler);
  		if (plugin.watchChange || plugin.buildStart) compiler.hooks.make.tapPromise(plugin.name, async (compilation) => {
  			const context = createBuildContext$2(compiler, compilation);
-@@ -1193,9 +1198,11 @@
+@@ -1128,6 +1143,7 @@
+ 				});
+ 				const externalModules = /* @__PURE__ */ new Set();
+ 				if (plugin.resolveId) {
++					let cachedResolveId;
+ 					let vfs = compiler.options.plugins.find((i) => i instanceof VirtualModulesPlugin);
+ 					if (!vfs) {
+ 						vfs = new VirtualModulesPlugin();
+@@ -1166,7 +1182,16 @@
+ 									console.warn(`unplugin/webpack: warning from resolveId hook: ${msg}`);
+ 								}
+ 							};
+-							const { handler, filter } = normalizeObjectHook("resolveId", plugin.resolveId);
++							const hook = plugin.resolveId;
++							const cwd = process.cwd();
++							let handler;
++							if (cachedResolveId?.hook === hook && cachedResolveId.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
++							else {
++								const normalized = normalizeObjectHook("resolveId", hook);
++								handler = normalized.handler;
++								cachedResolveId = { hook, cwd, filter: normalized.filter };
++							}
++							const { filter } = cachedResolveId;
+ 							if (!filter(id)) return callback();
+ 							const resolveIdResult = await handler.call({
+ 								...context,
+@@ -1193,9 +1218,11 @@
  					compiler.options.resolve.plugins = compiler.options.resolve.plugins || [];
  					compiler.options.resolve.plugins.push(resolverPlugin);
  				}
 -				if (plugin.load) compiler.options.module.rules.unshift({
 +				if (plugin.load) {
-+					const filter = createCachedIdFilter(plugin.load);
++					const filter = createCachedIdFilter(() => plugin.load);
 +					compiler.options.module.rules.unshift({
  					include(id) {
 -						return shouldLoad(id, plugin, externalModules);
@@ -57,14 +109,14 @@ diff --git a/dist/index.mjs b/dist/index.mjs
  					},
  					enforce: plugin.enforce,
  					use: [{
-@@ -1204,12 +1211,16 @@
+@@ -1204,12 +1231,16 @@
  					}],
  					type: "javascript/auto"
  				});
 -				if (plugin.transform) compiler.options.module.rules.unshift({
 +				}
 +				if (plugin.transform) {
-+					const filter = createCachedIdFilter(plugin.transform);
++					const filter = createCachedIdFilter(() => plugin.transform);
 +					compiler.options.module.rules.unshift({
  					enforce: plugin.enforce,
  					use(data) {
@@ -76,7 +128,7 @@ diff --git a/dist/index.mjs b/dist/index.mjs
  				if (plugin.webpack) plugin.webpack(compiler);
  				if (plugin.watchChange || plugin.buildStart) compiler.hooks.make.tapPromise(plugin.name, async (compilation) => {
  					const context = createBuildContext$3(contextOptionsFromCompilation(compilation), compiler, compilation);
-@@ -1231,10 +1242,9 @@
+@@ -1231,10 +1262,9 @@
  		} };
  	};
  }
@@ -91,30 +143,18 @@ diff --git a/dist/index.mjs b/dist/index.mjs
 diff --git a/dist/rspack/loaders/load.mjs b/dist/rspack/loaders/load.mjs
 --- a/dist/rspack/loaders/load.mjs
 +++ b/dist/rspack/loaders/load.mjs
-@@ -3,6 +3,7 @@
+@@ -1,4 +1,3 @@
+-import { r as normalizeObjectHook } from "../../parse-B1HhnTCu.mjs";
+ import { t as normalizeAbsolutePath } from "../../webpack-like-BQ10QW9c.mjs";
  import { n as createContext, t as createBuildContext } from "../../context-AOdkHe_5.mjs";
  import { i as isVirtualModuleId, n as decodeVirtualModuleId } from "../../utils-CfJoYofY.mjs";
- //#region src/rspack/loaders/load.ts
-+const filters = new WeakMap();
- async function load(source, map) {
- 	const callback = this.async();
- 	const { plugin } = this.query;
-@@ -10,7 +11,17 @@
+@@ -10,7 +9,8 @@
  	if (!plugin?.load || !id) return callback(null, source, map);
  	if (isVirtualModuleId(id, plugin)) id = decodeVirtualModuleId(id, plugin);
  	const context = createContext(this);
 -	const { handler } = normalizeObjectHook("load", plugin.load);
 +	const hook = plugin.load;
-+	const cwd = process.cwd();
-+	let cached = filters.get(hook);
-+	let handler;
-+	if (cached?.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
-+	else {
-+		const normalized = normalizeObjectHook("load", hook);
-+		handler = normalized.handler;
-+		cached = { cwd, filter: normalized.filter };
-+		filters.set(hook, cached);
-+	}
++	const handler = typeof hook === "function" ? hook : hook.handler;
  	try {
  		const res = await handler.call(Object.assign({}, this._compilation && createBuildContext(this._compiler, this._compilation, this), context), normalizeAbsolutePath(id));
  		if (res == null) callback(null, source, map);
@@ -148,36 +188,56 @@ diff --git a/dist/rspack/loaders/transform.mjs b/dist/rspack/loaders/transform.m
  	if (!filter(this.resource, source)) return callback(null, source, map);
  	try {
  		const res = await handler.call(Object.assign({}, this._compilation && createBuildContext(this._compiler, this._compilation, this, map), context), source, id);
+diff --git a/dist/webpack-like-BQ10QW9c.mjs b/dist/webpack-like-BQ10QW9c.mjs
+--- a/dist/webpack-like-BQ10QW9c.mjs
++++ b/dist/webpack-like-BQ10QW9c.mjs
+@@ -1,11 +1,19 @@
+ import { r as normalizeObjectHook } from "./parse-B1HhnTCu.mjs";
+ import { isAbsolute, normalize } from "node:path";
+ //#region src/utils/webpack-like.ts
+-function transformUse(data, plugin, transformLoader) {
++function createCachedIdFilter(getHook) {
++	let cached;
++	return (id) => {
++		const hook = getHook();
++		const cwd = process.cwd();
++		if (cached?.hook !== hook || cached.cwd !== cwd) cached = { hook, cwd, filter: normalizeObjectHook("load", hook).filter };
++		return cached.filter(id);
++	};
++}
++function transformUse(data, plugin, transformLoader, filter) {
+ 	if (data.resource == null) return [];
+ 	const id = normalizeAbsolutePath(data.resource + (data.resourceQuery || ""));
+ 	if (plugin.transformInclude && !plugin.transformInclude(id)) return [];
+-	const { filter } = normalizeObjectHook("load", plugin.transform);
+ 	if (!filter(id)) return [];
+ 	return [{
+ 		loader: transformLoader,
+@@ -28,4 +36,4 @@
+ 	else return path;
+ }
+ //#endregion
+-export { transformUse as n, normalizeAbsolutePath as t };
++export { createCachedIdFilter as i, transformUse as n, normalizeAbsolutePath as t };
 diff --git a/dist/webpack/loaders/load.mjs b/dist/webpack/loaders/load.mjs
 --- a/dist/webpack/loaders/load.mjs
 +++ b/dist/webpack/loaders/load.mjs
-@@ -2,6 +2,7 @@
+@@ -1,4 +1,3 @@
+-import { r as normalizeObjectHook } from "../../parse-B1HhnTCu.mjs";
  import { t as normalizeAbsolutePath } from "../../webpack-like-BQ10QW9c.mjs";
  import { n as createBuildContext, r as createContext } from "../../context-CjyN3JjT.mjs";
  //#region src/webpack/loaders/load.ts
-+const filters = new WeakMap();
- async function load(source, map) {
- 	const callback = this.async();
- 	const { plugin } = this.query;
-@@ -9,7 +10,17 @@
+@@ -9,8 +8,8 @@
  	if (!plugin?.load || !id) return callback(null, source, map);
  	if (id.startsWith(plugin.__virtualModulePrefix)) id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length));
  	const context = createContext(this);
 -	const { handler } = normalizeObjectHook("load", plugin.load);
+-	const res = await handler.call(Object.assign({}, createBuildContext({
 +	const hook = plugin.load;
-+	const cwd = process.cwd();
-+	let cached = filters.get(hook);
-+	let handler;
-+	if (cached?.cwd === cwd) handler = typeof hook === "function" ? hook : hook.handler;
-+	else {
-+		const normalized = normalizeObjectHook("load", hook);
-+		handler = normalized.handler;
-+		cached = { cwd, filter: normalized.filter };
-+		filters.set(hook, cached);
-+	}
- 	const res = await handler.call(Object.assign({}, createBuildContext({
++	const res = await (typeof hook === "function" ? hook : hook.handler).call(Object.assign({}, createBuildContext({
  		addWatchFile: (file) => {
  			this.addDependency(file);
+ 		},
 diff --git a/dist/webpack/loaders/transform.mjs b/dist/webpack/loaders/transform.mjs
 --- a/dist/webpack/loaders/transform.mjs
 +++ b/dist/webpack/loaders/transform.mjs
@@ -207,33 +267,3 @@ diff --git a/dist/webpack/loaders/transform.mjs b/dist/webpack/loaders/transform
  	if (!filter(this.resource, source)) return callback(null, source, map);
  	try {
  		const res = await handler.call(Object.assign({}, createBuildContext({
-diff --git a/dist/webpack-like-BQ10QW9c.mjs b/dist/webpack-like-BQ10QW9c.mjs
---- a/dist/webpack-like-BQ10QW9c.mjs
-+++ b/dist/webpack-like-BQ10QW9c.mjs
-@@ -1,11 +1,18 @@
- import { r as normalizeObjectHook } from "./parse-B1HhnTCu.mjs";
- import { isAbsolute, normalize } from "node:path";
- //#region src/utils/webpack-like.ts
--function transformUse(data, plugin, transformLoader) {
-+function createCachedIdFilter(hook) {
-+	let cached = { cwd: process.cwd(), filter: normalizeObjectHook("load", hook).filter };
-+	return (id) => {
-+		const cwd = process.cwd();
-+		if (cached.cwd !== cwd) cached = { cwd, filter: normalizeObjectHook("load", hook).filter };
-+		return cached.filter(id);
-+	};
-+}
-+function transformUse(data, plugin, transformLoader, filter) {
- 	if (data.resource == null) return [];
- 	const id = normalizeAbsolutePath(data.resource + (data.resourceQuery || ""));
- 	if (plugin.transformInclude && !plugin.transformInclude(id)) return [];
--	const { filter } = normalizeObjectHook("load", plugin.transform);
- 	if (!filter(id)) return [];
- 	return [{
- 		loader: transformLoader,
-@@ -28,4 +35,4 @@
- 	else return path;
- }
- //#endregion
--export { transformUse as n, normalizeAbsolutePath as t };
-+export { createCachedIdFilter as i, transformUse as n, normalizeAbsolutePath as t };

@@ -30,6 +30,12 @@ PY
 cp -R dist "$logs/source-dist"
 cd "$base"
 python3 regenerate-dist.py > "$logs/regenerate-dist.log" 2>&1
+if [ "$(git -C "$base" log -1 --format=%s)" = 'bench: archive validated unplugin dist patches' ]; then
+  for file in "$logs"/unplugin-3.*-dist-u2.patch "$logs"/unplugin-3.*-u2-manifest.json "$logs/unplugin-filters-once-src.patch"; do
+    cmp "$file" "$base/$(basename "$file")"
+  done
+  printf '%s\n' 'Archived patches/manifests match fresh runner regeneration' > "$logs/archived-integrity.log"
+fi
 cp "$logs"/unplugin-3.*-dist-u2.patch "$logs"/unplugin-3.*-u2-manifest.json "$base/"
 ln -s "$GITHUB_WORKSPACE/unplugin-source/node_modules" node_modules
 python3 setup.py > "$logs/dist-setup.log" 2>&1

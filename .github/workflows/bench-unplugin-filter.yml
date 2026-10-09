@@ -31,7 +31,10 @@ jobs:
           path: bench/unplugin-filter/source-results/
           retention-days: 30
   measure:
-    if: github.repository == 'guru-irl/rspack'
+    # Archiving byte-identical validated outputs reruns gates, not measurements.
+    if: >-
+      github.repository == 'guru-irl/rspack'
+      && !startsWith(github.event.head_commit.message, 'bench: archive validated unplugin dist patches')
     needs: source-validation
     strategy:
       fail-fast: false

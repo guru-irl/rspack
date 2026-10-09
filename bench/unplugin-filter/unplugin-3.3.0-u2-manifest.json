@@ -19,17 +19,17 @@
     },
     "unpackedSize": 79903
   },
-  "patch_sha256": "d83cee4e4521a631679e5fe0ce5d2840c8b3d7fcd8007aa492f94a2779ad1969",
+  "patch_sha256": "87d9492e3fb56721c366e750d5a2ddce155f5954b683b2467eda81163b28c9b6",
   "files": [
     {
       "path": "dist/index.mjs",
       "sha256_before": "05c8f48e637f30753f8e0e5b05776b823c47b2d1421326adad7b87160c553e07",
-      "sha256_after": "69fdd7ebdda9515ae5681dbeb056df2f571a465c3fcf79d1f065e871197bb33e"
+      "sha256_after": "1c65266fe981025582521ee393407f4783051fdde280372bbbb1ed909a75cee9"
     },
     {
       "path": "dist/rspack/loaders/load.mjs",
       "sha256_before": "3d61b895c396e60683601f492a6d6cc3638d88cfb5fbbab6164650d7583999e0",
-      "sha256_after": "62491c915c71d5f5f250602ae3095b47de20fddc8667ce2d4383fe8e9d0ace3f"
+      "sha256_after": "446748b0d0445b6b224003bd35e45d6ba1d6e2a222648b115f67f8c3f5b01a03"
     },
     {
       "path": "dist/rspack/loaders/transform.mjs",
@@ -37,20 +37,22 @@
       "sha256_after": "9a904f6a03e483d8247792887e8325278467c5cf9ef40f74f522a2d1504216b6"
     },
     {
+      "path": "dist/webpack-like-BSQQnmcP.mjs",
+      "sha256_before": "4d4b709a779d6f42ab6b3238db79f4c84fa7b81f4b33672da82403f22ea41e80",
+      "sha256_after": "c40128155632efe54867296dcab119f31c0ce79c59e289cd181abe7e616b6968"
+    },
+    {
       "path": "dist/webpack/loaders/load.mjs",
       "sha256_before": "c465a74d2b21a2cee0739a81f14896c95e75b8465b0953b2732bf895ded5a8ba",
-      "sha256_after": "82e5f21b47c8a953548ff0bd0a87962648e94d196061c808910e009d93c5dcf5"
+      "sha256_after": "bae59e80cfe408095e40eb1007067a7da80d98ffcfb85850e2ff7d4affe51460"
     },
     {
       "path": "dist/webpack/loaders/transform.mjs",
       "sha256_before": "b35e9c0fa1f289eb70b81b30b9b4b5ad928228ce7e706e50dfb84f7cdf0161f2",
       "sha256_after": "213c20567e255f1b917a1ae4ebea17aa9639b7d7659c95df8879f2b89a875591"
-    },
-    {
-      "path": "dist/webpack-like-BSQQnmcP.mjs",
-      "sha256_before": "4d4b709a779d6f42ab6b3238db79f4c84fa7b81f4b33672da82403f22ea41e80",
-      "sha256_after": "382ae7fdf6de16d3a49374cfe4c7f125524be573be009bebf936f58faf4ed85b"
     }
   ],
-  "semantics": "Filters cached per hook and cwd; cwd changes rebuild the filter. Handler read fresh per loader invocation. Filter mutations with unchanged cwd after preparation are not seen."
+  "semantics": "Lazy rule and resolveId filters keyed by current hook identity and cwd; transform-loader WeakMaps keyed by hook with cwd invalidation. Load loaders read handlers directly without filter caches. Handlers read fresh. In-place filter mutation after first use is a snapshot until hook replacement or cwd change.",
+  "apply_command": "cd <extracted-package> && patch -p1 -i <absolute-path>/unplugin-3.3.0-dist-u2.patch",
+  "source_base": "f2acf00e1f8e4fbeaa28f6660545c70c43cb2d73"
 }
