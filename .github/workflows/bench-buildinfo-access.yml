@@ -1,0 +1,72 @@
+name: BuildInfo access benchmark
+
+on:
+  push:
+    branches: [bench/buildinfo-access]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildinfo-access-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BUILDINFO_BENCH_DIR: ${{ github.workspace }}/.bench/buildinfo-access
+      TMPDIR: ${{ github.workspace }}/.bench/buildinfo-access/tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare directories
+        run: mkdir -p "$BUILDINFO_BENCH_DIR/tmp"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.18.0
+      - name: Verify canary commit and install exact public packages
+        run: |
+          git fetch --no-tags https://github.com/web-infra-dev/rspack.git a9cfd15e04efb596dac0c101b15477c402411e7c
+          python3 scripts/bench/buildinfo-access/setup.py
+      - name: Generate synthetic fixture
+        run: python3 scripts/bench/buildinfo-access/generate.py
+      - name: Measure five interleaved samples and verify cache/output parity
+        run: |
+          set -o pipefail
+          python3 scripts/bench/buildinfo-access/measure.py | tee "$BUILDINFO_BENCH_DIR/measure.log"
+          python3 scripts/bench/buildinfo-access/analyze.py
+          cat "$BUILDINFO_BENCH_DIR/tables.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Profile the remaining canary warm-tap cost separately
+        run: |
+          mkdir -p "$BUILDINFO_BENCH_DIR/profiles"
+          for access in read iterate; do
+            node --max-old-space-size=8192 scripts/bench/buildinfo-access/run.mjs "$BUILDINFO_BENCH_DIR/canary/node_modules/@rspack/core/dist/index.js" canary new "$access" "$BUILDINFO_BENCH_DIR/profiles/canary-new-${access}-warmup.json" > "$BUILDINFO_BENCH_DIR/profiles/canary-new-${access}-warmup.log"
+            node --max-old-space-size=8192 --cpu-prof --cpu-prof-dir="$BUILDINFO_BENCH_DIR/profiles" --cpu-prof-name="canary-new-${access}.cpuprofile" scripts/bench/buildinfo-access/run.mjs "$BUILDINFO_BENCH_DIR/canary/node_modules/@rspack/core/dist/index.js" canary new "$access" "$BUILDINFO_BENCH_DIR/profiles/canary-new-${access}.json" > "$BUILDINFO_BENCH_DIR/profiles/canary-new-${access}.log"
+          done
+          python3 scripts/bench/buildinfo-access/analyze-profiles.py
+      - name: Upload measurements and provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: buildinfo-access-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            .bench/buildinfo-access/runs/
+            .bench/buildinfo-access/raw-summary.json
+            .bench/buildinfo-access/aggregate.json
+            .bench/buildinfo-access/tables.md
+            .bench/buildinfo-access/parity.json
+            .bench/buildinfo-access/provenance.json
+            .bench/buildinfo-access/fixture.json
+            .bench/buildinfo-access/ambient.json
+            .bench/buildinfo-access/measure.log
+            .bench/buildinfo-access/profiles/
+            .bench/buildinfo-access/profiles-summary.json
+      - name: Remove generated cache files after artifact upload
+        if: always()
+        run: rm -rf "$BUILDINFO_BENCH_DIR/caches"
