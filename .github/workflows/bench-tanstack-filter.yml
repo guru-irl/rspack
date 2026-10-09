@@ -1,0 +1,31 @@
+name: TanStack reference filter benchmark
+on:
+  push:
+    branches: [bench/tanstack-reference-filter]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - name: Generate public synthetic app
+        run: node scripts/bench-tanstack-filter/generate.mjs
+      - name: Install published dependencies
+        working-directory: benchmark-app
+        run: npm install --registry=https://registry.npmjs.org --ignore-scripts
+      - name: Measure and check semantics
+        working-directory: benchmark-app
+        run: node ../scripts/bench-tanstack-filter/run.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tanstack-reference-filter-results
+          path: benchmark-results/
+          include-hidden-files: true
