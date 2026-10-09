@@ -1,0 +1,55 @@
+name: Synthetic unplugin filter benchmark
+on:
+  push:
+    branches: [bench/unplugin-filter]
+permissions:
+  contents: read
+concurrency:
+  group: synthetic-unplugin-filter
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: bench/unplugin-filter
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: bench/unplugin-filter
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Install released packages
+        run: npm install --workspaces=false --ignore-scripts --registry=https://registry.npmjs.org
+      - name: Record host and validate syntax
+        run: |
+          mkdir -p results
+          python3 - <<'PY'
+          import json, os, pathlib, platform, subprocess
+          cpu = next(line.split(':', 1)[1].strip() for line in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name'))
+          ram = next(float(line.split()[1]) / 1024 for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:'))
+          host = {'cpu_model': cpu, 'cpus': os.cpu_count(), 'ram_mib': ram, 'node': subprocess.check_output(['node', '--version'], text=True).strip(), 'platform': platform.platform(), 'load': os.getloadavg(), 'commit': os.environ['GITHUB_SHA'], 'run_url': 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID']}
+          pathlib.Path('results/host.json').write_text(json.dumps(host, indent=2))
+          print(json.dumps(host))
+          PY
+          python3 -m py_compile setup.py series.py summarize.py
+          node --check run.mjs
+          node --check loader-wrapper.mjs
+      - name: Prepare verified dist arms and fixture
+        run: |
+          python3 setup.py
+          node generate.mjs
+          cp package-lock.json results/package-lock.json
+      - name: Measure interleaved series and conditional semi-space probe
+        run: python3 -u series.py
+      - name: Summarize exact paired statistics
+        run: python3 summarize.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unplugin-filter-followup
+          path: bench/unplugin-filter/results/
+          retention-days: 30

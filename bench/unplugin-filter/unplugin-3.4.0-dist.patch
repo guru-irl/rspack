@@ -1,0 +1,97 @@
+--- a/dist/webpack-like-BQ10QW9c.mjs
++++ b/dist/webpack-like-BQ10QW9c.mjs
+@@ -1,11 +1,9 @@
+-import { r as normalizeObjectHook } from "./parse-B1HhnTCu.mjs";
+ import { isAbsolute, normalize } from "node:path";
+ //#region src/utils/webpack-like.ts
+-function transformUse(data, plugin, transformLoader) {
++function transformUse(data, plugin, transformLoader, filter) {
+ 	if (data.resource == null) return [];
+ 	const id = normalizeAbsolutePath(data.resource + (data.resourceQuery || ""));
+ 	if (plugin.transformInclude && !plugin.transformInclude(id)) return [];
+-	const { filter } = normalizeObjectHook("load", plugin.transform);
+ 	if (!filter(id)) return [];
+ 	return [{
+ 		loader: transformLoader,
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -1004,12 +1004,13 @@
+ 				});
+ 			});
+ 		}
+-		if (plugin.load) compiler.options.module.rules.unshift({
++		if (plugin.load) {
++			const { filter } = normalizeObjectHook("load", plugin.load);
++			compiler.options.module.rules.unshift({
+ 			enforce: plugin.enforce,
+ 			include(id) {
+ 				if (isVirtualModuleId(id, plugin)) id = decodeVirtualModuleId(id, plugin);
+ 				if (plugin.loadInclude && !plugin.loadInclude(id)) return false;
+-				const { filter } = normalizeObjectHook("load", plugin.load);
+ 				if (!filter(id)) return false;
+ 				return !externalModules.has(id);
+ 			},
+@@ -1019,12 +1020,16 @@
+ 			}],
+ 			type: "javascript/auto"
+ 		});
+-		if (plugin.transform) compiler.options.module.rules.unshift({
++		}
++		if (plugin.transform) {
++			const { filter } = normalizeObjectHook("load", plugin.transform);
++			compiler.options.module.rules.unshift({
+ 			enforce: plugin.enforce,
+ 			use(data) {
+-				return transformUse(data, plugin, TRANSFORM_LOADER$1);
++				return transformUse(data, plugin, TRANSFORM_LOADER$1, filter);
+ 			}
+ 		});
++		}
+ 		if (meta.framework === "rspack" && plugin.rspack) plugin.rspack(compiler);
+ 		if (plugin.watchChange || plugin.buildStart) compiler.hooks.make.tapPromise(plugin.name, async (compilation) => {
+ 			const context = createBuildContext$2(compiler, compilation);
+@@ -1193,9 +1198,11 @@
+ 					compiler.options.resolve.plugins = compiler.options.resolve.plugins || [];
+ 					compiler.options.resolve.plugins.push(resolverPlugin);
+ 				}
+-				if (plugin.load) compiler.options.module.rules.unshift({
++				if (plugin.load) {
++					const { filter } = normalizeObjectHook("load", plugin.load);
++					compiler.options.module.rules.unshift({
+ 					include(id) {
+-						return shouldLoad(id, plugin, externalModules);
++						return shouldLoad(id, plugin, externalModules, filter);
+ 					},
+ 					enforce: plugin.enforce,
+ 					use: [{
+@@ -1204,12 +1211,16 @@
+ 					}],
+ 					type: "javascript/auto"
+ 				});
+-				if (plugin.transform) compiler.options.module.rules.unshift({
++				}
++				if (plugin.transform) {
++					const { filter } = normalizeObjectHook("load", plugin.transform);
++					compiler.options.module.rules.unshift({
+ 					enforce: plugin.enforce,
+ 					use(data) {
+-						return transformUse(data, plugin, TRANSFORM_LOADER);
++						return transformUse(data, plugin, TRANSFORM_LOADER, filter);
+ 					}
+ 				});
++				}
+ 				if (plugin.webpack) plugin.webpack(compiler);
+ 				if (plugin.watchChange || plugin.buildStart) compiler.hooks.make.tapPromise(plugin.name, async (compilation) => {
+ 					const context = createBuildContext$3(contextOptionsFromCompilation(compilation), compiler, compilation);
+@@ -1231,10 +1242,9 @@
+ 		} };
+ 	};
+ }
+-function shouldLoad(id, plugin, externalModules) {
++function shouldLoad(id, plugin, externalModules, filter) {
+ 	if (id.startsWith(plugin.__virtualModulePrefix)) id = decodeURIComponent(id.slice(plugin.__virtualModulePrefix.length));
+ 	if (plugin.loadInclude && !plugin.loadInclude(id)) return false;
+-	const { filter } = normalizeObjectHook("load", plugin.load);
+ 	if (!filter(id)) return false;
+ 	return !externalModules.has(id);
+ }

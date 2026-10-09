@@ -1,0 +1,9 @@
+{
+  "name": "synthetic-filter-benchmark",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@rspack/core": "2.2.8",
+    "unplugin": "3.4.0"
+  }
+}

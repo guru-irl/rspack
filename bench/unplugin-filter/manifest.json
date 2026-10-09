@@ -1,0 +1,20 @@
+{
+  "version": "3.4.0",
+  "registry": {
+    "shasum": "c3e19efdb040222f1e767ec07233410995e29275",
+    "tarball": "https://registry.npmjs.org/unplugin/-/unplugin-3.4.0.tgz",
+    "integrity": "sha512-9skdIFlCsPdFV7wUfZxNsFInlW+7nJmGu2gkTu0OUhF56aXGsHab9x52/QhdJ4lC7ZDPWTxbiC4ANqVlsuaW3w=="
+  },
+  "files": [
+    {
+      "path": "dist/webpack-like-BQ10QW9c.mjs",
+      "sha256_before": "b147195c01a7fbab637089967960b29c588695cc732fdfb8b275091bb94c26e9",
+      "sha256_after": "e4b844b8782dcdd832dd1f2410a1935361f02874f075bd4eb5ced03b135c1683"
+    },
+    {
+      "path": "dist/index.mjs",
+      "sha256_before": "9beaac94191c0fd32935f81ffa8ba87a7ba1326902cc2c6269b9c23620c95aaf",
+      "sha256_after": "6eb01f9426515f7baeacb2432e720a28558c7cb01f31236902a3c58012650249"
+    }
+  ]
+}
