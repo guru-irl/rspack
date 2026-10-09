@@ -1,0 +1,34 @@
+name: Chunk hash determinism
+on:
+  push:
+    branches: [bench/chunk-hash-determinism]
+permissions:
+  contents: read
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['2.2.2', '2.2.8', 'canary']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install published package
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          mkdir -p .hash-repro/package .hash-repro/evidence
+          npm view @rspack/core dist-tags --json > .hash-repro/evidence/dist-tags.json
+          npm view "@rspack/core@$VERSION" version gitHead dist --json > .hash-repro/evidence/package.json
+          npm install --prefix .hash-repro/package --no-audit --no-fund "@rspack/core@$VERSION"
+          node -p 'require("./.hash-repro/package/node_modules/@rspack/core/package.json").version'
+      - name: Compare processes and compiler instances
+        run: node .github/scripts/chunk-hash-determinism.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hash-evidence-${{ matrix.version }}
+          path: .hash-repro/evidence
