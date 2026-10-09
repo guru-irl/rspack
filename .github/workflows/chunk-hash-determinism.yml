@@ -34,8 +34,8 @@ jobs:
           npm view "$PACKAGE@$VERSION" version gitHead dist --json > .hash-repro/evidence/package.json
           npm install --prefix .hash-repro/package --no-audit --no-fund "$SPEC"
           node -p 'require("./.hash-repro/package/node_modules/@rspack/core/package.json").version'
-      - name: Compare processes and compiler instances
-        run: node .github/scripts/chunk-hash-determinism.cjs
+      - name: Compare dependency allocation order
+        run: node .github/scripts/chunk-hash-order-repro.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
