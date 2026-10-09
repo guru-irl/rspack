@@ -17,9 +17,10 @@ let accepted = { load: [], transform: [] };
 let built = 0;
 const definition = { name: 'synthetic-cwd-check', load: { filter, handler(id) { accepted.load.push(path.relative(root, id)); return null; } }, transform: { filter, handler(code, id) { accepted.transform.push(path.relative(root, id)); return code; } } };
 const plugin = createUnplugin(() => definition).rspack();
-const config = { mode: 'development', context: root, entry: './entry.mjs', devtool: false, output: { path: path.join(root, 'output'), filename: 'bundle.js' }, cache: false, module: { rules: [{ test: /\.ts$/, type: 'javascript/auto' }] }, plugins: [plugin, { apply(compiler) { compiler.hooks.thisCompilation.tap('CwdCheck', compilation => { compilation.hooks.buildModule.tap('CwdCheck', () => built++); }); } }], infrastructureLogging: { level: 'error' }, stats: 'none' };
+const config = () => ({ mode: 'development', context: root, entry: './entry.mjs', devtool: false, output: { path: path.join(root, 'output'), filename: 'bundle.js' }, cache: false, module: { rules: [{ test: /\.ts$/, type: 'javascript/auto' }] }, plugins: [plugin, { apply(compiler) { compiler.hooks.thisCompilation.tap('CwdCheck', compilation => { compilation.hooks.buildModule.tap('CwdCheck', () => built++); }); } }], infrastructureLogging: { level: 'error' }, stats: 'none' });
 const rows = [];
 let compiler;
+let originalRules;
 try {
   for (const [index, cwd] of ['a', 'b'].entries()) {
     fs.writeFileSync(path.join(root, 'entry.mjs'), "import './a/src/accepted.ts';\nimport './a/src/rejected.ts';\nimport './b/src/accepted.ts';\nimport './b/src/rejected.ts';\n" + '\n'.repeat(index + 1));
@@ -27,15 +28,27 @@ try {
     process.chdir(path.join(root, cwd));
     accepted = { load: [], transform: [] };
     built = 0;
-    compiler ??= rspack(config);
+    compiler = rspack(config());
+    originalRules ??= compiler.options.module.rules.filter(rule => typeof rule.use === 'function' || typeof rule.include === 'function');
     const stats = await new Promise((resolve, reject) => compiler.run((error, result) => error ? reject(error) : resolve(result)));
     if (stats.hasErrors()) throw new Error(stats.toString({ all: false, errors: true }));
     for (const kind of ['load', 'transform']) accepted[kind].sort();
-    rows.push({ cwd, accepted, built, output_sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'output/bundle.js'))).digest('hex') });
+    const ruleAccepted = { load: [], transform: [] };
+    for (const dir of ['a', 'b']) for (const name of ['accepted', 'rejected']) {
+      const id = path.join(root, dir, 'src', `${name}.ts`);
+      for (const rule of originalRules) {
+        if (typeof rule.include === 'function' && rule.include(id)) ruleAccepted.load.push(path.relative(root, id));
+        if (typeof rule.use === 'function' && rule.use({ resource: id, resourceQuery: '' }).length) ruleAccepted.transform.push(path.relative(root, id));
+      }
+    }
+    for (const kind of ['load', 'transform']) ruleAccepted[kind].sort();
+    rows.push({ cwd, accepted, rule_accepted: ruleAccepted, built, output_sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'output/bundle.js'))).digest('hex') });
     assert.equal(built, 5, 'both builds must execute all five modules');
+    await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
+    compiler = null;
   }
-  console.log(JSON.stringify({ arm, same_compiler: true, same_plugin_instance: true, rows }));
-  fs.writeFileSync(path.join(base, 'results', `cwd-${arm}.json`), JSON.stringify({ arm, same_compiler: true, same_plugin_instance: true, rows }, null, 2));
+  console.log(JSON.stringify({ arm, rule_callbacks_reused: true, same_plugin_instance: true, rows }));
+  fs.writeFileSync(path.join(base, 'results', `cwd-${arm}.json`), JSON.stringify({ arm, rule_callbacks_reused: true, same_plugin_instance: true, rows }, null, 2));
 } finally {
   if (compiler) await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
   process.chdir(base);
