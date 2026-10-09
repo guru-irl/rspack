@@ -30,7 +30,10 @@ jobs:
       - name: Build JavaScript and load published main binding
         run: |
           npm install --prefix .hash-repro/package --no-audit --no-fund '@rspack/core@npm:@rspack-canary/core@2.2.9-canary-5f616c06-20261009174021'
-          cp .hash-repro/package/node_modules/@rspack-canary/binding-linux-x64-gnu/rspack.linux-x64-gnu.node crates/node_binding/rspack.linux-x64-gnu.node
+          find .hash-repro/package/node_modules -name '*.node' -print
+          binding=$(find .hash-repro/package/node_modules -path '*binding-linux-x64-gnu/*.node' -print -quit)
+          test -n "$binding"
+          cp "$binding" crates/node_binding/rspack.linux-x64-gnu.node
           pnpm run build:js
       - name: Verify regression case fails on main
         run: |
