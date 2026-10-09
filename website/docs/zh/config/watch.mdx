@@ -45,7 +45,7 @@ export default {
 - **类型：** `number`
 - **默认值：** `5`
 
-在触发 rebuild 前等待一段没有文件变更的时间，每次相关文件变更都会重新开始计时。Rspack 会将这段时间内的变更聚合到一次 rebuild 里。你可以通过这个选项来设置等待时间，以毫秒为单位：
+当第一个文件更改后，在触发 rebuild 前存在一个延迟时间，Rspack 会将这段时间内进行的任何其他更改都聚合到一次 rebuild 里。你可以通过这个选项来设置这个时间，以毫秒为单位：
 
 ```js title="rspack.config.mjs"
 export default {
