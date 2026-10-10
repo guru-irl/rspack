@@ -1,12 +1,11 @@
 name: New Cache Parity
 on:
-  push:
-    branches: [bench/newcache-parity]
-    paths:
-      - '.github/workflows/newcache-parity.yml'
-      - 'scripts/newcache-parity/**'
   workflow_dispatch:
     inputs:
+      binding_run:
+        description: 'Reuse bindings from a completed run after a harness-only retry'
+        default: ''
+        type: string
       linux_repeats:
         default: '7'
         type: string
@@ -15,8 +14,10 @@ on:
         type: string
 permissions:
   contents: read
+  actions: read
 jobs:
   build:
+    if: ${{ inputs.binding_run == '' }}
     timeout-minutes: 330
     strategy:
       fail-fast: false
@@ -84,6 +85,7 @@ jobs:
           path: source/bundle
           if-no-files-found: error
   measure:
+    if: ${{ always() && (needs.build.result == 'success' || inputs.binding_run != '') }}
     needs: build
     timeout-minutes: 330
     runs-on: ${{ matrix.host }}
@@ -100,6 +102,8 @@ jobs:
           node-version: '22'
       - uses: actions/download-artifact@v4
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.binding_run || github.run_id }}
           pattern: binding-${{ matrix.host }}-*
           path: artifacts
       - name: Prepare isolated runtimes and memory sampler
@@ -111,7 +115,8 @@ jobs:
           for source in main next; do
             mkdir -p "runtime/$source/node_modules/@rspack"
             tar -xzf "artifacts/binding-${{ matrix.host }}-$source/runtime.tar.gz" -C "runtime/$source"
-            ln -s ../../../crates/node_binding "runtime/$source/node_modules/@rspack/binding"
+            ln -s "$PWD/runtime/$source/crates/node_binding" "runtime/$source/node_modules/@rspack/binding"
+            node --input-type=module -e "import('./runtime/$source/packages/rspack/dist/index.js').then(m => console.log(m.rspack.version))"
           done
           if [[ "$RUNNER_OS" == macOS ]]; then
             curl -fsSL "https://nodejs.org/dist/$(node -p process.version)/node-$(node -p process.version)-headers.tar.gz" -o .spider/scratch/headers.tar.gz
@@ -121,7 +126,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y linux-tools-common linux-tools-generic
             sudo sysctl kernel.perf_event_paranoid=-1
-            PERF_TOOL=$(find /usr/lib/linux-tools -name perf -type f | head -1)
+            PERF_TOOL=$(find /usr/lib -maxdepth 3 -name perf -type f | head -1)
             "$PERF_TOOL" --version
             echo "PERF_TOOL=$PERF_TOOL" >> "$GITHUB_ENV"
           fi
