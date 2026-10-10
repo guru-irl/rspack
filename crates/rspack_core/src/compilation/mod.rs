@@ -196,17 +196,8 @@ pub struct CompilationHooks {
 pub struct CompilationId(pub u32);
 
 impl CompilationId {
-  #[doc(hidden)]
-  pub fn collection_cache_enabled() -> bool {
-    !COMPILATION_ID_EXHAUSTED.load(std::sync::atomic::Ordering::Acquire)
-  }
-
   pub fn new() -> Self {
-    let id = COMPILATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if id == u32::MAX {
-      COMPILATION_ID_EXHAUSTED.store(true, std::sync::atomic::Ordering::Release);
-    }
-    Self(id)
+    Self(COMPILATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
   }
 }
 
@@ -215,9 +206,6 @@ impl Default for CompilationId {
     Self::new()
   }
 }
-
-static COMPILATION_ID_EXHAUSTED: std::sync::atomic::AtomicBool =
-  std::sync::atomic::AtomicBool::new(false);
 
 static COMPILATION_ID: AtomicU32 = AtomicU32::new(0);
 

@@ -53,7 +53,7 @@ impl<K: Eq + Hash> InstanceRefs<K> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Tuple(u64, u64, u64);
+struct Tuple((u64, u64), (u64, u64), u64);
 struct Observed {
   tuple: Tuple,
   number: u64,
@@ -74,7 +74,7 @@ pub(crate) fn cleanup(id: CompilationId) {
 }
 
 pub(crate) fn stamp(id: CompilationId, kind: u32) -> Option<f64> {
-  if cfg!(target_family = "wasm") || kind > 2 || !CompilationId::collection_cache_enabled() {
+  if kind > 2 {
     return None;
   }
   let present = OWNERS.with(|owners| owners.borrow().contains_key(&id));
@@ -114,20 +114,19 @@ pub(crate) fn stamp(id: CompilationId, kind: u32) -> Option<f64> {
     }
     let stores = &compilation.build_chunk_graph_artifact;
     let tuple = match kind {
-      0 => Tuple(stores.chunk_by_ukey.collection_token(), 0, 0),
+      0 => Tuple(stores.chunk_by_ukey.collection_stamp()?, (0, 0), 0),
       1 => Tuple(
-        stores.chunk_by_ukey.collection_token(),
-        stores.chunk_group_by_ukey.collection_token(),
+        stores.chunk_by_ukey.collection_stamp()?,
+        stores.chunk_group_by_ukey.collection_stamp()?,
         ChunkGroupWrapper::generation(id)?,
       ),
       _ => Tuple(
-        stores.chunk_group_by_ukey.collection_token(),
+        stores.chunk_group_by_ukey.collection_stamp()?,
+        (0, 0),
         ChunkWrapper::generation(id)?,
-        0,
       ),
     };
-    if tuple.0 == 0 || (kind == 1 && (tuple.1 == 0 || tuple.2 == 0)) || (kind == 2 && tuple.1 == 0)
-    {
+    if kind != 0 && tuple.2 == 0 {
       return None;
     }
     let observed = &mut owner.observed[kind as usize];

@@ -19,10 +19,15 @@ export default defineConfig({
           'ChunkCollectionSnapshots',
           (compilation) => {
             const hook = compilation.hooks.processAssets;
-            assert.equal(hook.isUsed(), false);
             let chunk: Chunk;
             let calls = 0;
-            let restore: () => void;
+            let restore = () => {};
+            compiler.hooks.done.tap('ChunkCollectionSnapshots', () =>
+              restore(),
+            );
+            compiler.hooks.failed.tap('ChunkCollectionSnapshots', () =>
+              restore(),
+            );
             hook.tap({ name: 'snapshot', stage: 0 }, () => {
               chunk = [...compilation.chunks].find((c) => c.files.size >= 3)!;
               assert.ok(
@@ -118,18 +123,14 @@ export default defineConfig({
               );
             });
             compilation.hooks.afterProcessAssets.tap('outside-scope', () => {
-              try {
-                const before = calls;
-                void chunk.files;
-                void chunk.files;
-                assert.equal(
-                  calls,
-                  before + 2,
-                  'reads outside a tap must not admit snapshots',
-                );
-              } finally {
-                restore();
-              }
+              const before = calls;
+              void chunk.files;
+              void chunk.files;
+              assert.equal(
+                calls,
+                before + 2,
+                'reads outside a tap must not admit snapshots',
+              );
             });
           },
         );

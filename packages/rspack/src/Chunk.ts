@@ -1,5 +1,5 @@
 import util from 'node:util';
-import { Chunk, ChunkGroup } from '@rspack/binding';
+import { Chunk, ChunkGroup, type JsCompilation } from '@rspack/binding';
 import type * as liteTapable from '@rspack/lite-tapable';
 
 const COLLECTION_BUDGET = 2.5 * 1024 * 1024;
@@ -8,6 +8,7 @@ interface CollectionSnapshot<T> {
   values: T[];
 }
 let scopeDepth = 0;
+let scopeCompilation: JsCompilation | undefined;
 let remainingBytes = 0;
 let snapshots:
   | [
@@ -20,15 +21,19 @@ let snapshots:
 /** Only the synchronous prefix is scoped, including nested async callbacks. */
 function scopedTap<T extends unknown[], R>(
   fn: (...args: T) => R,
+  compilation: JsCompilation,
 ): (...args: T) => R {
   return function (this: unknown, ...args: T): R {
     if (scopeDepth++ === 0) {
       remainingBytes = COLLECTION_BUDGET;
       snapshots = [new WeakMap(), new WeakMap(), new WeakMap()];
     }
+    const previousCompilation = scopeCompilation;
+    scopeCompilation = compilation;
     try {
       return fn.apply(this, args);
     } finally {
+      scopeCompilation = previousCompilation;
       if (--scopeDepth === 0) {
         snapshots = undefined;
         remainingBytes = 0;
@@ -39,18 +44,19 @@ function scopedTap<T extends unknown[], R>(
 
 export function scopeChunkCollectionReads<T>(
   hook: liteTapable.AsyncSeriesHook<T>,
+  compilation: JsCompilation,
 ): void {
   const tap = hook.tap;
   const tapAsync = hook.tapAsync;
   const tapPromise = hook.tapPromise;
   hook.tap = function (options, fn) {
-    return tap.call(this, options, scopedTap(fn));
+    return tap.call(this, options, scopedTap(fn, compilation));
   };
   hook.tapAsync = function (options, fn) {
-    return tapAsync.call(this, options, scopedTap(fn));
+    return tapAsync.call(this, options, scopedTap(fn, compilation));
   };
   hook.tapPromise = function (options, fn) {
-    return tapPromise.call(this, options, scopedTap(fn));
+    return tapPromise.call(this, options, scopedTap(fn, compilation));
   };
 }
 
@@ -61,7 +67,11 @@ function collectionGetter<T, O extends Chunk | ChunkGroup>(
 ) {
   return function (this: O) {
     const copy = (values: T[]) => (set ? new Set(values) : values.slice());
-    if (!snapshots || typeof this._collectionStamp !== 'function') {
+    if (
+      !snapshots ||
+      !scopeCompilation ||
+      typeof this._collectionStamp !== 'function'
+    ) {
       return copy(original.call(this));
     }
     const map = snapshots[kind];
@@ -69,7 +79,7 @@ function collectionGetter<T, O extends Chunk | ChunkGroup>(
     if (!cached && remainingBytes < 160) return copy(original.call(this));
     let stamp: number | undefined;
     try {
-      stamp = this._collectionStamp(kind);
+      stamp = this._collectionStamp(kind, scopeCompilation);
     } catch {
       return copy(original.call(this));
     }
@@ -83,7 +93,7 @@ function collectionGetter<T, O extends Chunk | ChunkGroup>(
     }
     if (charge <= remainingBytes) {
       try {
-        if (this._collectionStamp(kind) === stamp) {
+        if (this._collectionStamp(kind, scopeCompilation) === stamp) {
           map.set(this, { stamp, values });
           remainingBytes -= charge;
         }

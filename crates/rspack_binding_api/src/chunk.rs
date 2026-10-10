@@ -55,10 +55,17 @@ impl Chunk {
 impl Chunk {
   #[napi(
     js_name = "_collectionStamp",
-    ts_args_type = "kind: 0 | 1 | 2",
+    ts_args_type = "kind: 0 | 1 | 2, scope: JsCompilation",
     ts_return_type = "number | undefined"
   )]
-  pub fn collection_stamp(&self, kind: u32) -> Either<f64, ()> {
+  pub fn collection_stamp(
+    &self,
+    kind: u32,
+    scope: &crate::compilation::JsCompilation,
+  ) -> Either<f64, ()> {
+    if self.compilation_id != scope.id {
+      return Either::B(());
+    }
     match crate::chunk_collections::stamp(self.compilation_id, kind) {
       Some(stamp) => Either::A(stamp),
       None => Either::B(()),

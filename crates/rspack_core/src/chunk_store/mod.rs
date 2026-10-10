@@ -12,8 +12,8 @@ pub struct ChunkByUkey {
 
 impl ChunkByUkey {
   #[doc(hidden)]
-  pub fn collection_token(&self) -> u64 {
-    self.inner.token()
+  pub fn collection_stamp(&self) -> Option<(u64, u64)> {
+    self.inner.stamp()
   }
 
   pub(crate) fn reserve_capacity(&mut self, total: usize) {
@@ -102,8 +102,8 @@ pub struct ChunkGroupByUkey {
 
 impl ChunkGroupByUkey {
   #[doc(hidden)]
-  pub fn collection_token(&self) -> u64 {
-    self.inner.token()
+  pub fn collection_stamp(&self) -> Option<(u64, u64)> {
+    self.inner.stamp()
   }
 
   pub(crate) fn reserve_capacity(&mut self, total: usize) {

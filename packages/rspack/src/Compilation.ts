@@ -375,7 +375,7 @@ export class Compilation {
     const processAssetsHook = new liteTapable.AsyncSeriesHook<Assets>([
       'assets',
     ]);
-    scopeChunkCollectionReads(processAssetsHook);
+    scopeChunkCollectionReads(processAssetsHook, inner);
     const createProcessAssetsHook = <T>(
       name: string,
       stage: number,
