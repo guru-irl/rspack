@@ -308,6 +308,7 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
         .with_diagnostic(map_box_diagnostics_to_module_parse_diagnostics(
           diagnostics,
           loaders,
+          &compiler_options.context,
         )),
       )
     };
@@ -441,6 +442,7 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
       .with_diagnostic(map_box_diagnostics_to_module_parse_diagnostics(
         diagnostics,
         loaders,
+        &compiler_options.context,
       )),
     )
   }

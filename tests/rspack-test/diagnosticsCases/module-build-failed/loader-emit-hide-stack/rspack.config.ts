@@ -9,6 +9,9 @@ export default defineConfig({
         use: [
           {
             loader: './my-loader.mjs',
+            options: {
+              ident: 'diagnostic-options',
+            },
           },
         ],
       },

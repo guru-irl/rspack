@@ -91,21 +91,21 @@ export default [
 				  "errors": Array [
 				    Object {
 				      "code": "ModuleError",
-				      "message": "  × Module Error (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):  │ (Emitted value instead of an instance of Error) null",
+				      "message": "  × Module Error (from ./irregular-error-loader.mjs):  │ (Emitted value instead of an instance of Error) null",
 				      "moduleId": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs!<TEST_ROOT>/fixtures/errors/entry-point.js",
 				      "moduleName": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleTrace": Array [],
-				      "stack": "ModuleError: Module Error (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):(Emitted value instead of an instance of Error) null    at Object.loaderContext.emitError (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
+				      "stack": "ModuleError: Module Error (from ./irregular-error-loader.mjs):(Emitted value instead of an instance of Error) null    at Object.loaderContext.emitError (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
 				    },
 				    Object {
 				      "code": "ModuleError",
-				      "message": "  × Module Error (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):  │ Error",
+				      "message": "  × Module Error (from ./irregular-error-loader.mjs):  │ Error",
 				      "moduleId": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs!<TEST_ROOT>/fixtures/errors/entry-point.js",
 				      "moduleName": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleTrace": Array [],
-				      "stack": "ModuleError: Module Error (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):Error    at Object.loaderContext.emitError (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
+				      "stack": "ModuleError: Module Error (from ./irregular-error-loader.mjs):Error    at Object.loaderContext.emitError (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
 				    },
 				    Object {
 				      "code": "ModuleBuildError",
@@ -120,21 +120,21 @@ export default [
 				  "warnings": Array [
 				    Object {
 				      "code": "ModuleWarning",
-				      "message": "  ⚠ Module Warning (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):  │ (Emitted value instead of an instance of Error) null",
+				      "message": "  ⚠ Module Warning (from ./irregular-error-loader.mjs):  │ (Emitted value instead of an instance of Error) null",
 				      "moduleId": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs!<TEST_ROOT>/fixtures/errors/entry-point.js",
 				      "moduleName": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleTrace": Array [],
-				      "stack": "ModuleWarning: Module Warning (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):(Emitted value instead of an instance of Error) null    at Object.loaderContext.emitWarning (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
+				      "stack": "ModuleWarning: Module Warning (from ./irregular-error-loader.mjs):(Emitted value instead of an instance of Error) null    at Object.loaderContext.emitWarning (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
 				    },
 				    Object {
 				      "code": "ModuleWarning",
-				      "message": "  ⚠ Module Warning (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):  │ Error",
+				      "message": "  ⚠ Module Warning (from ./irregular-error-loader.mjs):  │ Error",
 				      "moduleId": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs!<TEST_ROOT>/fixtures/errors/entry-point.js",
 				      "moduleName": "./irregular-error-loader.mjs!./entry-point.js",
 				      "moduleTrace": Array [],
-				      "stack": "ModuleWarning: Module Warning (from <TEST_ROOT>/fixtures/errors/irregular-error-loader.mjs):Error    at Object.loaderContext.emitWarning (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
+				      "stack": "ModuleWarning: Module Warning (from ./irregular-error-loader.mjs):Error    at Object.loaderContext.emitWarning (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at Object.default (<ROOT>/tests/rspack-test/fixtures/errors/irregular-error-loader.mjs<LINE_COL>)    at <RSPACK_ROOT>/dist/index.js<LINE_COL>    at node:internal/util<LINE_COL>    at new Promise (<anonymous>)    at node:internal/util<LINE_COL>    at isomorphoicRun (<RSPACK_ROOT>/dist/index.js<LINE_COL>)    at runLoaders (<RSPACK_ROOT>/dist/index.js<LINE_COL>)",
 				    },
 				  ],
 				}

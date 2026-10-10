@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use rspack_error::{Diagnostic, Error, Label, dim};
 
-use crate::{BoxLoader, DependencyRange};
+use crate::{BoxLoader, Context, DependencyRange, contextify, parse_resource};
 
 ///////////////////// Module Factory /////////////////////
 
@@ -96,7 +96,7 @@ impl From<ModuleParseError> for Error {
 }
 
 impl ModuleParseError {
-  pub fn new(source: Error, loaders: &[BoxLoader]) -> Self {
+  pub fn new(source: Error, loaders: &[BoxLoader], context: &Context) -> Self {
     let mut help = String::new();
     let mut title = "Module parse failed:";
     if source.is_error() {
@@ -106,7 +106,14 @@ impl ModuleParseError {
         let s = loaders
           .iter()
           .map(|l| {
-            let l = l.identifier().to_string();
+            let identifier = l.identifier();
+            let path = parse_resource(identifier.as_str());
+            let l = contextify(
+              context.as_path(),
+              path
+                .as_ref()
+                .map_or(identifier.as_str(), |resource| resource.path.as_str()),
+            );
             format!("\n * {l}")
           })
           .join("");
@@ -130,10 +137,11 @@ impl ModuleParseError {
 pub fn map_box_diagnostics_to_module_parse_diagnostics(
   diagnostic: Vec<rspack_error::Diagnostic>,
   loaders: &[BoxLoader],
+  context: &Context,
 ) -> Vec<rspack_error::Diagnostic> {
   diagnostic
     .into_iter()
-    .map(|d| Error::from(ModuleParseError::new(d.error, loaders)).into())
+    .map(|d| Error::from(ModuleParseError::new(d.error, loaders, context)).into())
     .collect()
 }
 
