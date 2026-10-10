@@ -1,0 +1,101 @@
+name: Function filename macOS arm64
+on:
+  push:
+    branches: [bench/filename-fn-r-macos]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    name: Release binding (${{ matrix.arm }})
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [base, R]
+    env:
+      CARGO_BUILD_JOBS: 2
+      RUSTUP_TOOLCHAIN: nightly-2026-04-16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.26.0
+      - name: Build matched source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          rustup toolchain install nightly-2026-04-16 --profile minimal --component rust-src
+          ROOT="$GITHUB_WORKSPACE/.spider/scratch/filename-macos"
+          mkdir -p "$ROOT/tmp" "$ROOT/arms/${{ matrix.arm }}/packages/rspack"
+          export TMPDIR="$ROOT/tmp" CARGO_TARGET_DIR="$ROOT/target-${{ matrix.arm }}"
+          REF=768106154a993f955304099f18684fe9b1f52bb8
+          if [ '${{ matrix.arm }}' = R ]; then REF=a061e88c96636ff53d24ac30eeb994c53058247d; fi
+          git worktree add --detach "$ROOT/source" "$REF"
+          python3 .github/scripts/filename-fn-macos/instrument.py "$ROOT/source" '${{ matrix.arm }}'
+          cd "$ROOT/source"
+          pnpm install --frozen-lockfile
+          pnpm run build:binding:release
+          pnpm run build:js
+          cp -R packages/rspack/dist "$ROOT/arms/${{ matrix.arm }}/packages/rspack/dist"
+          cp crates/node_binding/rspack.darwin-arm64.node "$ROOT/arms/${{ matrix.arm }}/native.node"
+          printf '%s\n' "$REF" > "$ROOT/arms/${{ matrix.arm }}/source.sha"
+          shasum -a 256 "$ROOT/arms/${{ matrix.arm }}/native.node"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filename-macos-${{ matrix.arm }}
+          path: .spider/scratch/filename-macos/arms/${{ matrix.arm }}/
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 7
+  measure:
+    name: Interleaved function filename triples
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.26.0
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: filename-macos-base
+          path: .spider/scratch/filename-macos/arms/base
+      - uses: actions/download-artifact@v4
+        with:
+          name: filename-macos-R
+          path: .spider/scratch/filename-macos/arms/R
+      - name: Measure and check output parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          ROOT="$GITHUB_WORKSPACE/.spider/scratch/filename-macos"
+          mkdir -p "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          NODE_HOME="$(dirname "$(dirname "$(command -v node)")")"
+          test -f "$NODE_HOME/include/node/node_api.h"
+          clang -O2 -bundle -undefined dynamic_lookup -DNODE_GYP_MODULE_NAME=footprint -I"$NODE_HOME/include/node" .github/scripts/filename-fn-macos/footprint.c -o "$ROOT/footprint.node"
+          node .github/scripts/filename-fn-macos/fixture.cjs "$ROOT/fixture"
+          python3 .github/scripts/filename-fn-macos/measure.py "$ROOT" > "$ROOT/measurement.log" 2>&1
+          printf 'Report: %s\n' "$ROOT/macos-report.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: filename-macos-results
+          path: .spider/scratch/filename-macos/
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 7
