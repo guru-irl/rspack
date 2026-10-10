@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.source == 'main' && 'f2903b6482' || '0dffff63a1' }}
+          ref: ${{ matrix.source == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || '0dffff63a17220a2f5145e78a9fe4f65cf5a0f0c' }}
           path: source
       - uses: actions/checkout@v4
         with:
