@@ -57,6 +57,7 @@ impl ParserAndGenerator for JsonParserAndGenerator {
       build_info,
       build_meta,
       loaders,
+      compiler_options,
       module_parser_options,
       ..
     } = parse_context;
@@ -131,7 +132,12 @@ impl ParserAndGenerator for JsonParserAndGenerator {
             side_effects_bailout: None,
           }
           .with_diagnostic(vec![
-            Error::from(ModuleParseError::new(err, loaders)).into(),
+            Error::from(ModuleParseError::new(
+              err,
+              loaders,
+              &compiler_options.context,
+            ))
+            .into(),
           ]),
         );
       }

@@ -11,7 +11,6 @@ export default defineConfig({
             loader: './my-loader.mjs',
             options: {
               ident: 'diagnostic-options',
-              includePaths: [import.meta.dirname],
             },
           },
         ],

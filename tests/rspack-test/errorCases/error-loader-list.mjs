@@ -34,7 +34,7 @@ export default [
 				  "errors": Array [
 				    Object {
 				      "code": "ModuleParseError",
-				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expression expected         ╭─[1:0]       1 │ <!DOCTYPE html>         · ─       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * <TEST_ROOT>/fixtures/errors/identity-loader.mjs        You may need an additional loader to handle the result of these loaders.",
+				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expression expected         ╭─[1:0]       1 │ <!DOCTYPE html>         · ─       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * ./identity-loader.mjs        You may need an additional loader to handle the result of these loaders.",
 				      "moduleId": "./abc.html",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/identity-loader.mjs!<TEST_ROOT>/fixtures/errors/abc.html",
 				      "moduleName": "./abc.html",
@@ -43,7 +43,7 @@ export default [
 				    },
 				    Object {
 				      "code": "ModuleParseError",
-				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expected ';', '}' or <eof>         ╭─[1:10]       1 │ <!DOCTYPE html>         ·           ────       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * <TEST_ROOT>/fixtures/errors/identity-loader.mjs        You may need an additional loader to handle the result of these loaders.",
+				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expected ';', '}' or <eof>         ╭─[1:10]       1 │ <!DOCTYPE html>         ·           ────       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * ./identity-loader.mjs        You may need an additional loader to handle the result of these loaders.",
 				      "moduleId": "./abc.html",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/identity-loader.mjs!<TEST_ROOT>/fixtures/errors/abc.html",
 				      "moduleName": "./abc.html",
@@ -79,7 +79,7 @@ export default [
 				  "errors": Array [
 				    Object {
 				      "code": "ModuleParseError",
-				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expression expected         ╭─[1:0]       1 │ <!DOCTYPE html>         · ─       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * <TEST_ROOT>/fixtures/errors/identity-loader.mjs         * <TEST_ROOT>/fixtures/errors/add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
+				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expression expected         ╭─[1:0]       1 │ <!DOCTYPE html>         · ─       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * ./identity-loader.mjs         * ./add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
 				      "moduleId": "./abc.html",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/identity-loader.mjs!<TEST_ROOT>/fixtures/errors/add-comment-loader.mjs!<TEST_ROOT>/fixtures/errors/abc.html",
 				      "moduleName": "./abc.html",
@@ -88,7 +88,7 @@ export default [
 				    },
 				    Object {
 				      "code": "ModuleParseError",
-				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expected ';', '}' or <eof>         ╭─[1:10]       1 │ <!DOCTYPE html>         ·           ────       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * <TEST_ROOT>/fixtures/errors/identity-loader.mjs         * <TEST_ROOT>/fixtures/errors/add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
+				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expected ';', '}' or <eof>         ╭─[1:10]       1 │ <!DOCTYPE html>         ·           ────       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * ./identity-loader.mjs         * ./add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
 				      "moduleId": "./abc.html",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/identity-loader.mjs!<TEST_ROOT>/fixtures/errors/add-comment-loader.mjs!<TEST_ROOT>/fixtures/errors/abc.html",
 				      "moduleName": "./abc.html",
@@ -121,7 +121,7 @@ export default [
 				  "errors": Array [
 				    Object {
 				      "code": "ModuleParseError",
-				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expression expected         ╭─[1:0]       1 │ <!DOCTYPE html>         · ─       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * <TEST_ROOT>/fixtures/errors/identity-loader.mjs         * <TEST_ROOT>/fixtures/errors/add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
+				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expression expected         ╭─[1:0]       1 │ <!DOCTYPE html>         · ─       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * ./identity-loader.mjs         * ./add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
 				      "moduleId": "./abc.html",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/identity-loader.mjs!<TEST_ROOT>/fixtures/errors/add-comment-loader.mjs!<TEST_ROOT>/fixtures/errors/abc.html",
 				      "moduleName": "./abc.html",
@@ -130,7 +130,7 @@ export default [
 				    },
 				    Object {
 				      "code": "ModuleParseError",
-				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expected ';', '}' or <eof>         ╭─[1:10]       1 │ <!DOCTYPE html>         ·           ────       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * <TEST_ROOT>/fixtures/errors/identity-loader.mjs         * <TEST_ROOT>/fixtures/errors/add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
+				      "message": "  × Module parse failed:  ╰─▶   × JavaScript parse error: Expected ';', '}' or <eof>         ╭─[1:10]       1 │ <!DOCTYPE html>         ·           ────       2 │ <html>       3 │     <body>         ╰────        help:         File was processed with these loaders:         * ./identity-loader.mjs         * ./add-comment-loader.mjs        You may need an additional loader to handle the result of these loaders.",
 				      "moduleId": "./abc.html",
 				      "moduleIdentifier": "<TEST_ROOT>/fixtures/errors/identity-loader.mjs!<TEST_ROOT>/fixtures/errors/add-comment-loader.mjs!<TEST_ROOT>/fixtures/errors/abc.html",
 				      "moduleName": "./abc.html",
