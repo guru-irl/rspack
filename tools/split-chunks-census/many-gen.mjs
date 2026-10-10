@@ -27,7 +27,8 @@ for (let i=0;i<leaves;i++) {
   for(const r of routes) routeImports[r].push(`import {value as v${i}} from './${rel}';`);
 }
 for(let r=0;r<5000;r++) {
-  fs.writeFileSync(path.join(src,`route${r}.js`),`${routeImports[r].join('\n')}\nglobalThis.route=${r};\n`);
+  fs.writeFileSync(path.join(src,`route${r}.js`),`${routeImports[r].join('\n')}\nglobalThis.route=${r};
+globalThis.routeValues=[${routeImports[r].map(line=>line.match(/as (v\d+)/)[1]).join(",")}];\n`);
 }
 fs.writeFileSync(path.join(src,'entry.js'),Array.from({length:5000},(_,r)=>`import(/* webpackChunkName: "route-${r}" */ './route${r}.js');`).join('\n'));
 fs.writeFileSync(path.join(root,'topology.json'),JSON.stringify({arm,seed:0,leaves,routes:5000,modules:60001,tiers,maxFanout:arm==='mixed-saturated'?64:2}));
