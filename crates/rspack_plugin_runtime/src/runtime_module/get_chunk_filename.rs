@@ -3,8 +3,8 @@ use std::{borrow::Cow, cmp::Ordering, fmt};
 use itertools::Itertools;
 use rspack_cacheable::with::Unsupported;
 use rspack_core::{
-  Chunk, ChunkGraph, ChunkUkey, Compilation, Filename, FilenameRenderValue, PathData,
-  PlaceholderKind, RuntimeGlobals, RuntimeGlobalsRenderMode, RuntimeModule,
+  Chunk, ChunkGraph, ChunkUkey, Compilation, CompiledStringTemplate, Filename, FilenameRenderValue,
+  PathData, PlaceholderKind, RuntimeGlobals, RuntimeGlobalsRenderMode, RuntimeModule,
   RuntimeModuleGenerateContext, RuntimeTemplate, SourceType, StringTemplatePlaceholder,
   impl_runtime_module,
 };
@@ -349,15 +349,95 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
     };
 
     let mut static_urls = FxIndexMap::default();
-    for (filename_template, chunk_ukey) in
-      chunk_filenames
-        .iter()
-        .filter(|(filename, _)| match &dynamic_filename {
-          None => true,
-          Some(dynamic_filename) => filename.template() != Some(dynamic_filename.as_str()),
-        })
-    {
-      if let Some(chunk) = chunk_map.get(chunk_ukey) {
+    let render_static_url = |compiled: &CompiledStringTemplate<'_>, chunk: &Chunk| {
+      let chunk_id = chunk
+        .id()
+        .map(|chunk_id| unquoted_stringify(Some(chunk_id), chunk_id.as_str()));
+      let chunk_name = match chunk.name() {
+        Some(chunk_name) => Some(unquoted_stringify(chunk.id(), chunk_name)),
+        None => chunk
+          .id()
+          .map(|chunk_id| unquoted_stringify(Some(chunk_id), chunk_id.as_str())),
+      };
+      let chunk_runtime = chunk.runtime().as_str();
+
+      compiled.render_with_path_data(
+        PathData::default()
+          .chunk_id_optional(chunk_id.as_deref())
+          .chunk_name_optional(chunk_name.as_deref())
+          .runtime(chunk_runtime),
+        None,
+        |placeholder| match placeholder.kind() {
+          PlaceholderKind::Hash | PlaceholderKind::FullHash => {
+            Some(render_full_hash(placeholder, compilation, runtime_template))
+          }
+          PlaceholderKind::ChunkHash => chunk
+            .rendered_hash(
+              &compilation.chunk_hashes_artifact,
+              compilation.options.output.hash_digest_length,
+            )
+            .map(|chunk_hash| FilenameRenderValue::Value(Cow::Borrowed(chunk_hash))),
+          PlaceholderKind::ContentHash => chunk
+            .rendered_content_hash_by_source_type(
+              &compilation.chunk_hashes_artifact,
+              &self.source_type,
+              compilation.options.output.hash_digest_length,
+            )
+            .map(|content_hash| FilenameRenderValue::Value(Cow::Borrowed(content_hash))),
+          _ => None,
+        },
+      )
+    };
+    const MAX_BATCH_SIZE: usize = 512;
+    let mut static_chunks = chunk_filenames.iter().peekable();
+    while let Some((filename_template, chunk_ukey)) = static_chunks.next() {
+      if dynamic_filename
+        .as_ref()
+        .is_some_and(|dynamic| filename_template.template() == Some(dynamic.as_str()))
+      {
+        continue;
+      }
+      let Some(chunk) = chunk_map.get(chunk_ukey) else {
+        continue;
+      };
+      if filename_template.supports_batch() {
+        // Preserve insertion order. Only adjacent uses of the same callback
+        // share a dispatch; do not regroup distant calls or cache their results.
+        let mut chunks = vec![chunk];
+        while chunks.len() < MAX_BATCH_SIZE
+          && static_chunks
+            .peek()
+            .is_some_and(|(filename, _)| filename == filename_template)
+        {
+          let (_, next) = static_chunks
+            .next()
+            .expect("static chunk should exist after peek");
+          if let Some(chunk) = chunk_map.get(next) {
+            chunks.push(chunk);
+          }
+        }
+        let paths = chunks
+          .iter()
+          .map(|chunk| {
+            PathData::default()
+              .chunk(chunk.ukey(), compilation)
+              .chunk_name_optional(chunk.name())
+              .chunk_id_optional(chunk.id().map(|id| id.as_str()))
+          })
+          .collect::<Vec<_>>();
+        let templates = filename_template
+          .as_json_string_literal_templates(&paths)
+          .await?;
+        for (chunk, compiled) in chunks.into_iter().zip(templates) {
+          let filename = render_static_url(&compiled, chunk);
+          if let Some(chunk_id) = chunk.id() {
+            static_urls
+              .entry(filename)
+              .or_insert(Vec::new())
+              .push(chunk_id);
+          }
+        }
+      } else {
         let compiled = filename_template
           .as_json_string_literal_template(
             PathData::default()
@@ -367,45 +447,7 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
             None,
           )
           .await?;
-
-        let chunk_id = chunk
-          .id()
-          .map(|chunk_id| unquoted_stringify(Some(chunk_id), chunk_id.as_str()));
-        let chunk_name = match chunk.name() {
-          Some(chunk_name) => Some(unquoted_stringify(chunk.id(), chunk_name)),
-          None => chunk
-            .id()
-            .map(|chunk_id| unquoted_stringify(Some(chunk_id), chunk_id.as_str())),
-        };
-        let chunk_runtime = chunk.runtime().as_str();
-
-        let filename = compiled.render_with_path_data(
-          PathData::default()
-            .chunk_id_optional(chunk_id.as_deref())
-            .chunk_name_optional(chunk_name.as_deref())
-            .runtime(chunk_runtime),
-          None,
-          |placeholder| match placeholder.kind() {
-            PlaceholderKind::Hash | PlaceholderKind::FullHash => {
-              Some(render_full_hash(placeholder, compilation, runtime_template))
-            }
-            PlaceholderKind::ChunkHash => chunk
-              .rendered_hash(
-                &compilation.chunk_hashes_artifact,
-                compilation.options.output.hash_digest_length,
-              )
-              .map(|chunk_hash| FilenameRenderValue::Value(Cow::Borrowed(chunk_hash))),
-            PlaceholderKind::ContentHash => chunk
-              .rendered_content_hash_by_source_type(
-                &compilation.chunk_hashes_artifact,
-                &self.source_type,
-                compilation.options.output.hash_digest_length,
-              )
-              .map(|content_hash| FilenameRenderValue::Value(Cow::Borrowed(content_hash))),
-            _ => None,
-          },
-        );
-
+        let filename = render_static_url(&compiled, chunk);
         if let Some(chunk_id) = chunk.id() {
           static_urls
             .entry(filename)

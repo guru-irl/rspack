@@ -484,6 +484,32 @@ impl Filename {
     }
   }
 
+  pub fn supports_batch(&self) -> bool {
+    matches!(&self.0, FilenameKind::Fn(filename_fn) if filename_fn.supports_batch())
+  }
+
+  pub async fn as_json_string_literal_templates(
+    &self,
+    options: &[PathData<'_>],
+  ) -> rspack_error::Result<impl Iterator<Item = Arc<CompiledStringTemplate<'static>>>> {
+    let templates = match &self.0 {
+      FilenameKind::Template(template) => vec![template.as_str().to_owned(); options.len()],
+      FilenameKind::Fn(filename_fn) => filename_fn
+        .call_batch(options)
+        .await
+        .to_rspack_result_with_message(|e| {
+          format!("Failed to render filename function: {e}. Did you return the correct filename?")
+        })?,
+    };
+    // Keep only returned strings; compile and drop one template at a time.
+    // Function results are deliberately not interned or cached.
+    Ok(templates.into_iter().map(|template| {
+      let template = rspack_util::json_stringify_str(&template);
+      assert_template_len(&template);
+      Arc::new(CompiledStringTemplate::compile_cow(Cow::Owned(template)))
+    }))
+  }
+
   pub fn has_hash_placeholder(&self) -> bool {
     match self.0 {
       FilenameKind::Template(template) => get_or_compile(template).has_hash_placeholder,
@@ -595,7 +621,20 @@ pub trait LocalFilenameFn {
 }
 
 /// The default filename fn trait.
-pub trait FilenameFn: LocalFilenameFn + Debug + Send + Sync {}
+#[async_trait::async_trait]
+pub trait FilenameFn: LocalFilenameFn + Debug + Send + Sync {
+  async fn call_batch(&self, path_data: &[PathData<'_>]) -> rspack_error::Result<Vec<String>> {
+    let mut filenames = Vec::with_capacity(path_data.len());
+    for path_data in path_data {
+      filenames.push(self.call(path_data, None).await?);
+    }
+    Ok(filenames)
+  }
+
+  fn supports_batch(&self) -> bool {
+    false
+  }
+}
 
 impl std::hash::Hash for dyn FilenameFn + '_ {
   fn hash<H: Hasher>(&self, _: &mut H) {}

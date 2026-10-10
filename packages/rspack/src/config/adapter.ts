@@ -1,5 +1,7 @@
 import path from 'node:path';
 import {
+  type AssetInfo,
+  type JsPathData,
   type RawAssetGeneratorDataUrlFnCtx,
   type RawAssetGeneratorOptions,
   type RawAssetInlineGeneratorOptions,
@@ -220,6 +222,25 @@ function getRawOutput(output: Output): RawOutputOptions {
   return {
     ...(output as Required<OutputNormalized>),
     environment: getRawOutputEnvironment(output.environment),
+    filenameBatch: getRawFilenameBatch(output.filename),
+    chunkFilenameBatch: getRawFilenameBatch(output.chunkFilename),
+    cssFilenameBatch: getRawFilenameBatch(output.cssFilename),
+    cssChunkFilenameBatch: getRawFilenameBatch(output.cssChunkFilename),
+  };
+}
+
+function getRawFilenameBatch(
+  filename: Output['filename'],
+): RawOutputOptions['filenameBatch'] {
+  if (typeof filename !== 'function') return;
+  // Native optional callback arguments use null. Preserve it and the undefined
+  // receiver while calling every user function synchronously, as webpack does.
+  const callback = filename as (
+    pathData: JsPathData,
+    assetInfo: AssetInfo | null,
+  ) => string;
+  return paths => {
+    return paths.map(pathData => callback(pathData, null));
   };
 }
 

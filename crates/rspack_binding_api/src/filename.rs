@@ -6,11 +6,14 @@ use napi::{
   bindgen_prelude::{FnArgs, FromNapiValue, TypeName},
 };
 use rspack_core::{Filename, FilenameFn, LocalFilenameFn, PathData, PublicPath};
+use rspack_error::error;
 
 use crate::{
   asset::AssetInfo, compiler_scoped_tsfn::CompilerScopedTsFnHandle as ThreadsafeFunction,
   path_data::JsPathData,
 };
+
+pub(crate) type FilenameBatchTsfn = ThreadsafeFunction<FnArgs<(Vec<JsPathData>,)>, Vec<String>>;
 
 type FilenameValue =
   Either<String, ThreadsafeFunction<FnArgs<(JsPathData, Option<AssetInfo>)>, String>>;
@@ -44,17 +47,24 @@ impl TypeName for JsFilename {
   }
 }
 
-impl From<JsFilename> for Filename {
-  fn from(value: JsFilename) -> Self {
-    match value.filename {
+impl JsFilename {
+  pub(crate) fn into_filename(self, batch: Option<FilenameBatchTsfn>) -> Filename {
+    match self.filename {
       Either::A(template) => Filename::from(template),
-      Either::B(f) => Filename::from(Arc::new(ThreadSafeFilenameFn(Arc::new(
-        move |path_data, asset_info| {
+      Either::B(f) => Filename::from(Arc::new(ThreadSafeFilenameFn(
+        Arc::new(move |path_data, asset_info| {
           let f = f.clone();
           Box::pin(async move { f.call_with_sync((path_data, asset_info).into()).await })
-        },
-      ))) as Arc<dyn FilenameFn>),
+        }),
+        batch,
+      )) as Arc<dyn FilenameFn>),
     }
+  }
+}
+
+impl From<JsFilename> for Filename {
+  fn from(value: JsFilename) -> Self {
+    value.into_filename(None)
   }
 }
 
@@ -62,12 +72,13 @@ impl From<JsFilename> for PublicPath {
   fn from(value: JsFilename) -> Self {
     match value.filename {
       Either::A(template) => template.into(),
-      Either::B(f) => PublicPath::Filename(Filename::from(Arc::new(ThreadSafeFilenameFn(Arc::new(
-        move |path_data, asset_info| {
+      Either::B(f) => PublicPath::Filename(Filename::from(Arc::new(ThreadSafeFilenameFn(
+        Arc::new(move |path_data, asset_info| {
           let f = f.clone();
           Box::pin(async move { f.call_with_sync((path_data, asset_info).into()).await })
-        },
-      ))) as Arc<dyn FilenameFn>)),
+        }),
+        None,
+      )) as Arc<dyn FilenameFn>)),
     }
   }
 }
@@ -79,7 +90,7 @@ pub type FilenameTsfn = Arc<
 >;
 
 /// Wrapper of a thread-safe filename js function. Implements `FilenameFn`
-struct ThreadSafeFilenameFn(FilenameTsfn);
+struct ThreadSafeFilenameFn(FilenameTsfn, Option<FilenameBatchTsfn>);
 
 impl Debug for ThreadSafeFilenameFn {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -101,4 +112,31 @@ impl LocalFilenameFn for ThreadSafeFilenameFn {
     .await
   }
 }
-impl FilenameFn for ThreadSafeFilenameFn {}
+#[async_trait::async_trait]
+impl FilenameFn for ThreadSafeFilenameFn {
+  async fn call_batch(&self, path_data: &[PathData<'_>]) -> rspack_error::Result<Vec<String>> {
+    if let Some(batch) = &self.1 {
+      let paths = path_data
+        .iter()
+        .map(|data| JsPathData::from_path_data(*data))
+        .collect::<Vec<_>>();
+      let count = paths.len();
+      let filenames = batch.call_with_sync((paths,).into()).await?;
+      if filenames.len() != count {
+        return Err(error!(
+          "Filename batch should return one filename per request"
+        ));
+      }
+      return Ok(filenames);
+    }
+    let mut filenames = Vec::with_capacity(path_data.len());
+    for path_data in path_data {
+      filenames.push(self.call(path_data, None).await?);
+    }
+    Ok(filenames)
+  }
+
+  fn supports_batch(&self) -> bool {
+    self.1.is_some()
+  }
+}

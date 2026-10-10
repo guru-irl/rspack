@@ -2884,10 +2884,14 @@ export interface RawOutputOptions {
   enabledWasmLoadingTypes: Array<string>
   webassemblyModuleFilename: string
   filename: JsFilename
+  filenameBatch?: (paths: JsPathData[]) => string[]
   chunkFilename: JsFilename
+  chunkFilenameBatch?: (paths: JsPathData[]) => string[]
   crossOriginLoading: string | false
   cssFilename: JsFilename
+  cssFilenameBatch?: (paths: JsPathData[]) => string[]
   cssChunkFilename: JsFilename
+  cssChunkFilenameBatch?: (paths: JsPathData[]) => string[]
   hotUpdateMainFilename: string
   hotUpdateChunkFilename: string
   hotUpdateGlobal: string

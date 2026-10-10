@@ -6,7 +6,9 @@ use rspack_core::{
 };
 
 use crate::{
-  clean_options::JsCleanOptions, filename::JsFilename, options::library::JsLibraryOptions,
+  clean_options::JsCleanOptions,
+  filename::{FilenameBatchTsfn, JsFilename},
+  options::library::JsLibraryOptions,
   raw_options::WithFalse,
 };
 
@@ -104,11 +106,19 @@ pub struct RawOutputOptions {
   pub enabled_wasm_loading_types: Vec<String>,
   pub webassembly_module_filename: String,
   pub filename: JsFilename,
+  #[napi(ts_type = "(paths: JsPathData[]) => string[]")]
+  pub filename_batch: Option<FilenameBatchTsfn>,
   pub chunk_filename: JsFilename,
+  #[napi(ts_type = "(paths: JsPathData[]) => string[]")]
+  pub chunk_filename_batch: Option<FilenameBatchTsfn>,
   #[napi(ts_type = "string | false")]
   pub cross_origin_loading: RawCrossOriginLoading,
   pub css_filename: JsFilename,
+  #[napi(ts_type = "(paths: JsPathData[]) => string[]")]
+  pub css_filename_batch: Option<FilenameBatchTsfn>,
   pub css_chunk_filename: JsFilename,
+  #[napi(ts_type = "(paths: JsPathData[]) => string[]")]
+  pub css_chunk_filename_batch: Option<FilenameBatchTsfn>,
   pub hot_update_main_filename: String,
   pub hot_update_chunk_filename: String,
   pub hot_update_global: String,
@@ -191,11 +201,15 @@ impl TryFrom<RawOutputOptions> for OutputOptions {
       unique_name: value.unique_name,
       chunk_loading: value.chunk_loading.into(),
       chunk_loading_global: value.chunk_loading_global.as_str().into(),
-      filename: value.filename.into(),
-      chunk_filename: value.chunk_filename.into(),
+      filename: value.filename.into_filename(value.filename_batch),
+      chunk_filename: value
+        .chunk_filename
+        .into_filename(value.chunk_filename_batch),
       cross_origin_loading: value.cross_origin_loading.into(),
-      css_filename: value.css_filename.into(),
-      css_chunk_filename: value.css_chunk_filename.into(),
+      css_filename: value.css_filename.into_filename(value.css_filename_batch),
+      css_chunk_filename: value
+        .css_chunk_filename
+        .into_filename(value.css_chunk_filename_batch),
       hot_update_main_filename: value.hot_update_main_filename.into(),
       hot_update_chunk_filename: value.hot_update_chunk_filename.into(),
       hot_update_global: value.hot_update_global,
