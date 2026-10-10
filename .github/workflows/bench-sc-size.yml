@@ -18,7 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         ref: ${{ fromJSON(inputs.refs || '["f2903b6482cb7a0fcdca912d23062bd94d3d5636", "8b5ea6ac2eb404148499f243226fc631ed16d6a9", "86e4cf5ffebf098b5056b291525e0d3f44556052"]') }}
+    defaults:
+      run:
+        shell: bash
     env:
+      CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
       TARGET_CC: clang
     steps:
@@ -36,6 +40,8 @@ jobs:
           tool-cache: false
       - name: Install diagnostics
         run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
           cargo +stable install cargo-bloat --version 0.12.1 --locked
           cargo +stable install cargo-llvm-lines --version 0.4.45 --locked
       - name: Exact CI build
