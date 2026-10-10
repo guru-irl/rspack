@@ -1,0 +1,78 @@
+name: bench SplitChunks size
+on:
+  push:
+    branches: [bench/sc-size-24, bench/sc-size-25]
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: JSON array of refs to measure
+        default: '["f2903b6482", "8b5ea6ac2e", "86e4cf5ffe"]'
+        type: string
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(inputs.refs || '["f2903b6482", "8b5ea6ac2e", "86e4cf5ffe"]') }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      TARGET_CC: clang
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: ./.github/actions/pnpm/setup
+      - run: pnpm --filter @rspack/binding install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: sc-size
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Install diagnostics
+        run: |
+          cargo +stable install cargo-bloat --version 0.12.1 --locked
+          cargo +stable install cargo-llvm-lines --version 0.4.45 --locked
+      - name: Exact CI build
+        run: |
+          mkdir -p .spider/scratch/sc-size
+          export TMPDIR="$PWD/.spider/scratch/sc-size/tmp"
+          mkdir -p "$TMPDIR"
+          git rev-parse HEAD > .spider/scratch/sc-size/sha.txt
+          rustc -vV > .spider/scratch/sc-size/toolchain.txt
+          clang --version >> .spider/scratch/sc-size/toolchain.txt
+          ld --version >> .spider/scratch/sc-size/toolchain.txt
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen
+          printf '\ntrim-paths = true\nchecksum-freshness = true\n' >> .cargo/config.toml
+          RUST_TARGET=x86_64-unknown-linux-gnu USE_NAPI_CROSS=1 MEASURE_CARGO_FRESH=1 pnpm build:binding:ci 2>&1 | tee .spider/scratch/sc-size/build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/sc-size/unstripped.node
+          nm -S --size-sort --radix=d --demangle .spider/scratch/sc-size/unstripped.node > .spider/scratch/sc-size/symbols.txt
+          readelf -SW .spider/scratch/sc-size/unstripped.node > .spider/scratch/sc-size/sections.txt
+          cp .spider/scratch/sc-size/unstripped.node .spider/scratch/sc-size/rspack.linux-x64-gnu.node
+          strip .spider/scratch/sc-size/rspack.linux-x64-gnu.node
+          stat -c '%s' .spider/scratch/sc-size/rspack.linux-x64-gnu.node > .spider/scratch/sc-size/size.txt
+      - name: CI-profile bloat and LLVM instantiations
+        run: |
+          out="$PWD/.spider/scratch/sc-size"
+          export TMPDIR="$out/tmp"
+          # --profile ci overrides --release: inspect precisely the size-limit profile.
+          args=(--release --profile ci -p rspack_node --lib --target x86_64-unknown-linux-gnu --no-default-features --features plugin,test-loader,perfetto --config 'target."cfg(all())".rustflags=["-Cforce-unwind-tables=yes"]')
+          cargo bloat "${args[@]}" --crates > "$out/bloat-ci-crates.txt"
+          cargo bloat "${args[@]}" -n 200 > "$out/bloat-ci-functions.txt"
+          cargo bloat "${args[@]}" -n 0 --message-format json > "$out/bloat-ci-all.json"
+          for crate in rspack_plugin_split_chunks rspack_binding_api; do
+            cargo llvm-lines --profile ci -p "$crate" --lib --config 'target."cfg(all())".rustflags=["-Cforce-unwind-tables=yes"]' > "$out/llvm-lines-$crate.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sc-size-${{ matrix.ref }}
+          path: .spider/scratch/sc-size
+          retention-days: 14
+          compression-level: 6
