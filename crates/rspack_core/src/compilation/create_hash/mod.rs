@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use async_trait::async_trait;
 use rspack_error::Diagnostic;
 use rspack_hash::{HashFunction, RspackHasher};
@@ -31,27 +33,74 @@ impl PassExt for CreateHashPass {
   }
 }
 
+// Strip terminal control sequences already embedded in diagnostic messages.
+// The renderer's color setting cannot remove those, and code frames are not hash inputs.
+fn strip_ansi(message: &str) -> Cow<'_, str> {
+  if !message.contains('\x1b') {
+    return Cow::Borrowed(message);
+  }
+  let mut text = String::with_capacity(message.len());
+  let mut chars = message.chars().peekable();
+  while let Some(c) = chars.next() {
+    if c != '\x1b' {
+      text.push(c);
+      continue;
+    }
+    match chars.next() {
+      Some('[') => {
+        for c in chars.by_ref() {
+          if ('@'..='~').contains(&c) {
+            break;
+          }
+        }
+      }
+      Some(']') => {
+        while let Some(c) = chars.next() {
+          if c == '\x07' {
+            break;
+          }
+          if c == '\x1b' && chars.peek() == Some(&'\\') {
+            chars.next();
+            break;
+          }
+        }
+      }
+      Some(c) if (' '..='/').contains(&c) => {
+        // Other ESC sequences have optional intermediate bytes and a final byte.
+        while chars.peek().is_some_and(|c| (' '..='/').contains(c)) {
+          chars.next();
+        }
+        chars.next();
+      }
+      _ => {}
+    }
+  }
+  Cow::Owned(text)
+}
+
 fn hash_diagnostics<'a>(
-  compilation_hasher: &mut RspackHasher,
   hash_function: &HashFunction,
   diagnostics: impl Iterator<Item = &'a Diagnostic>,
-) -> Result<()> {
+) -> Vec<u64> {
   let mut hashes = diagnostics
+    // These warnings describe the rebuild machinery, not the compiled output.
+    .filter(|diagnostic| diagnostic.code.as_deref() != Some("NotFriendlyForIncremental"))
     .map(|diagnostic| {
-      // Match the uncolored message exposed to JavaScript, not just its summary.
-      let message = diagnostic.render_report(false)?;
       let mut hasher = RspackHasher::new(hash_function);
-      hasher.update(&message);
-      Ok(hasher.finish())
+      let mut error = Some(&diagnostic.error);
+      while let Some(current) = error {
+        hasher.update(&strip_ansi(&current.message).as_ref());
+        let help = current.help.as_deref().map(strip_ansi);
+        hasher.update(&help.as_deref());
+        error = current.source_error.as_deref();
+      }
+      hasher.finish()
     })
-    .collect::<Result<Vec<_>>>()?;
+    .collect::<Vec<_>>();
   // Diagnostics may arrive from parallel tasks. Keep their order deterministic
-  // without retaining all rendered messages.
+  // without retaining diagnostic text or rendering source code frames.
   hashes.sort_unstable();
-  for hash in hashes {
-    compilation_hasher.write(&hash.to_be_bytes());
-  }
-  Ok(())
+  hashes
 }
 
 #[instrument(name = "Compilation:create_hash",target=TRACING_BENCH_TARGET, skip_all)]
@@ -60,6 +109,17 @@ pub async fn create_hash(
   plugin_driver: SharedPluginDriver,
 ) -> Result<()> {
   let logger = compilation.get_logger("rspack.Compilation");
+
+  // Like webpack/lib/Compilation.js createHash, snapshot diagnostics before sorting
+  // and hashing chunks. Warnings emitted by hashing itself must not affect this hash.
+  let warning_hashes = hash_diagnostics(
+    &compilation.options.output.hash_function,
+    compilation.get_warnings(),
+  );
+  let error_hashes = hash_diagnostics(
+    &compilation.options.output.hash_function,
+    compilation.get_errors(),
+  );
 
   // Check if there are any chunks that depend on full hash, usually only runtime chunks are
   // possible to depend on full hash, but for library type commonjs/module, it's possible to
@@ -404,17 +464,10 @@ pub async fn create_hash(
   }
   logger.time_end(start);
 
-  // Hash raw diagnostics after seal and chunk hashing, before stats filtering.
-  hash_diagnostics(
-    &mut compilation_hasher,
-    &compilation.options.output.hash_function,
-    compilation.get_warnings(),
-  )?;
-  hash_diagnostics(
-    &mut compilation_hasher,
-    &compilation.options.output.hash_function,
-    compilation.get_errors(),
-  )?;
+  // Fold the entry snapshot before chunk hashes, with each kind sorted separately.
+  for hash in warning_hashes.into_iter().chain(error_hashes) {
+    compilation_hasher.write(&hash.to_be_bytes());
+  }
 
   // create full hash
   compilation
