@@ -1,5 +1,10 @@
 name: New Cache Parity
 on:
+  push:
+    branches: [bench/newcache-parity]
+    paths:
+      - '.github/workflows/newcache-parity.yml'
+      - 'scripts/newcache-parity/**'
   workflow_dispatch:
     inputs:
       linux_repeats:
@@ -125,7 +130,7 @@ jobs:
         env:
           FIXTURE_MODULES: ${{ matrix.modules }}
           PAIR: ${{ matrix.pair }}
-          REPEATS: ${{ matrix.host == 'ubuntu-24.04' && inputs.linux_repeats || inputs.mac_repeats }}
+          REPEATS: ${{ matrix.host == 'ubuntu-24.04' && (inputs.linux_repeats || '7') || (inputs.mac_repeats || '3') }}
           HOST: ${{ matrix.host }}
         run: |
           set -euo pipefail
