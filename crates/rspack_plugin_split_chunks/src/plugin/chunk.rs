@@ -141,6 +141,7 @@ impl SplitChunksPlugin {
           &mut compilation.build_chunk_graph_artifact.named_chunks,
         );
         if created && let Some(mut mutations) = compilation.incremental.mutations_write() {
+          rspack_core::incremental::diagnostic::key("split.created", new_chunk_ukey.as_u32());
           mutations.add(Mutation::ChunkAdd {
             chunk: new_chunk_ukey,
           });
@@ -171,6 +172,7 @@ impl SplitChunksPlugin {
       let new_chunk_ukey =
         Compilation::add_chunk(&mut compilation.build_chunk_graph_artifact.chunk_by_ukey);
       if let Some(mut mutations) = compilation.incremental.mutations_write() {
+        rspack_core::incremental::diagnostic::key("split.created", new_chunk_ukey.as_u32());
         mutations.add(Mutation::ChunkAdd {
           chunk: new_chunk_ukey,
         });

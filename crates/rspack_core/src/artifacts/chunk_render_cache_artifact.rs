@@ -65,9 +65,11 @@ impl ChunkRenderCacheArtifact {
     if let Some(entry) = storage.get(&cache_key)
       && entry.filename.as_ref() == output_path
     {
+      crate::incremental::diagnostic::add("render.cache_hit", 1);
       return Ok((entry.source, Vec::new()));
     }
 
+    crate::incremental::diagnostic::add("render.cache_miss", 1);
     let res = generator().await?;
     storage.set(
       cache_key,

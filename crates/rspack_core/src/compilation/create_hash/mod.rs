@@ -123,6 +123,12 @@ pub async fn create_hash(
       .collect()
   };
 
+  crate::incremental::diagnostic::add("chunk.hash_selected", create_hash_chunks.len());
+  if crate::incremental::diagnostic::enabled() {
+    for key in &create_hash_chunks {
+      if compilation.chunk_hashes_artifact.get(key).is_none() { crate::incremental::diagnostic::key("chunk.fresh_hash_key", key.as_u32()); }
+    }
+  }
   let mut compilation_hasher = RspackHasher::from(&compilation.options.output);
 
   fn try_process_chunk_hash_results(
@@ -142,6 +148,7 @@ pub async fn create_hash(
       );
       if chunk_hashes_changed && let Some(mut mutations) = compilation.incremental.mutations_write()
       {
+        crate::incremental::diagnostic::key("chunk.hash_changed", chunk_ukey.as_u32());
         mutations.add(Mutation::ChunkSetHashes { chunk: chunk_ukey });
       }
     }

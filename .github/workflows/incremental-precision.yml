@@ -1,0 +1,131 @@
+name: Incremental precision synthetic benchmark
+on:
+  push:
+    branches: ['bench/incremental-precision']
+    paths: ['.github/workflows/incremental-precision.yml', 'scripts/bench/incremental-precision/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stock:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        package: ['@rspack/core@2.2.8', '@rspack-canary/core@latest']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install public published package and record identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/incremental-precision/{install,results,tmp}
+          echo "TMPDIR=$PWD/.spider/scratch/incremental-precision/tmp" >> "$GITHUB_ENV"
+          cd .spider/scratch/incremental-precision/install
+          printf '{"private":true}\n' > package.json
+          npm view '${{ matrix.package }}' version gitHead dist --json > identity.json
+          npm install --registry=https://registry.npmjs.org --save-exact '${{ matrix.package }}'
+          package='${{ matrix.package }}'
+          package="${package%@*}"
+          echo "RSPACK_CORE_PATH=$PWD/node_modules/$package" >> "$GITHUB_ENV"
+          echo "VARIANT=$package" >> "$GITHUB_ENV"
+      - name: Smoke fixture and logging schema
+        shell: bash
+        run: |
+          SMOKE=1 FIXTURE_ROOT="$PWD/.spider/scratch/incremental-precision/smoke-fixture" RESULT_ROOT="$PWD/.spider/scratch/incremental-precision/smoke-results" node scripts/bench/incremental-precision/run.mjs
+      - name: Measure full fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .spider/scratch/incremental-precision/install/identity.json .spider/scratch/incremental-precision/results/
+          node scripts/bench/incremental-precision/run.mjs | tee .spider/scratch/incremental-precision/results/stdout.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stock-${{ matrix.os }}-${{ strategy.job-index }}
+          path: |
+            .spider/scratch/incremental-precision/results
+            .spider/scratch/incremental-precision/smoke-results
+            .spider/scratch/incremental-precision/install/identity.json
+          if-no-files-found: error
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: '0'
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pnpm
+        uses: ./.github/actions/pnpm/setup
+      - name: Prepare scratch and record upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/incremental-precision/{tmp,diagnostic,oracle,source-stock}
+          echo "TMPDIR=$PWD/.spider/scratch/incremental-precision/tmp" >> "$GITHUB_ENV"
+          echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
+          git log -1 --format=%P > .spider/scratch/incremental-precision/source-stock/upstream-parent.txt
+          echo "SOURCE_SHA=$(git log -1 --format=%P)" >> "$GITHUB_ENV"
+      - name: Install public dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: incremental-precision-${{ matrix.os }}
+          use-cache: true
+          save-if: true
+      - name: Release-equivalent binding and JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo codegen
+          pnpm run build:binding:release
+          pnpm --filter @rspack/core build
+      - name: Smoke counters
+        shell: bash
+        run: |
+          set -euo pipefail
+          RSPACK_DIAG_INCREMENTAL=1 SMOKE=1 FIXTURE_ROOT="$PWD/.spider/scratch/incremental-precision/smoke-fixture" RESULT_ROOT="$PWD/.spider/scratch/incremental-precision/smoke-diagnostic" node scripts/bench/incremental-precision/run.mjs 2> .spider/scratch/incremental-precision/diagnostic/smoke-counters.log
+      - name: Full diagnostic census (not timing evidence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RSPACK_DIAG_INCREMENTAL=1 VARIANT=main-diagnostic RESULT_ROOT="$PWD/.spider/scratch/incremental-precision/diagnostic" node scripts/bench/incremental-precision/run.mjs > .spider/scratch/incremental-precision/diagnostic/stdout.log 2> .spider/scratch/incremental-precision/diagnostic/counters.log
+      - name: Source build with both env vars unset
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY_ONLY=1 VARIANT=main-source-stock RESULT_ROOT="$PWD/.spider/scratch/incremental-precision/source-stock" node scripts/bench/incremental-precision/run.mjs > .spider/scratch/incremental-precision/source-stock/stdout.log
+      - name: Body-only upper-bound oracle (counters disabled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY_ONLY=1 RSPACK_DIAG_TRANSITIVE_OFF=1 VARIANT=main-transitive-off RESULT_ROOT="$PWD/.spider/scratch/incremental-precision/oracle" node scripts/bench/incremental-precision/run.mjs > .spider/scratch/incremental-precision/oracle/stdout.log
+          node scripts/bench/incremental-precision/parity.mjs .spider/scratch/incremental-precision/source-stock .spider/scratch/incremental-precision/oracle > .spider/scratch/incremental-precision/oracle/parity.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnostic-${{ matrix.os }}
+          path: |
+            .spider/scratch/incremental-precision/diagnostic
+            .spider/scratch/incremental-precision/source-stock
+            .spider/scratch/incremental-precision/oracle
+            .spider/scratch/incremental-precision/smoke-diagnostic
+          if-no-files-found: error

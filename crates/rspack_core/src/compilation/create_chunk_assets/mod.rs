@@ -112,6 +112,7 @@ pub async fn create_chunk_assets(
       .copied()
       .collect()
   };
+  if crate::incremental::diagnostic::enabled() { for key in &chunks { crate::incremental::diagnostic::key("asset.selected", key.as_u32()); } }
   let compilation_ref = &*compilation;
   let results = rspack_parallel::scope::<_, Result<_>>(|token| {
     chunks.iter().for_each(|chunk| {
@@ -167,7 +168,9 @@ pub async fn create_chunk_assets(
   {
     compilation.extend_diagnostics(diagnostics);
 
+    crate::incremental::diagnostic::add("asset.replayed_chunks", 1);
     for file_manifest in manifests {
+      crate::incremental::diagnostic::add("asset.replayed_manifests", 1);
       let filename = file_manifest.filename;
       let current_chunk = compilation
         .build_chunk_graph_artifact

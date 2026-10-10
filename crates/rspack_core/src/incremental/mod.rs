@@ -1,3 +1,4 @@
+pub mod diagnostic;
 mod mutations;
 
 use std::{

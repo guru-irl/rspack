@@ -43,6 +43,7 @@ async fn create_module_hashes_pass_impl(compilation: &mut Compilation) -> Result
     }
     let mut modules = mutations.get_affected_modules_with_chunk_graph(compilation);
 
+    let diag_before_runtime = modules.len();
     // check if module runtime changes
     let mg = compilation.get_module_graph();
     for mi in mg.modules_keys() {
@@ -96,6 +97,7 @@ async fn create_module_hashes_pass_impl(compilation: &mut Compilation) -> Result
       }
     }
 
+    crate::incremental::diagnostic::add("mg.runtime_change_delta", modules.len().saturating_sub(diag_before_runtime));
     tracing::debug!(target: incremental::TRACING_TARGET, passes = %IncrementalPasses::MODULES_HASHES, %mutations, ?modules);
     let logger = compilation.get_logger("rspack.incremental.modulesHashes");
     logger.log(format!(
@@ -112,6 +114,7 @@ async fn create_module_hashes_pass_impl(compilation: &mut Compilation) -> Result
       .copied()
       .collect()
   };
+  crate::incremental::diagnostic::add("mg.hash_selected", create_module_hashes_modules.len());
   create_module_hashes(compilation, create_module_hashes_modules).await
 }
 
@@ -153,6 +156,7 @@ pub async fn create_module_hashes(
     if ChunkGraph::set_module_hashes(compilation, module, hashes)
       && let Some(mut mutations) = compilation.incremental.mutations_write()
     {
+      crate::incremental::diagnostic::add("mg.hash_changed", 1);
       mutations.add(Mutation::ModuleSetHashes { module });
     }
   }

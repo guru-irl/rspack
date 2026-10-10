@@ -78,6 +78,7 @@ impl Compilation {
       Box::new(AfterProcessAssetsPass),
       Box::new(AfterSealPass),
     ];
+    crate::incremental::diagnostic::begin();
     self.module_static_cache.enable_new_cache();
 
     for pass in &passes {
@@ -89,6 +90,7 @@ impl Compilation {
     }
 
     self.module_static_cache.disable_cache();
+    crate::incremental::diagnostic::finish();
 
     Ok(())
   }

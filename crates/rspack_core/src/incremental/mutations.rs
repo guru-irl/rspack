@@ -124,6 +124,7 @@ impl Mutations {
     self
       .affected_modules_with_module_graph
       .get_or_init(|| {
+        crate::incremental::diagnostic::activate_oracle(self.iter().any(|m| matches!(m, Mutation::ModuleUpdate { .. })));
         let mut built_modules = IdentifierSet::default();
         let mut built_dependencies = FxHashSet::default();
         for mutation in self.iter() {
@@ -152,6 +153,7 @@ impl Mutations {
       .get_or_init(|| {
         let mg = compilation.get_module_graph();
         let mut modules = self.get_affected_modules_with_module_graph(mg);
+        let diag_initial = modules.len();
         let mut chunks = FxHashSet::default();
         for mutation in self.iter() {
           match mutation {
@@ -193,12 +195,15 @@ impl Mutations {
             _ => {}
           }
         }
+        crate::incremental::diagnostic::add("mg.chunk_graph_nonadd_delta", modules.len().saturating_sub(diag_initial));
+        let diag_before_add = modules.len();
         modules.extend(chunks.into_iter().flat_map(|chunk| {
           compilation
             .build_chunk_graph_artifact
             .chunk_graph
             .get_chunk_modules_identifier(chunk)
         }));
+        crate::incremental::diagnostic::add("mg.chunk_add_delta", modules.len().saturating_sub(diag_before_add));
         modules
       })
       .clone()
@@ -211,6 +216,16 @@ impl Mutations {
     self
       .affected_chunks_with_chunk_graph
       .get_or_init(|| {
+        if crate::incremental::diagnostic::enabled() {
+          for mutation in self.iter() {
+            match mutation {
+              Mutation::ModuleSetHashes { module } => { for c in compilation.build_chunk_graph_artifact.chunk_graph.get_module_chunks(*module) { crate::incremental::diagnostic::key("chunk.cause_module_hash", c.as_u32()); } }
+              Mutation::ChunkAdd { chunk } => crate::incremental::diagnostic::key("chunk.cause_add", chunk.as_u32()),
+              Mutation::ChunkSplit { from, to } => { crate::incremental::diagnostic::key("chunk.cause_split_from", from.as_u32()); crate::incremental::diagnostic::key("chunk.cause_split_to", to.as_u32()); }
+              _ => {}
+            }
+          }
+        }
         self.iter().fold(FxHashSet::default(), |mut acc, mutation| {
           match mutation {
             Mutation::ModuleSetHashes { module } => {
@@ -255,7 +270,7 @@ fn compute_affected_modules_with_module_graph(
   fn reduce_affect_type<'a>(dependencies: impl Iterator<Item = &'a dyn Dependency>) -> AffectType {
     let mut affected = AffectType::False;
     for dependency in dependencies {
-      match dependency.could_affect_referencing_module() {
+      match if crate::incremental::diagnostic::transitive_off() && matches!(dependency.could_affect_referencing_module(), AffectType::Transitive) { AffectType::False } else { dependency.could_affect_referencing_module() } {
         AffectType::True => affected = AffectType::True,
         AffectType::False => {}
         AffectType::Transitive => return AffectType::Transitive,
@@ -303,6 +318,10 @@ fn compute_affected_modules_with_module_graph(
     Transitive(ModuleIdentifier),
   }
 
+  let diag = crate::incremental::diagnostic::enabled();
+  let mut diagnostic_direct = IdentifierSet::default();
+  let mut diagnostic_transitive = IdentifierSet::default();
+  crate::incremental::diagnostic::add("mg.seed", built_modules.len());
   let mut all_affected_modules: IdentifierSet = built_modules.clone();
   let mut transitive_affected_modules: IdentifierSet = {
     let (direct_affected_modules, transitive_affected_modules) =
@@ -311,6 +330,7 @@ fn compute_affected_modules_with_module_graph(
         &all_affected_modules,
         module_graph,
       );
+    if diag { diagnostic_direct.extend(direct_affected_modules.iter().copied()); diagnostic_transitive.extend(transitive_affected_modules.iter().copied()); }
     all_affected_modules.extend(direct_affected_modules);
     transitive_affected_modules
   };
@@ -322,18 +342,20 @@ fn compute_affected_modules_with_module_graph(
   // their parent module into affected modules (The module is affected if there dependencies is updated).
   for dep_id in built_dependencies {
     let dep = module_graph.dependency_by_id(&dep_id);
-    match dep.could_affect_referencing_module() {
+    match if crate::incremental::diagnostic::transitive_off() && matches!(dep.could_affect_referencing_module(), AffectType::Transitive) { AffectType::False } else { dep.could_affect_referencing_module() } {
       AffectType::False => {}
       AffectType::True => {
         let Some(module) = module_graph.get_parent_module(&dep_id) else {
           continue;
         };
+        if diag { diagnostic_direct.insert(*module); }
         all_affected_modules.insert(*module);
       }
       AffectType::Transitive => {
         let Some(module) = module_graph.get_parent_module(&dep_id) else {
           continue;
         };
+        if diag { diagnostic_transitive.insert(*module); }
         transitive_affected_modules.insert(*module);
       }
     };
@@ -348,8 +370,14 @@ fn compute_affected_modules_with_module_graph(
         &all_affected_modules,
         module_graph,
       );
+    if diag { diagnostic_direct.extend(direct_affected_modules.iter().copied()); diagnostic_transitive.extend(transitive_affected_modules.iter().copied()); }
     all_affected_modules.extend(direct_affected_modules);
+    if diag { diagnostic_transitive.extend(new_transitive_affected_modules.iter().copied()); }
     transitive_affected_modules.extend(new_transitive_affected_modules);
   }
+  crate::incremental::diagnostic::add("mg.direct_unique", diagnostic_direct.len());
+  crate::incremental::diagnostic::add("mg.transitive_unique", diagnostic_transitive.len());
+  crate::incremental::diagnostic::add("mg.direct_transitive_overlap", diagnostic_direct.intersection(&diagnostic_transitive).count());
+  crate::incremental::diagnostic::add("mg.selected", all_affected_modules.len());
   all_affected_modules
 }
