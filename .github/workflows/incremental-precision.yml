@@ -74,6 +74,8 @@ jobs:
           node-version: '24'
       - name: Install pnpm
         uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '24'
       - name: Prepare scratch and record upstream source
         shell: bash
         run: |
@@ -81,8 +83,8 @@ jobs:
           mkdir -p .spider/scratch/incremental-precision/{tmp,diagnostic,oracle,source-stock}
           echo "TMPDIR=$PWD/.spider/scratch/incremental-precision/tmp" >> "$GITHUB_ENV"
           echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
-          git log -1 --format=%P > .spider/scratch/incremental-precision/source-stock/upstream-parent.txt
-          echo "SOURCE_SHA=$(git log -1 --format=%P)" >> "$GITHUB_ENV"
+          echo f2903b6482cb7a0fcdca912d23062bd94d3d5636 > .spider/scratch/incremental-precision/source-stock/upstream-parent.txt
+          echo "SOURCE_SHA=f2903b6482cb7a0fcdca912d23062bd94d3d5636" >> "$GITHUB_ENV"
       - name: Install public dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain

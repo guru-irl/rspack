@@ -26,7 +26,7 @@ export function generate(root, { packages = 40, leaves = 700, routes = 3000, gro
       ? `export { ${Array.from({ length: Math.min(groupSize, leaves - g * groupSize) }, (_, j) => `x_${p}_${g * groupSize + j}`).join(', ')} } from './b${g}.js';`
       : `export * from './b${g}.js';`).join('\n') + '\n');
   }
-  put('index.js', Array.from({ length: packages }, (_, p) => `export * from './packages/p${p}/index.js';`).join('\n') + '\n');
+  put('index.js', Array.from({ length: packages }, (_, p) => `export { x_${p}_0 } from './packages/p${p}/lib/l0.js';`).join('\n') + '\n');
   for (let r = 0; r < routes; r++) {
     const p = r % packages;
     const g = Math.floor(r / packages) % groups;
@@ -49,7 +49,7 @@ export function generate(root, { packages = 40, leaves = 700, routes = 3000, gro
 export function setBarrels(root, enabled, { packages = 40, leaves = 700 } = {}) {
   for (let p = 0; p < packages; p++) for (let i = 0; i < leaves; i++) {
     fs.writeFileSync(path.join(root, `packages/p${p}/consumer/c${i}.js`),
-      `import { x_${p}_${i} } from '${enabled ? '../../../index.js' : `../lib/l${i}.js`}';\nexport function c_${p}_${i}(value) { return x_${p}_${i}(value) * 2; }\n`);
+      `import { x_${p}_${i} } from '${enabled ? '../index.js' : `../lib/l${i}.js`}';\nimport { x_${p}_0 as shared } from '${enabled ? '../../../index.js' : '../lib/l0.js'}';\nexport function c_${p}_${i}(value) { return x_${p}_${i}(value) * 2 + shared(value); }\n`);
   }
 }
 
