@@ -1,0 +1,82 @@
+name: New Cache SST Census
+on:
+  push:
+    branches: [bench/newcache-sst-census]
+    paths:
+      - '.github/workflows/newcache-sst-census.yml'
+      - 'scripts/newcache-sst-census/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - name: Install published runtime and prepare inspector
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp results runtime
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          echo '{"private":true}' > runtime/package.json
+          npm install --prefix runtime --registry=https://registry.npmjs.org --save-exact @rspack/core@2.2.8 @rspack/cli@2.2.8
+          npm ls --prefix runtime > results/npm-versions.txt
+          rustup toolchain install stable --profile minimal
+          curl -fL --retry 3 https://crates.io/api/v1/crates/rspack-turbo-persistence/0.1.1/download -o .spider/scratch/persistence.crate
+          sha256sum .spider/scratch/persistence.crate > results/crate-sha256.txt
+          tar -xzf .spider/scratch/persistence.crate -C .spider/scratch
+          CRATE="$PWD/.spider/scratch/rspack-turbo-persistence-0.1.1"
+          cargo +stable build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_inspect
+          cp "$CRATE/target/release/sst_inspect" .spider/scratch/sst_inspect
+          cp "$CRATE/src/bin/sst_inspect.rs" "$CRATE/src/bin/sst_census.rs"
+          python3 - <<'PY'
+          from pathlib import Path
+          crate = Path('.spider/scratch/rspack-turbo-persistence-0.1.1')
+          source = crate / 'src/bin/sst_census.rs'
+          source.write_text(source.read_text().replace('fn main() -> Result<()> {', 'fn original_main() -> Result<()> {') + '\n' + Path('scripts/newcache-sst-census/census.rs').read_text())
+          with (crate / 'Cargo.toml').open('a') as f:
+              f.write('\n[dependencies.serde_json]\nversion = "1"\n\n[[bin]]\nname = "sst_census"\npath = "src/bin/sst_census.rs"\n')
+          PY
+          cargo +stable build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_census
+          cp "$CRATE/target/release/sst_census" .spider/scratch/sst_census
+          cc -O2 -Wall -Wextra -shared -fPIC scripts/newcache-sst-census/capture.c -ldl -o .spider/scratch/capture.so
+          { uname -a; node --version; npm --version; cargo +stable --version; rustc +stable --version; git rev-parse HEAD; } > results/environment.txt
+          sha256sum scripts/newcache-sst-census/gen.mjs runtime/node_modules/@rspack/binding-linux-x64-gnu/*.node .spider/scratch/sst_inspect .spider/scratch/sst_census > results/artifact-sha256.txt
+          node --check scripts/newcache-sst-census/run.mjs
+          python3 -m py_compile scripts/newcache-sst-census/capture.py scripts/newcache-sst-census/report.py
+      - name: Generate fixture, capture first store and finish compaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          node scripts/newcache-sst-census/gen.mjs 60000
+          python3 scripts/newcache-sst-census/capture.py
+      - name: Inspect both database copies and test per-value LZ4
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          for state in pre-compaction post-compaction; do
+            .spider/scratch/sst_inspect "results/$state" --verbose > "results/$state-inspect.txt" 2> "results/$state-inspect.stderr"
+            test ! -s "results/$state-inspect.stderr"
+            .spider/scratch/sst_census "results/$state" "results/$state-census.json"
+            (cd "results/$state" && sha256sum * > ../"$state-files.sha256")
+          done
+          python3 scripts/newcache-sst-census/report.py results > results/sst-census.md
+          cat results/sst-census.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: newcache-sst-census
+          path: results
+          if-no-files-found: error
+          retention-days: 7
