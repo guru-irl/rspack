@@ -35,6 +35,7 @@ jobs:
           sha256sum .spider/scratch/persistence.crate > results/crate-sha256.txt
           tar -xzf .spider/scratch/persistence.crate -C .spider/scratch
           CRATE="$PWD/.spider/scratch/rspack-turbo-persistence-0.1.1"
+          printf '\n[workspace]\n' >> "$CRATE/Cargo.toml"
           cargo +stable build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_inspect
           cp "$CRATE/target/release/sst_inspect" .spider/scratch/sst_inspect
           cp "$CRATE/src/bin/sst_inspect.rs" "$CRATE/src/bin/sst_census.rs"
