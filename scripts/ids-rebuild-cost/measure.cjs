@@ -22,6 +22,7 @@ let invalidStart = null;
 let watchRunStart = null;
 let doneMetrics = null;
 let step = 0;
+let settlingCallbacks = 0;
 const rows = [];
 const cacheGroups = Object.fromEntries([0, 1, 2, 3].map(g => [`shared${g}`, {
   test: new RegExp(`[\\\\/]shared${g}[\\\\/]`), name: `shared${g}`, chunks: 'all', minChunks: 2, minSize: 0, enforce: true, priority: 10 - g,
@@ -40,8 +41,12 @@ const compiler = rspack({
   plugins: [{ apply(c) {
     c.hooks.invalid.tap('IdsBenchmark', filename => {
       console.error(JSON.stringify({ invalidatedFile: filename, step, pending }));
-      assert(pending, 'Unsolicited invalidation');
       assert(filename && fs.realpathSync(filename) === leaf, `Unexpected invalidated file: ${filename}`);
+      if (!pending) {
+        clearTimeout(editTimer);
+        assert(++settlingCallbacks <= 20, 'Watchpack did not settle');
+        return;
+      }
       assert.equal(invalidStart, null, 'Multiple invalidations for one edit');
       invalidStart = { at: performance.now(), cpu: process.cpuUsage() };
     });
@@ -70,12 +75,24 @@ function phaseTimes(logging) {
 
 let watching;
 let editTimer;
+function scheduleEdit() {
+  clearTimeout(editTimer);
+  editTimer = setTimeout(() => {
+    pending = `ids-benchmark-edit-${arm}-${round}-${step}`;
+    fs.writeFileSync(leaf, `export default "${pending}";\n`);
+  }, 1200);
+}
 const timeout = setTimeout(() => { console.error('Benchmark process timed out'); process.exit(1); }, 20 * 60 * 1000);
 watching = compiler.watch({ aggregateTimeout: 20, poll: 100 }, (err, stats) => {
   try {
     if (err) throw err;
     assert(stats && !stats.hasErrors(), stats?.toString({ all: false, errors: true }));
-    assert(step === 0 || pending, 'Unsolicited done callback');
+    if (step > 0 && !pending) {
+      console.log(JSON.stringify({ unmeasuredSettlingCallback: true, step }));
+      invalidStart = null;
+      scheduleEdit();
+      return;
+    }
     assert(step === 0 || invalidStart, 'No invalid hook for requested edit');
     const json = stats.toJson({ all: false, errors: true, warnings: true, logging: 'verbose', loggingDebug: /rspack\.incremental/ });
     const logging = json.logging || {};
@@ -117,10 +134,7 @@ watching = compiler.watch({ aggregateTimeout: 20, poll: 100 }, (err, stats) => {
     if (step <= 5) {
       pending = null;
       invalidStart = null;
-      editTimer = setTimeout(() => {
-        pending = `ids-benchmark-edit-${arm}-${round}-${step}`;
-        fs.writeFileSync(leaf, `export default "${pending}";\n`);
-      }, 1200);
+      scheduleEdit();
     } else {
       clearTimeout(timeout);
       clearTimeout(editTimer);
@@ -129,7 +143,7 @@ watching = compiler.watch({ aggregateTimeout: 20, poll: 100 }, (err, stats) => {
         const data = { arm, ids, round, metadata: { node: process.version, rspack: rspackVersion, cli: require('@rspack/cli/package.json').version,
           os: os.platform(), release: os.release(), arch: os.arch(), cpus: os.cpus().length, cpu: os.cpus()[0].model,
           totalMemoryMiB: os.totalmem() / 1048576, loadAverage: os.loadavg(), timestamp: new Date().toISOString(),
-          cache: 'legacy persistent; empty disk cache for each process; in-process warmup',
+          settlingCallbacks, cache: 'legacy persistent; empty disk cache for each process; in-process warmup',
           watcher: 'Watchpack polling 100 ms; aggregateTimeout 20 ms', peakRssMiB: process.resourceUsage().maxRSS / 1024 }, rows };
         fs.mkdirSync(path.dirname(result), { recursive: true });
         fs.writeFileSync(result, JSON.stringify(data, null, 2));
