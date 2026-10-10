@@ -41,13 +41,7 @@ import { NormalModule } from '../NormalModule';
 import type { ResolveContext } from '../Resolver';
 import { NonErrorEmittedError, type RspackError } from '../RspackError';
 import { JavaScriptTracer } from '../trace';
-import {
-  isNil,
-  serializeObject,
-  stringifyLoaderObject,
-  toBuffer,
-  toObject,
-} from '../util';
+import { isNil, serializeObject, toBuffer, toObject } from '../util';
 import { createHash } from '../util/createHash';
 import {
   absolutify,
@@ -577,8 +571,10 @@ export async function runLoaders(
       e = new NonErrorEmittedError(e);
     }
     const error = new ModuleError(e, {
-      from: stringifyLoaderObject(
-        loaderContext.loaders[loaderContext.loaderIndex],
+      from: contextify(
+        compiler.context,
+        loaderContext.loaders[loaderContext.loaderIndex].path,
+        undefined,
       ),
     });
     error.module = loaderContext._module;
@@ -592,8 +588,10 @@ export async function runLoaders(
       e = new NonErrorEmittedError(e);
     }
     const warning = new ModuleWarning(e, {
-      from: stringifyLoaderObject(
-        loaderContext.loaders[loaderContext.loaderIndex],
+      from: contextify(
+        compiler.context,
+        loaderContext.loaders[loaderContext.loaderIndex].path,
+        undefined,
       ),
     });
     warning.module = loaderContext._module;
