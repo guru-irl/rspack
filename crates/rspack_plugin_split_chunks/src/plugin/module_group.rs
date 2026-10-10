@@ -1281,7 +1281,7 @@ impl SplitChunksPlugin {
   ) {
     // remove all modules from other entries and update size
     let placed_chunk_mask = placed_module_chunks.chunk_mask();
-    crate::census::structural("cleanup_shape",|| {
+    crate::census::structural_controlled("cleanup_shape",|| {
       let mut positive=0usize; let mut work=0usize; let mut maximum=0usize;
       for g in module_group_map.values() { if g.may_have_chunks_in_mask(placed_chunk_mask) {positive+=1; let n=g.modules.len().saturating_mul(g.chunks.len().max(1));work=work.saturating_add(n);maximum=maximum.max(n); } }
       serde_json::json!({"G":module_group_map.len(),"mask_positive":positive,"positive_work":work,"maximum_positive_work":maximum})

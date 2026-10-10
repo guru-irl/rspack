@@ -31,7 +31,12 @@ fn completed() -> &'static Mutex<Vec<Arc<State>>> {
  STATES.get_or_init(|| Mutex::new(Vec::new()))
 }
 extern "C" fn flush_at_exit() {
- for s in completed().lock().unwrap().iter() { wait(s); flush(s); }
+ let states=completed().lock().unwrap();
+ for s in states.iter() { wait(s); }
+ if let Some(s)=states.last() {
+   record(s, json!({"kind":"process_end","at_ns":now(),"counters":rayon_core::census_snapshot(),"cpu":usage(),"pool_width":rayon::current_num_threads()}));
+ }
+ for s in states.iter() { flush(s); }
 }
 fn active() -> &'static Mutex<Option<Arc<State>>> {
   static ACTIVE: OnceLock<Mutex<Option<Arc<State>>>> = OnceLock::new();
@@ -83,6 +88,9 @@ impl Drop for Site {
 }
 pub fn structural(site: &'static str, values: impl FnOnce() -> Value) {
   if let Some(s) = state() { record(&s, json!({"kind":"structure","site":site,"at_ns":now(),"priority":s.priority.load(Relaxed),"winner":s.winner.load(Relaxed),"values":values()})); }
+}
+pub fn structural_controlled(site: &'static str, values: impl FnOnce() -> Value) {
+  if let Some(s)=state() { if s.controlled { record(&s,json!({"kind":"structure","site":site,"at_ns":now(),"priority":s.priority.load(Relaxed),"winner":s.winner.load(Relaxed),"values":values()})); } }
 }
 pub fn context(priority: usize, winner: usize) {
   if let Some(s) = state() { s.priority.store(priority,Relaxed); s.winner.store(winner,Relaxed); }
