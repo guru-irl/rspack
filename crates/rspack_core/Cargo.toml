@@ -83,6 +83,9 @@ swc_experimental_ecma_ast      = { workspace = true }
 swc_experimental_ecma_parser   = { workspace = true }
 swc_experimental_ecma_semantic = { workspace = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = { workspace = true }
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 turbo-persistence = { workspace = true }
 
