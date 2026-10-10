@@ -32,14 +32,14 @@ jobs:
           echo '{"private":true}' > runtime/package.json
           npm install --prefix runtime --registry=https://registry.npmjs.org --save-exact @rspack/core@2.2.8 @rspack/cli@2.2.8
           npm ls --prefix runtime > results/npm-versions.txt
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install nightly-2026-04-16 --profile minimal
           curl -fL --retry 3 https://crates.io/api/v1/crates/rspack-turbo-persistence/0.1.1/download -o .spider/scratch/persistence.crate
           sha256sum .spider/scratch/persistence.crate > results/crate-sha256.txt
           tar -xzf .spider/scratch/persistence.crate -C .spider/scratch
           CRATE="$PWD/.spider/scratch/rspack-turbo-persistence-0.1.1"
           printf '\n[workspace]\n' >> "$CRATE/Cargo.toml"
           export CARGO_TARGET_DIR="$CRATE/target"
-          cargo +stable build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_inspect
+          cargo +nightly-2026-04-16 build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_inspect
           cp "$CRATE/target/release/sst_inspect" .spider/scratch/sst_inspect
           cp "$CRATE/src/bin/sst_inspect.rs" "$CRATE/src/bin/sst_census.rs"
           python3 - <<'PY'
@@ -50,10 +50,10 @@ jobs:
           with (crate / 'Cargo.toml').open('a') as f:
               f.write('\n[dependencies.serde_json]\nversion = "1"\n\n[[bin]]\nname = "sst_census"\npath = "src/bin/sst_census.rs"\n')
           PY
-          cargo +stable build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_census
+          cargo +nightly-2026-04-16 build --release --manifest-path "$CRATE/Cargo.toml" --bin sst_census
           cp "$CRATE/target/release/sst_census" .spider/scratch/sst_census
           cc -O2 -Wall -Wextra -shared -fPIC scripts/newcache-sst-census/capture.c -ldl -o .spider/scratch/capture.so
-          { uname -a; node --version; npm --version; cargo +stable --version; rustc +stable --version; git rev-parse HEAD; } > results/environment.txt
+          { uname -a; node --version; npm --version; cargo +nightly-2026-04-16 --version; rustc +nightly-2026-04-16 --version; git rev-parse HEAD; } > results/environment.txt
           sha256sum scripts/newcache-sst-census/gen.mjs runtime/node_modules/@rspack/binding-linux-x64-gnu/*.node .spider/scratch/sst_inspect .spider/scratch/sst_census > results/artifact-sha256.txt
           node --check scripts/newcache-sst-census/run.mjs
           python3 -m py_compile scripts/newcache-sst-census/capture.py scripts/newcache-sst-census/report.py
