@@ -275,16 +275,34 @@ impl FileCacheStrategy {
     key: &CacheKey,
     etag: Option<&Etag>,
     decoder: CacheValueDecoder,
+    probe: Option<&crate::owner_probe::Counters>,
+  ) -> Option<ErasedCacheValue> {
+    let mut outcome = 3;
+    let result = self.owner_probe_restore(key, etag, decoder, &mut outcome);
+    if let Some(p) = probe {
+      p.record(key, if result.is_some() { outcome } else { 3 });
+    }
+    result
+  }
+
+  fn owner_probe_restore(
+    &self,
+    key: &CacheKey,
+    etag: Option<&Etag>,
+    decoder: CacheValueDecoder,
+    outcome: &mut usize,
   ) -> Option<ErasedCacheValue> {
     let state_guard = self.read_state();
     let state = state_guard.as_ref()?;
     if let Some(pending) = state.pending_writes.entries.get(key) {
+      *outcome = 1;
       return pending
         .entry
         .matches(etag)
         .then(|| pending.entry.value().clone());
     }
 
+    *outcome = 2;
     let result = state.database.get(DatabaseFamily::Cache, key);
     let entry = match result {
       Ok(entry) => entry,
@@ -424,5 +442,25 @@ impl FileCacheStrategy {
       .read_state()
       .as_ref()
       .is_some_and(|state| !state.pending_writes.is_empty())
+  }
+}
+
+impl FileCacheStrategy {
+  pub(super) fn owner_probe_snapshot(&self) -> serde_json::Value {
+    let state = self.state.get().and_then(|s| s.try_read().ok());
+    let database = state.as_ref().and_then(|s| s.as_ref());
+    serde_json::json!({"pending_writes": database.map(|s| s.pending_writes.entries.len()),
+      "block_caches": database.map(|s| s.database.owner_probe_counts()),
+      "filesystem_info": self.validator.owner_probe_fsi().owner_probe_counts()})
+  }
+  pub(super) fn owner_probe_drop_blocks(&self) {
+    if let Some(state) = self.state.get() {
+      if let Some(s) = state.read().expect("probe state").as_ref() {
+        s.database.owner_probe_clear();
+      }
+    }
+  }
+  pub(super) fn owner_probe_drop_fsi(&self) {
+    self.validator.owner_probe_fsi().owner_probe_clear();
   }
 }

@@ -60,7 +60,8 @@ fn counting() -> bool {
     _ => {
       // Decided on the first allocation, so every later free has a counted
       // allocation. getenv doesn't allocate, which matters inside the allocator.
-      let on = !unsafe { getenv(LOG_VAR_C.as_ptr().cast()) }.is_null();
+      let on = !unsafe { getenv(LOG_VAR_C.as_ptr().cast()) }.is_null()
+        || !unsafe { getenv(c"RSPACK_OWNER_PROBE_LOG".as_ptr()) }.is_null();
       STATE.store(if on { ON } else { OFF }, Relaxed);
       on
     }
@@ -173,4 +174,10 @@ pub fn start_sampler() {
       eprintln!("{LOG_VAR}: cannot start sampler: {err}");
     }
   });
+}
+
+pub fn measurement_live_bytes() -> isize {
+  let pending = PENDING.try_with(|p| p.replace(0)).unwrap_or(0);
+  LIVE.fetch_add(pending, Relaxed);
+  LIVE.load(Relaxed)
 }

@@ -21,6 +21,9 @@ impl Compiler {
     changed_files: FxHashSet<String>,
     deleted_files: FxHashSet<String>,
   ) -> Result<()> {
+    if let Some(p) = &self.owner_probe {
+      p.start();
+    }
     let result = match within_compiler_context(
       self.compiler_context.clone(),
       self.rebuild_inner(changed_files, deleted_files),
@@ -28,6 +31,9 @@ impl Compiler {
     .await
     {
       Ok(_) => {
+        if let Some(p) = &self.owner_probe {
+          p.done(&self.compilation);
+        }
         self
           .plugin_driver
           .compiler_hooks

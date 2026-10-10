@@ -1211,3 +1211,14 @@ impl ModuleGraph {
     }
   }
 }
+
+impl ModuleGraph {
+  pub(crate) fn owner_probe_counts(&self) -> [usize; 4] {
+    [
+      self.modules_len(),
+      self.inner.dependencies.owner_probe_len(),
+      self.inner.connections.owner_probe_len(),
+      self.inner.blocks.len(),
+    ]
+  }
+}

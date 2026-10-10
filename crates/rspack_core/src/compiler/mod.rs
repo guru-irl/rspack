@@ -118,6 +118,7 @@ pub struct Compiler {
   pub platform: Arc<CompilerPlatform>,
   compiler_context: Arc<CompilerContext>,
   last_records: Option<Arc<CompilationRecords>>,
+  owner_probe: Option<Arc<crate::owner_probe::CompilerProbe>>,
 }
 
 impl Compiler {
@@ -162,6 +163,13 @@ impl Compiler {
 
     let id = CompilerId::new();
     let compiler_context = compiler_context.unwrap_or_else(|| Arc::new(CompilerContext::new()));
+    let owner_probe = crate::owner_probe::register(
+      id.as_u32(),
+      options.name.as_deref().unwrap_or("unnamed"),
+      compiler_path.clone(),
+      new_cache.clone(),
+      options.experiments.new_cache.is_enabled(),
+    );
     Self {
       id,
       options: options.clone(),
@@ -201,6 +209,7 @@ impl Compiler {
       platform,
       compiler_context,
       last_records: None,
+      owner_probe,
     }
   }
 
@@ -242,9 +251,15 @@ impl Compiler {
   }
 
   pub async fn build(&mut self) -> Result<()> {
+    if let Some(p) = &self.owner_probe {
+      p.start();
+    }
     let compiler_context = self.compiler_context.clone();
     let result = match within_compiler_context(compiler_context, self.build_inner()).await {
       Ok(_) => {
+        if let Some(p) = &self.owner_probe {
+          p.done(&self.compilation);
+        }
         self
           .plugin_driver
           .compiler_hooks

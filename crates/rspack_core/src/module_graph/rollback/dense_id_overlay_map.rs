@@ -7,6 +7,8 @@ pub struct DenseIdOverlayMap<K, V> {
   base: Vec<Option<V>>,
   overlay: Option<Vec<Option<OverlayValue<V>>>>,
   key: PhantomData<K>,
+  probe_len: Option<usize>,
+  probe_checkpoint_len: usize,
 }
 
 impl<K, V> Default for DenseIdOverlayMap<K, V> {
@@ -15,6 +17,8 @@ impl<K, V> Default for DenseIdOverlayMap<K, V> {
       base: Vec::new(),
       overlay: None,
       key: PhantomData,
+      probe_len: crate::owner_probe::enabled().then_some(0),
+      probe_checkpoint_len: 0,
     }
   }
 }
@@ -31,16 +35,26 @@ impl<K: Deref<Target = u32>, V> DenseIdOverlayMap<K, V> {
 
   #[inline]
   pub fn checkpoint(&mut self) {
+    if self.overlay.is_none() {
+      self.probe_checkpoint_len = self.probe_len.unwrap_or(0);
+    }
     self.overlay.get_or_insert_with(Vec::new);
   }
 
   #[inline]
   pub fn reset(&mut self) {
-    self.overlay = None;
+    if self.overlay.take().is_some() {
+      if let Some(n) = &mut self.probe_len {
+        *n = self.probe_checkpoint_len;
+      }
+    }
   }
 
   #[inline]
   pub fn insert(&mut self, key: K, value: V) {
+    if self.probe_len.is_some() && self.get(&key).is_none() {
+      *self.probe_len.as_mut().expect("probe count") += 1;
+    }
     let index = *key as usize;
     if self.overlay.is_some() {
       Self::ensure_len(self.overlay(), index);
@@ -54,6 +68,9 @@ impl<K: Deref<Target = u32>, V> DenseIdOverlayMap<K, V> {
 
   #[inline]
   pub fn remove(&mut self, key: &K) {
+    if self.probe_len.is_some() && self.get(key).is_some() {
+      *self.probe_len.as_mut().expect("probe count") -= 1;
+    }
     let index = **key as usize;
     if self.overlay.is_some() {
       Self::ensure_len(self.overlay(), index);
@@ -183,5 +200,11 @@ mod tests {
     map.reset();
 
     assert_eq!(map.get(&a), Some(&1));
+  }
+}
+
+impl<K, V> DenseIdOverlayMap<K, V> {
+  pub(crate) fn owner_probe_len(&self) -> usize {
+    self.probe_len.unwrap_or(0)
   }
 }

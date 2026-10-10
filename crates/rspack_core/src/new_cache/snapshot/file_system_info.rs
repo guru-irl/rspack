@@ -1331,3 +1331,39 @@ fn is_not_found(error: &FsError) -> bool {
 fn is_not_found_or_not_a_directory(error: &FsError) -> bool {
   matches!(error, FsError::Io(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory))
 }
+
+impl FileSystemInfo {
+  pub(crate) fn owner_probe_counts(&self) -> [usize; 9] {
+    [
+      self.inner.path_classification_cache.len(),
+      self.inner.file_timestamps.len(),
+      self.inner.file_hashes.len(),
+      self.inner.file_timestamp_hashes.len(),
+      self.inner.context_timestamps.len(),
+      self.inner.context_hashes.len(),
+      self.inner.context_timestamp_hashes.len(),
+      self.inner.managed_items.len(),
+      self.inner.managed_item_directory_info.len(),
+    ]
+  }
+  pub(crate) fn owner_probe_clear(&self) {
+    self.inner.path_classification_cache.clear();
+    self.inner.path_classification_cache.shrink_to_fit();
+    self.inner.file_timestamps.clear();
+    self.inner.file_timestamps.shrink_to_fit();
+    self.inner.file_hashes.clear();
+    self.inner.file_hashes.shrink_to_fit();
+    self.inner.file_timestamp_hashes.clear();
+    self.inner.file_timestamp_hashes.shrink_to_fit();
+    self.inner.context_timestamps.clear();
+    self.inner.context_timestamps.shrink_to_fit();
+    self.inner.context_hashes.clear();
+    self.inner.context_hashes.shrink_to_fit();
+    self.inner.context_timestamp_hashes.clear();
+    self.inner.context_timestamp_hashes.shrink_to_fit();
+    self.inner.managed_items.clear();
+    self.inner.managed_items.shrink_to_fit();
+    self.inner.managed_item_directory_info.clear();
+    self.inner.managed_item_directory_info.shrink_to_fit();
+  }
+}

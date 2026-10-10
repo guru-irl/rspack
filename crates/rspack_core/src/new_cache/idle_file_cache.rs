@@ -148,7 +148,7 @@ impl BackgroundJob {
 /// Runs filesystem cache operations in one persistent background job.
 #[derive(Debug)]
 pub struct IdleFileCache {
-  strategy: Arc<FileCacheStrategy>,
+  pub(super) strategy: Arc<FileCacheStrategy>,
   logger: Arc<InfrastructureLogger>,
   command_sender: mpsc::UnboundedSender<Command>,
   idle_epoch: Arc<AtomicU64>,
@@ -218,14 +218,15 @@ impl IdleFileCache {
       .store(key, etag, value.erase(), CacheValue::<T>::encoder());
   }
 
-  pub fn restore<T: CacheValueData>(
+  pub(super) fn restore<T: CacheValueData>(
     &self,
     key: CacheKey,
     etag: Option<Etag>,
+    probe: Option<&crate::owner_probe::Counters>,
   ) -> Option<CacheValue<T>> {
     let restored = self
       .strategy
-      .restore(&key, etag.as_ref(), CacheValue::<T>::decoder());
+      .restore(&key, etag.as_ref(), CacheValue::<T>::decoder(), probe);
     restored.and_then(ErasedCacheValue::downcast)
   }
 

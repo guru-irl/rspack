@@ -162,3 +162,32 @@ impl MemoryCache {
     }
   }
 }
+
+impl MemoryCache {
+  pub(super) fn owner_probe_len(&self) -> usize {
+    self.entries.len()
+  }
+  pub(super) fn owner_probe_users(&self, prefix: &str) -> [usize; 8] {
+    let mut counts = [0; 8];
+    for entry in self.entries.iter() {
+      if entry
+        .key()
+        .as_str()
+        .strip_prefix(prefix)
+        .is_some_and(|s| s.starts_with('|'))
+      {
+        counts[crate::owner_probe::user(entry.key().as_str())] += 1;
+      }
+    }
+    counts
+  }
+  pub(super) fn owner_probe_drop(&self, prefix: &str, user: usize) {
+    self.entries.retain(|k, _| {
+      !(k
+        .as_str()
+        .strip_prefix(prefix)
+        .is_some_and(|s| s.starts_with('|'))
+        && crate::owner_probe::user(k.as_str()) == user)
+    });
+  }
+}

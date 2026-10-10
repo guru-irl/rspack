@@ -33,3 +33,15 @@ pub fn start_live_heap_sampler() {
   #[cfg(not(any(miri, target_family = "wasm")))]
   live_heap::start_sampler();
 }
+
+#[doc(hidden)]
+pub fn measurement_live_bytes() -> isize {
+  #[cfg(not(any(miri, target_family = "wasm")))]
+  {
+    live_heap::measurement_live_bytes()
+  }
+  #[cfg(any(miri, target_family = "wasm"))]
+  {
+    0
+  }
+}

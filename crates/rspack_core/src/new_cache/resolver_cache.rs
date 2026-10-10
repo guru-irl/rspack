@@ -24,6 +24,9 @@ struct CachedResolution {
 }
 
 /// Cloning shares cache, filesystem-info, request locks and statistics within one compilation.
+type ProbeLockMap = FxDashMap<u64, Arc<Mutex<()>>>;
+type ProbeLockRegistry = Arc<std::sync::Mutex<Vec<std::sync::Weak<ProbeLockMap>>>>;
+
 #[derive(Debug, Clone)]
 pub struct ResolverCache {
   cache: CacheFacade,
@@ -31,6 +34,7 @@ pub struct ResolverCache {
   strategy: SnapshotStrategyOptions,
   counter: Arc<CacheCount>,
   locks: Arc<FxDashMap<u64, Arc<Mutex<()>>>>,
+  probe_locks: Option<ProbeLockRegistry>,
 }
 
 impl ResolverCache {
@@ -40,22 +44,34 @@ impl ResolverCache {
     strategy: SnapshotStrategyOptions,
     logger: &impl Logger,
   ) -> Self {
+    let locks = Arc::new(FxDashMap::default());
+    let probe_locks = crate::owner_probe::enabled()
+      .then(|| Arc::new(std::sync::Mutex::new(vec![Arc::downgrade(&locks)])));
     Self {
       cache,
       file_system_info,
       strategy,
       counter: Arc::new(logger.cache("resolver cache")),
-      locks: Default::default(),
+      locks,
+      probe_locks,
     }
   }
 
   pub(crate) fn child(&self, name: &str) -> Self {
+    let locks = Arc::new(FxDashMap::default());
+    if let Some(maps) = &self.probe_locks {
+      maps
+        .lock()
+        .expect("probe locks")
+        .push(Arc::downgrade(&locks));
+    }
     Self {
       cache: self.cache.get_child_cache(name),
       file_system_info: self.file_system_info.clone(),
       strategy: self.strategy,
       counter: Arc::clone(&self.counter),
-      locks: Default::default(),
+      locks,
+      probe_locks: self.probe_locks.clone(),
     }
   }
 
@@ -125,5 +141,23 @@ impl ResolverCache {
 
   pub(crate) fn log(&self, logger: &impl Logger) {
     logger.cache_end(self.counter.as_ref());
+  }
+}
+
+impl ResolverCache {
+  pub(crate) fn owner_probe_locks(&self, clear: bool) -> usize {
+    let Some(maps) = &self.probe_locks else {
+      return 0;
+    };
+    let maps = maps.lock().expect("probe locks");
+    let mut n = 0;
+    for map in maps.iter().filter_map(std::sync::Weak::upgrade) {
+      n += map.len();
+      if clear {
+        map.clear();
+        map.shrink_to_fit();
+      }
+    }
+    n
   }
 }

@@ -622,3 +622,12 @@ fn prefetch_database(path: std::path::PathBuf, mode: &'static str) {
       );
     });
 }
+
+impl TurboDatabase {
+  pub(crate) fn owner_probe_counts(&self) -> [(usize, u64); 2] {
+    self.inner.owner_probe_block_caches()
+  }
+  pub(crate) fn owner_probe_clear(&self) {
+    self.inner.clear_cache();
+  }
+}

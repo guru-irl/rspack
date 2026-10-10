@@ -3,11 +3,15 @@ use crate::DependencyId;
 #[derive(Debug)]
 pub struct DenseDependencyIdMap<V> {
   values: Vec<Option<V>>,
+  probe_len: Option<usize>,
 }
 
 impl<V> Default for DenseDependencyIdMap<V> {
   fn default() -> Self {
-    Self { values: Vec::new() }
+    Self {
+      values: Vec::new(),
+      probe_len: crate::owner_probe::enabled().then_some(0),
+    }
   }
 }
 
@@ -18,15 +22,27 @@ impl<V> DenseDependencyIdMap<V> {
     if self.values.len() <= index {
       self.values.resize_with(index + 1, || None);
     }
-    self.values[index].replace(value)
+    let old = self.values[index].replace(value);
+    if old.is_none() {
+      if let Some(n) = &mut self.probe_len {
+        *n += 1;
+      }
+    }
+    old
   }
 
   #[inline]
   pub fn remove(&mut self, key: &DependencyId) -> Option<V> {
-    self
+    let old = self
       .values
       .get_mut(key.as_u32() as usize)
-      .and_then(Option::take)
+      .and_then(Option::take);
+    if old.is_some() {
+      if let Some(n) = &mut self.probe_len {
+        *n -= 1;
+      }
+    }
+    old
   }
 
   #[inline]
@@ -48,6 +64,9 @@ impl<V> DenseDependencyIdMap<V> {
   #[inline]
   pub fn clear(&mut self) {
     self.values.clear();
+    if let Some(n) = &mut self.probe_len {
+      *n = 0;
+    }
   }
 
   #[inline]
@@ -89,5 +108,11 @@ mod tests {
     assert_eq!(map.remove(&id), Some(1));
     assert_eq!(map.get(&id), None);
     assert_eq!(map.remove(&id), None);
+  }
+}
+
+impl<V> DenseDependencyIdMap<V> {
+  pub(crate) fn owner_probe_len(&self) -> usize {
+    self.probe_len.unwrap_or(0)
   }
 }

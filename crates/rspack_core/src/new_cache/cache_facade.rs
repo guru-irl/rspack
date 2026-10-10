@@ -10,11 +10,17 @@ use super::{Cache, CacheKey, CacheValue, Etag, cache_value::CacheValueData};
 pub struct CacheFacade {
   cache: Arc<Cache>,
   name: String,
+  probe: Option<Arc<crate::owner_probe::Counters>>,
 }
 
 impl CacheFacade {
   pub(crate) fn new(cache: Arc<Cache>, name: String) -> Self {
-    Self { cache, name }
+    let probe = if crate::owner_probe::enabled() {
+      cache.owner_probe_counter(&CacheKey::new(&format!("{name}|")))
+    } else {
+      None
+    };
+    Self { cache, name, probe }
   }
 
   pub(crate) fn get_child_cache(&self, name: &str) -> Self {
@@ -26,6 +32,7 @@ impl CacheFacade {
       cache: self.cache.clone(),
       key: self.key(identifier),
       etag,
+      probe: self.probe.clone(),
     }
   }
 
@@ -34,7 +41,9 @@ impl CacheFacade {
     identifier: &str,
     etag: Option<Etag>,
   ) -> Option<CacheValue<T>> {
-    self.cache.get(self.key(identifier), etag)
+    self
+      .cache
+      .owner_probe_get(self.key(identifier), etag, self.probe.as_deref())
   }
 
   pub fn store<T: CacheValueData>(
@@ -43,7 +52,9 @@ impl CacheFacade {
     etag: Option<Etag>,
     value: CacheValue<T>,
   ) {
-    self.cache.store(self.key(identifier), etag, value)
+    self
+      .cache
+      .owner_probe_store(self.key(identifier), etag, value, self.probe.as_deref())
   }
 
   fn key(&self, identifier: &str) -> CacheKey {
@@ -57,15 +68,23 @@ pub struct ItemCacheFacade {
   cache: Arc<Cache>,
   key: CacheKey,
   etag: Option<Etag>,
+  probe: Option<Arc<crate::owner_probe::Counters>>,
 }
 
 impl ItemCacheFacade {
   pub fn get<T: CacheValueData>(&self) -> Option<CacheValue<T>> {
-    self.cache.get(self.key.clone(), self.etag.clone())
+    self
+      .cache
+      .owner_probe_get(self.key.clone(), self.etag.clone(), self.probe.as_deref())
   }
 
   pub fn store<T: CacheValueData>(&self, value: CacheValue<T>) {
-    self.cache.store(self.key.clone(), self.etag.clone(), value)
+    self.cache.owner_probe_store(
+      self.key.clone(),
+      self.etag.clone(),
+      value,
+      self.probe.as_deref(),
+    )
   }
 }
 

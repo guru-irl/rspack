@@ -7,6 +7,7 @@ mod transient_cache;
 mod exports;
 pub mod legacy_cache;
 mod new_cache;
+pub(crate) mod owner_probe;
 mod value_cache_versions;
 pub use artifacts::*;
 pub use binding::*;

@@ -153,3 +153,20 @@ where
     Ok(value)
   }
 }
+
+impl AsSharedJson {
+  #[doc(hidden)]
+  pub fn owner_probe_counts(full: bool) -> (usize, Option<usize>) {
+    let interner = JSON_INTERNER.lock().expect("JSON interner lock poisoned");
+    (
+      interner.values.len(),
+      full.then(|| {
+        interner
+          .values
+          .values()
+          .filter(|v| v.strong_count() > 0)
+          .count()
+      }),
+    )
+  }
+}

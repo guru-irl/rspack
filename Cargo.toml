@@ -633,3 +633,6 @@ regex_creation_in_loops = "warn"
 # regex
 invalid_regex = "warn"
 trivial_regex = "warn"
+
+[patch.crates-io]
+rspack-turbo-persistence = { path = "crates/owner_probe_turbo" }

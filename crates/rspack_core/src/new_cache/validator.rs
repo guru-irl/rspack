@@ -156,3 +156,9 @@ impl CacheValidator {
     Ok(Some(self.codec.encode(&*data)?))
   }
 }
+
+impl CacheValidator {
+  pub(super) fn owner_probe_fsi(&self) -> &FileSystemInfo {
+    &self.file_system_info
+  }
+}
