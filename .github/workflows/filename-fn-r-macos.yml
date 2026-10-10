@@ -71,7 +71,12 @@ jobs:
           NODE_HOME="$(dirname "$(dirname "$(command -v node)")")"
           test -f "$NODE_HOME/include/node/node_api.h"
           clang -O2 -bundle -undefined dynamic_lookup -DNODE_GYP_MODULE_NAME=footprint -I"$NODE_HOME/include/node" .github/scripts/filename-fn-macos/footprint.c -o "$ROOT/footprint.node"
-          for ARM in base R; do ln -s "$GITHUB_WORKSPACE/packages/rspack/node_modules" "$ROOT/arms/$ARM/packages/rspack/node_modules"; done
+          for ARM in base R; do
+            for ITEM in "$GITHUB_WORKSPACE/packages/rspack/"*; do
+              BASE="$(basename "$ITEM")"
+              if [ "$BASE" != dist ]; then ln -s "$ITEM" "$ROOT/arms/$ARM/packages/rspack/$BASE"; fi
+            done
+          done
           node .github/scripts/filename-fn-macos/fixture.cjs "$ROOT/fixture"
           python3 .github/scripts/filename-fn-macos/measure.py "$ROOT" > "$ROOT/measurement.log" 2>&1
           printf 'Report: %s\n' "$ROOT/macos-report.json"
