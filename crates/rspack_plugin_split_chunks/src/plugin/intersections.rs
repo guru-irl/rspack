@@ -129,6 +129,7 @@ fn discover_intersections(
   };
   // Each task owns its scratch bitmap and deduplication table. Inputs stay
   // immutable for this round, and workers do not contend on a lock.
+  let census_site=crate::census::Site::new("intersection_discovery",bitmaps.len()-first,if bitmaps.len()-first<128 {usize::MAX} else {64});
   let candidates = if bitmaps.len() - first < 128 {
     (first..bitmaps.len()).fold(init(), discover).0
   } else {
@@ -149,6 +150,7 @@ fn discover_intersections(
         left
       })
   };
+  drop(census_site);
   let mut candidates = candidates.into_iter().collect::<Vec<_>>();
   // Preserve serial first-discovery order, including ties in the final sort.
   candidates.sort_unstable_by_key(|entry| entry.order);
@@ -307,6 +309,7 @@ pub(super) fn collect_intersections(
     Some(Intersection { chunks, support })
   };
   // A few hundred support queries are cheaper than parallel scheduling.
+  let census_site=crate::census::Site::new("intersection_support",candidates.len(),if candidates.len()<1024 {usize::MAX} else {1});
   let mut rows: Vec<Intersection> = if candidates.len() < 1_024 {
     let mut common = (
       ChunkBitmap::new(coordinates.len()),
@@ -331,6 +334,7 @@ pub(super) fn collect_intersections(
       .flatten()
       .collect()
   };
+  drop(census_site);
   rows.sort_by_cached_key(|row| {
     let mut hasher = FxHasher::default();
     row.chunks.hash(&mut hasher);

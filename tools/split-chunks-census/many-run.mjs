@@ -11,8 +11,8 @@ const groups={default:false,defaultVendors:false};
 // 24 competing groups per winning stage produces >=10k candidates if all
 // 500 distinct original sets survive. Mixed function/native selectors coexist.
 for(let p=0;p<10;p++) {
-  const winning=every || p%2===0;
-  const tier=every?p:Math.floor(p/2);
+  const winning=every || [0,3,6,8,9].includes(p);
+  const tier=every?p:Math.max(0,[0,3,6,8,9].findLastIndex(v=>v<=p));
   const expr=new RegExp(`[\\/]tier${tier}[\\/]leaf`);
   for(let g=0;g<(winning?24:1);g++) {
     groups[`stage${p}-group${g}`]={priority:100-p,minChunks:2,minSize:winning?0:1e12,chunks:'all',reuseExistingChunk:true,
@@ -21,7 +21,7 @@ for(let p=0;p<10;p++) {
   if(winning) {
     // A single distinct slot is reserved for an actually winning named group.
     // Higher group index makes its equal-size anonymous competitor lose.
-    groups[`stage${p}-named`]={priority:100-p,minChunks:2,minSize:0,chunks:'all',name:`named-${p}`,reuseExistingChunk:true,
+    groups[`stage${p}-named`]={priority:100-p,minChunks:2,minSize:0,chunks:c=>c.name!==`named-${p}`,name:`named-${p}`,reuseExistingChunk:true,
       test:new RegExp(`[\\/]tier${tier}[\\/]named${String(tier).padStart(5,'0')}\\.js$`)};
   }
 }
@@ -43,7 +43,7 @@ try {
   const cost=process.cpuUsage(cpu);
   if(stats.hasErrors()) throw Error(stats.toString({all:false,errors:true}));
   const c=stats.compilation;
-  const routeCount=[...c.chunks].filter(c=>/^route-\d+$/.test(c.name||'')).length;
+  const routeCount=[...c.chunks].filter(c=>/^(route-\d+|named-\d+)$/.test(c.name||'')).length;
   const hashes={};
   for(const asset of c.getAssets()) hashes[asset.name]=crypto.createHash('sha256').update(asset.source.buffer()).digest('hex');
   records.push({phase,wallMs:performance.now()-wall,cpuUserMs:cost.user/1000,cpuSystemMs:cost.system/1000,modules:c.modules.size,chunks:c.chunks.size,routeCount,hashes,usage:process.resourceUsage()});

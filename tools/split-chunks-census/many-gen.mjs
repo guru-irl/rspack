@@ -8,6 +8,7 @@ fs.mkdirSync(src, { recursive: true });
 const routeImports = Array.from({length:5000},()=>[]);
 const tiers = arm === 'every-priority-winner' ? 10 : 5;
 const leaves = 55000;
+const everyName=r=>arm==='every-priority-winner'?r:[0,3,6,8,9][r];
 for (let i=0;i<leaves;i++) {
   const tier=i%tiers;
   const slot=Math.floor(i/tiers)%500;
@@ -19,6 +20,7 @@ for (let i=0;i<leaves;i++) {
   const a=tier*500+slot;
   const b=(a+2500)%5000;
   const routes=new Set([a,b]);
+  if(i<tiers) { routes.add(tier); routes.add((a+100)%5000); }
   if (arm === 'mixed-saturated') {
     // Bounded (64) fan-out makes conservative masks dense. This is a
     // qualification hypothesis, not a claim until measured by the baseline.
@@ -30,6 +32,6 @@ for(let r=0;r<5000;r++) {
   fs.writeFileSync(path.join(src,`route${r}.js`),`${routeImports[r].join('\n')}\nglobalThis.route=${r};
 globalThis.routeValues=[${routeImports[r].map(line=>line.match(/as (v\d+)/)[1]).join(",")}];\n`);
 }
-fs.writeFileSync(path.join(src,'entry.js'),Array.from({length:5000},(_,r)=>`import(/* webpackChunkName: "route-${r}" */ './route${r}.js');`).join('\n'));
+fs.writeFileSync(path.join(src,'entry.js'),Array.from({length:5000},(_,r)=>`import(/* webpackChunkName: "${r<tiers?`named-${everyName(r)}`:`route-${r}`}" */ './route${r}.js');`).join('\n'));
 fs.writeFileSync(path.join(root,'topology.json'),JSON.stringify({arm,seed:0,leaves,routes:5000,modules:60001,tiers,maxFanout:arm==='mixed-saturated'?64:2}));
 console.log('generated',arm);

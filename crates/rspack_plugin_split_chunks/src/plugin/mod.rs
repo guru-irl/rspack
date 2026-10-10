@@ -124,6 +124,7 @@ impl SplitChunksPlugin {
     let logger = compilation.get_logger(self.name());
     let start = logger.time("prepare module data");
 
+    let data_site=crate::census::Site::new("initial_data_parent",0,1);
     let mut all_modules = compilation
       .get_module_graph()
       .modules_keys()
@@ -184,6 +185,7 @@ impl SplitChunksPlugin {
         .collect()
     };
 
+    drop(data_site);
     let start = logger.time("prepare cache groups");
     let mut priority_cache_groups = vec![];
 
@@ -553,6 +555,7 @@ impl SplitChunksPlugin {
         drop(placement_site);
         winners+=1;
         named_winners+=usize::from(module_group.chunk_name.is_some());
+        crate::census::structural("accepted_winner",||serde_json::json!({"group":cache_group.key.as_str(),"named":module_group.chunk_name.is_some(),"shared":module_group.uses_shared_module_chunks(),"reused_destination":is_reuse_existing_chunk,"destination_excluded":!used_chunks.contains(&new_chunk),"modules":module_group.modules.len(),"chunks":module_group.chunks.len()}));
         let movement_site=crate::census::Site::new("graph_movement",module_group.modules.len(),usize::MAX);
         // Only mutate metadata on an existing destination after the winning group has passed all
         // checks. A group skipped after max-request pruning must not leave cache-group metadata on
