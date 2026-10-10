@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 const require = createRequire(path.resolve('runtime/package.json'));
-const { rspack } = require('@rspack/core');
+const { rspack, rspackVersion } = require('@rspack/core');
+if (rspackVersion !== '2.2.8' || require('@rspack/cli/package.json').version !== '2.2.8') throw new Error('Published package version mismatch');
 const root = path.resolve('scripts/newcache-sst-census/project');
 const start = performance.now();
 const events = [];
@@ -27,7 +28,7 @@ const compiler = rspack({
 });
 await new Promise((resolve, reject) => compiler.run((error, stats) => {
   if (error || !stats || stats.hasErrors()) return reject(error || new Error(stats?.toString({ errors: true })));
-  fs.writeFileSync('results/build.json', JSON.stringify({ version: rspack.version, modules: stats.compilation.modules.size, done_ms: performance.now() - start }));
+  fs.writeFileSync('results/build.json', JSON.stringify({ version: rspackVersion, webpack_compat_version: rspack.version, modules: stats.compilation.modules.size, done_ms: performance.now() - start }));
   resolve();
 }));
 // Timer is runner-side idle time, not a benchmark sample. endIdle awaits the
@@ -37,4 +38,4 @@ if (!stored) throw new Error('Missing first-store completion log');
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
 if (events.some(e => /Failed to .*cache|cache.*unavailable/i.test(String(e.args)))) throw new Error('Cache failure');
 fs.writeFileSync('results/events.json', JSON.stringify(events, null, 2));
-console.log(JSON.stringify({ version: rspack.version, closed_ms: performance.now() - start, stored }));
+console.log(JSON.stringify({ version: rspackVersion, closed_ms: performance.now() - start, stored }));
