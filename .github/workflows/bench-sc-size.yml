@@ -6,7 +6,7 @@ on:
     inputs:
       refs:
         description: JSON array of refs to measure
-        default: '["f2903b6482", "8b5ea6ac2e", "86e4cf5ffe"]'
+        default: '["f2903b6482cb7a0fcdca912d23062bd94d3d5636", "8b5ea6ac2eb404148499f243226fc631ed16d6a9", "86e4cf5ffebf098b5056b291525e0d3f44556052"]'
         type: string
 permissions:
   contents: read
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ref: ${{ fromJSON(inputs.refs || '["f2903b6482", "8b5ea6ac2e", "86e4cf5ffe"]') }}
+        ref: ${{ fromJSON(inputs.refs || '["f2903b6482cb7a0fcdca912d23062bd94d3d5636", "8b5ea6ac2eb404148499f243226fc631ed16d6a9", "86e4cf5ffebf098b5056b291525e0d3f44556052"]') }}
     env:
       CARGO_INCREMENTAL: '0'
       TARGET_CC: clang
@@ -61,8 +61,8 @@ jobs:
         run: |
           out="$PWD/.spider/scratch/sc-size"
           export TMPDIR="$out/tmp"
-          # --profile ci overrides --release: inspect precisely the size-limit profile.
-          args=(--release --profile ci -p rspack_node --lib --target x86_64-unknown-linux-gnu --no-default-features --features plugin,test-loader,perfetto --config 'target."cfg(all())".rustflags=["-Cforce-unwind-tables=yes"]')
+          # The size limit consumes ci, not the fat-LTO release profile.
+          args=(--profile ci -p rspack_node --lib --target x86_64-unknown-linux-gnu --no-default-features --features plugin,test-loader,perfetto --config 'target."cfg(all())".rustflags=["-Cforce-unwind-tables=yes"]')
           cargo bloat "${args[@]}" --crates > "$out/bloat-ci-crates.txt"
           cargo bloat "${args[@]}" -n 200 > "$out/bloat-ci-functions.txt"
           cargo bloat "${args[@]}" -n 0 --message-format json > "$out/bloat-ci-all.json"
