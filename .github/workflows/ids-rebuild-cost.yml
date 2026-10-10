@@ -1,0 +1,72 @@
+name: ID rebuild cost
+
+on:
+  push:
+    branches: ['bench/ids-rebuild-cost']
+    paths:
+      - '.github/workflows/ids-rebuild-cost.yml'
+      - 'scripts/ids-rebuild-cost/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [ubuntu-24.04, macos-15]
+        modules: [60000, 15000]
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 120
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+          registry-url: https://registry.npmjs.org
+      - name: Prepare isolated public npm harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$GITHUB_WORKSPACE/.spider/scratch/ids-rebuild-cost"
+          mkdir -p "$BASE/harness" "$BASE/tmp"
+          printf 'registry=https://registry.npmjs.org/\n' > "$BASE/public.npmrc"
+          printf '{"name":"public-synthetic-ids-benchmark","version":"1.0.0","private":true}\n' > "$BASE/harness/package.json"
+          cp scripts/ids-rebuild-cost/*.cjs "$BASE/harness/"
+          echo "TMPDIR=$BASE/tmp" >> "$GITHUB_ENV"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          NPM_CONFIG_USERCONFIG="$BASE/public.npmrc" npm install --prefix "$BASE/harness" --registry=https://registry.npmjs.org --save-exact @rspack/core@2.2.8 @rspack/cli@2.2.8
+          cp "$BASE/harness/package-lock.json" "$BASE/package-lock.json"
+          for file in "$BASE/harness/"*.cjs; do node --check "$file"; done
+          npm ls --prefix "$BASE/harness" @rspack/core @rspack/cli
+          uname -a > "$BASE/host.txt"
+          df -h >> "$BASE/host.txt"
+      - name: Validate watch instrumentation with small generated fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$BASE/harness/run.cjs" "$BASE/smoke" 1000 1
+      - name: Measure seven interleaved fresh-process blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$BASE/harness/run.cjs" "$BASE/measurement" '${{ matrix.modules }}' 7
+          node "$BASE/harness/analyze.cjs" "$BASE/measurement/results" "$BASE/report.md"
+          cp "$BASE/package-lock.json" "$BASE/measurement/results/package-lock.json"
+          cp "$BASE/host.txt" "$BASE/measurement/results/host.txt"
+          cat "$BASE/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ids-${{ matrix.host }}-${{ matrix.modules }}
+          path: |
+            .spider/scratch/ids-rebuild-cost/measurement/results/
+            .spider/scratch/ids-rebuild-cost/smoke/results/
+            .spider/scratch/ids-rebuild-cost/report.md
+            .spider/scratch/ids-rebuild-cost/package-lock.json
+            .spider/scratch/ids-rebuild-cost/host.txt
+          retention-days: 30
