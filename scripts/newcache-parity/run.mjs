@@ -49,7 +49,10 @@ function disk(directory) {
   if (!fs.existsSync(directory)) return { bytes: 0, allocated_bytes: 0, files: 0 };
   let bytes = 0, allocated = 0, files = 0;
   function walk(dir) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (e) { if (e.code === 'ENOENT') return; throw e; }
+    for (const entry of entries) {
       const file = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(file);
       else if (entry.isFile()) {
@@ -109,7 +112,9 @@ const plugin = {
     });
     compiler.hooks.done.tap('measure', stats => {
       stamp('done');
-      current.modules = stats.compilation.modules.size;
+      // Enumerating modules creates JS/Rust wrappers and changes memory usage.
+      // Graph cardinality is checked in diagnostics, not measured processes.
+      current.modules = counted ? stats.compilation.modules.size : null;
       current.memory_done = memory();
     });
   },
