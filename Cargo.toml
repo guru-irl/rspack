@@ -1,4 +1,8 @@
+[patch.crates-io]
+rspack-turbo-persistence = { path = "scripts/newcache-memory/vendor/rspack-turbo-persistence" }
+
 [workspace]
+exclude = ["scripts/newcache-memory/vendor/rspack-turbo-persistence"]
 members  = ["crates/*", "xtask/benchmark", "xtask"]
 resolver = "2"                                      # See https://doc.rust-lang.org/cargo/reference/resolver.html#feature-resolver-version-2
 
