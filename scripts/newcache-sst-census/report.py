@@ -11,6 +11,7 @@ assert pre['duplicate_physical_keys'] == post['duplicate_physical_keys'] == 0
 assert pre['content_crc_sum'] == post['content_crc_sum']
 assert pre['physical_families']['0']['entries'] == post['physical_families']['0']['entries']
 assert build['version'] == '2.2.8'
+assert pre['logical_families'] == post['logical_families']
 assert build['modules'] >= 60000
 MIB = 1048576
 TARGET = 300 * MIB
@@ -72,7 +73,11 @@ for label, data in [('Before compaction', pre), ('After compaction', post)]:
     print('\nFramed8 repacking preserves value order and SST boundaries, flushes when grouped bytes reach >=8192 B, and applies the crate’s strict `compressed < raw - floor(raw/8)` test. Original-groups resets at each original small block; payload-only is an optimistic header-free sensitivity control, not a decodable format. Originally-medium/blob values are **not** compressed into the small class. Headers moving a small value above 4096 B are reported as promotions. New SST/key overhead and the changed compaction selector behavior are not simulated.\n')
     print('### Files eligible for mmap\n')
     print(f'Active SST total: **{mib(data["active_sst_bytes"])} MiB**. Per-file sizes are in the JSON `sst_manifest`. Meta and blob files are shown below; this is mapping address-space/file size, **not measured residency**. The report does not count cache file bytes as anonymous RAM.\n')
-    print('| Extension | Files on disk | Logical size (MiB) |')
+    print('| Active SST sequence | Physical family | File size (bytes) | MiB |')
+    print('|---:|---:|---:|---:|')
+    for row in data['sst_manifest']:
+        print(f'| {row["sequence"]} | {row["family"]} | {row["bytes"]:,} | {mib(row["bytes"])} |')
+    print('\n| Extension | Files on disk | Logical size (MiB) |')
     print('|---|---:|---:|')
     for ext, (count, size) in data['files_by_extension'].items():
         print(f'| {ext} | {count:,} | {mib(size)} |')
