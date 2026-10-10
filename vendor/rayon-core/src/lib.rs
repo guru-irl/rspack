@@ -866,4 +866,5 @@ impl FnContext {
 
 /// Measurement-branch-only accessors.
 pub use stats::census_snapshot;
+/// Sleeping and inactive workers at a benchmark site boundary.
 pub fn census_pool_state() -> (usize, usize) { registry::Registry::current().census_pool_state() }
