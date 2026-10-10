@@ -53,7 +53,7 @@ function filename(field, ext) {
  compiler = null; stats = null;
  if (global.gc) global.gc();
  const closedMemory = memorySnapshot();
- console.log(JSON.stringify({type:'metrics',variant,wallMs,userCpuMs:(usage.userCPUTime-usage0.userCPUTime)/1000,systemCpuMs:(usage.systemCPUTime-usage0.systemCPUTime)/1000,voluntarySwitches:usage.voluntaryContextSwitches-usage0.voluntaryContextSwitches,involuntarySwitches:usage.involuntaryContextSwitches-usage0.involuntaryContextSwitches,endMemory,postGcMemory,closedMemory,maxRssBytes:usage.maxRSS,topology,logging,calls:Array.from({length:used},(_,i)=>[clocks[i],fields[i],stages[i]]),rawTurns,traces}));
+ console.log(JSON.stringify({type:'metrics',variant,wallMs,userCpuMs:(usage.userCPUTime-usage0.userCPUTime)/1000,systemCpuMs:(usage.systemCPUTime-usage0.systemCPUTime)/1000,voluntarySwitches:usage.voluntaryContextSwitches-usage0.voluntaryContextSwitches,involuntarySwitches:usage.involuntaryContextSwitches-usage0.involuntaryContextSwitches,endMemory,postGcMemory,closedMemory,topology,logging,calls:Array.from({length:used},(_,i)=>[clocks[i],fields[i],stages[i]]),rawTurns,traces}));
  // Output scanning is excluded from build wall/CPU/end memory. The process peak below is sampled only until metrics line.
  const files = fs.readdirSync(path.join(fixture,'dist')).sort();
  const manifest = files.map(name=>[name,crypto.createHash('sha256').update(fs.readFileSync(path.join(fixture,'dist',name),'utf8').replace(/(__webpack_require__\.h = \(\) => \(")[^"]*("\))/g,'$1<fullhash>$2')).digest('hex')]);
