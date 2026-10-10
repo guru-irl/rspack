@@ -22,13 +22,28 @@ pub(crate) struct FilesData {
 }
 
 impl FilesData {
-  pub(crate) fn take_aggregated(&mut self) -> (HashSet<String>, HashSet<String>) {
-    let files = std::mem::take(self);
-    (files.changed, files.deleted)
-  }
-
   fn is_empty(&self) -> bool {
     self.changed.is_empty() && self.deleted.is_empty()
+  }
+
+  /// Returns the changed and deleted files, reporting a path in both sets by
+  /// its state on disk. Call it after releasing the lock: it stats paths.
+  pub(crate) fn into_final(mut self) -> (HashSet<String>, HashSet<String>) {
+    // A path in both sets was unlinked and re-created (e.g. git checkout), or
+    // the reverse, within this window. Event order is unreliable (FSEvents
+    // merges flags), so report its state on disk, like watchpack.
+    let deleted = &mut self.deleted;
+    self.changed.retain(|path| {
+      if !deleted.contains(path) {
+        return true;
+      }
+      let exists = std::fs::symlink_metadata(path).is_ok();
+      if exists {
+        deleted.remove(path);
+      }
+      exists
+    });
+    (self.changed, self.deleted)
   }
 }
 
@@ -283,16 +298,17 @@ fn create_execute_aggregate_task(
         tokio::time::sleep(tokio::time::Duration::from_millis(aggregate_timeout)).await;
 
         // Get the files to process
-        let (changed, deleted) = {
+        let files = {
           let mut files = files.lock().expect("should lock files data");
           if files.is_empty() {
             running.store(false, Ordering::Relaxed);
             continue;
           }
-          files.take_aggregated()
+          std::mem::take(&mut *files)
         };
 
-        // Call the event handler with the changed and deleted files
+        // Resolve the batch after releasing the lock: `into_final` stats paths.
+        let (changed, deleted) = files.into_final();
         event_handler.on_event_handle(changed, deleted);
         running.store(false, Ordering::Relaxed);
       }
