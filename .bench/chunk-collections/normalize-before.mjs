@@ -1,0 +1,282 @@
+const tsrSplit = 'tsr-split';
+const tssHydrate = 'tss-hydrate';
+const backslashRegex = /\\/g;
+/**
+ * Convert an OS native path to the POSIX form used by the generated route tree.
+ */
+function toPosixPath(filePath) {
+    return filePath.replace(backslashRegex, '/');
+}
+/**
+ * Extract route file paths from rspack module identifiers.
+ *
+ * In rspack, module identifiers contain query params similar to Vite's moduleIds.
+ * We look for the `tsr-split` query to identify route-split chunks.
+ */
+function getRouteFilePathsFromModules(modules) {
+    let routeFilePaths;
+    let seen;
+    for (const mod of modules) {
+        const identifier = mod.identifier();
+        // rspack module identifiers include loader prefixes separated by '!'.
+        // The actual file path (with query string) is after the last '!'.
+        // Example: "builtin:swc-loader??ruleSet[...]!.../transform.js??...!.../rsc-basic.tsx?tsr-split=component"
+        const lastBangIndex = identifier.lastIndexOf('!');
+        const resourcePart = lastBangIndex >= 0 ? identifier.slice(lastBangIndex + 1) : identifier;
+        const queryIndex = resourcePart.indexOf('?');
+        if (queryIndex < 0)
+            continue;
+        const query = resourcePart.slice(queryIndex + 1);
+        if (!query.includes(tsrSplit))
+            continue;
+        if (!new URLSearchParams(query).has(tsrSplit))
+            continue;
+        const nameForCondition = mod.nameForCondition();
+        // rspack reports module paths using the OS separator, while the generated route
+        // tree records every route `filePath` with POSIX separators. Normalize before the
+        // path becomes a manifest key, otherwise no route matches its chunk on Windows and
+        // every route loses its stylesheets and preloads.
+        const routeFilePath = toPosixPath(nameForCondition ?? resourcePart.slice(0, queryIndex));
+        if (seen?.has(routeFilePath))
+            continue;
+        if (!routeFilePaths || !seen) {
+            routeFilePaths = [];
+            seen = new Set();
+        }
+        routeFilePaths.push(routeFilePath);
+        seen.add(routeFilePath);
+    }
+    return routeFilePaths ?? [];
+}
+function getHydrationIdsFromModules(modules) {
+    let hydrationIds;
+    let seen;
+    for (const mod of modules) {
+        const identifier = mod.identifier();
+        const lastBangIndex = identifier.lastIndexOf('!');
+        const resourcePart = lastBangIndex >= 0 ? identifier.slice(lastBangIndex + 1) : identifier;
+        const queryIndex = resourcePart.indexOf('?');
+        if (queryIndex < 0)
+            continue;
+        const query = resourcePart.slice(queryIndex + 1);
+        if (!query.includes(tssHydrate))
+            continue;
+        const hydrationId = new URLSearchParams(query).get(tssHydrate);
+        if (!hydrationId || seen?.has(hydrationId))
+            continue;
+        if (!hydrationIds || !seen) {
+            hydrationIds = [];
+            seen = new Set();
+        }
+        hydrationIds.push(hydrationId);
+        seen.add(hydrationId);
+    }
+    return hydrationIds ?? [];
+}
+/**
+ * Returns true for Rspack/webpack HMR runtime chunks that should never be
+ * surfaced to the Start manifest. These files are emitted on every rebuild
+ * (e.g. `index.<hash>.hot-update.mjs`) and must not be treated as the entry
+ * chunk, route preloads, or sibling imports.
+ */
+function isHotUpdateAsset(file) {
+    return file.includes('.hot-update.');
+}
+/**
+ * True for any JS/MJS asset that should be included in the manifest.
+ * Excludes HMR runtime patches.
+ */
+function isManifestJsAsset(file) {
+    if (!file.endsWith('.js') && !file.endsWith('.mjs'))
+        return false;
+    return !isHotUpdateAsset(file);
+}
+/**
+ * Get all JS file names from a chunk.
+ */
+function getChunkJsFiles(chunk) {
+    const jsFiles = [];
+    for (const file of chunk.files) {
+        if (isManifestJsAsset(file)) {
+            jsFiles.push(file);
+        }
+    }
+    return jsFiles;
+}
+/**
+ * Compute dynamicImports for a chunk by traversing its chunk groups'
+ * childrenIterable (async/dynamic import edges).
+ *
+ * In rspack, a chunk belongs to one or more ChunkGroups. Each ChunkGroup
+ * has childrenIterable — child ChunkGroups representing dynamic import()
+ * points. The JS files from those child groups' chunks are the
+ * dynamicImports (analogous to Rollup's OutputChunk.dynamicImports).
+ */
+function computeDynamicImports(chunk) {
+    const dynamicImportFiles = [];
+    const seen = new Set();
+    for (const group of chunk.groupsIterable) {
+        for (const childGroup of group.childrenIterable) {
+            for (const childChunk of childGroup.chunks) {
+                for (const file of childChunk.files) {
+                    if (isManifestJsAsset(file) && !seen.has(file)) {
+                        seen.add(file);
+                        dynamicImportFiles.push(file);
+                    }
+                }
+            }
+        }
+    }
+    return dynamicImportFiles;
+}
+/**
+ * Compute static imports (sibling chunks) for an async chunk.
+ *
+ * In rspack/webpack, an async chunk's ChunkGroup contains ALL chunks needed to
+ * satisfy that dynamic import — the async chunk itself plus any shared/vendor
+ * chunks it statically imports. This is analogous to Rollup's
+ * `OutputChunk.imports` for async chunks.
+ *
+ * We collect JS files from all sibling chunks in the group (excluding the
+ * current chunk's own file) to populate the `imports` field.
+ */
+function computeAsyncChunkImports(chunk, currentFile) {
+    const imports = [];
+    const seen = new Set();
+    seen.add(currentFile);
+    for (const group of chunk.groupsIterable) {
+        for (const siblingChunk of group.chunks) {
+            for (const file of siblingChunk.files) {
+                if (isManifestJsAsset(file) && !seen.has(file)) {
+                    seen.add(file);
+                    imports.push(file);
+                }
+            }
+        }
+    }
+    return imports;
+}
+/**
+ * Normalize an rspack compilation into a NormalizedClientBuild.
+ *
+ * Iterates ALL chunks in the compilation (initial + async), not just
+ * entrypoint chunks, to ensure route-split async chunks are included.
+ */
+export function normalizeRspackClientBuild(compilation, inlineCssEnabled = false) {
+    const chunksByFileName = new Map();
+    let cssContentByFileName;
+    let entryChunkFileName;
+    // Collect all initial JS file names from the main entry for computing
+    // the entry chunk's `imports` (vendor/shared sibling chunks).
+    const entrypoint = compilation.entrypoints.get('index');
+    const initialJsFileNames = [];
+    const entryChunkSet = new Set();
+    if (entrypoint) {
+        for (const chunk of entrypoint.chunks) {
+            entryChunkSet.add(chunk);
+            for (const file of chunk.files) {
+                if (isManifestJsAsset(file)) {
+                    initialJsFileNames.push(file);
+                }
+            }
+        }
+    }
+    // Iterate ALL chunks (initial + async) to capture route-split chunks
+    for (const chunk of compilation.chunks) {
+        const modules = compilation.chunkGraph.getChunkModules(chunk);
+        const routeFilePaths = getRouteFilePathsFromModules(modules);
+        const hydrationIds = getHydrationIdsFromModules(modules);
+        const cssFiles = [];
+        const seenCssFiles = new Set();
+        for (const auxFile of chunk.auxiliaryFiles) {
+            if (auxFile.endsWith('.css') && !seenCssFiles.has(auxFile)) {
+                seenCssFiles.add(auxFile);
+                cssFiles.push(auxFile);
+            }
+        }
+        for (const mainFile of chunk.files) {
+            if (mainFile.endsWith('.css') && !seenCssFiles.has(mainFile)) {
+                seenCssFiles.add(mainFile);
+                cssFiles.push(mainFile);
+            }
+        }
+        // The entry chunk is the one named 'index' in the 'index' entrypoint
+        const isEntryChunk = chunk.name === 'index' && entryChunkSet.has(chunk);
+        const jsFiles = getChunkJsFiles(chunk);
+        if (jsFiles.length === 0)
+            continue;
+        // Compute dynamicImports from chunk group children
+        const dynamicImports = computeDynamicImports(chunk);
+        for (const file of jsFiles) {
+            // For the entry chunk, `imports` contains all sibling initial chunks
+            // (vendor/shared). For async chunks, `imports` contains all sibling
+            // chunks from the ChunkGroup (shared dependencies the browser must
+            // load alongside this chunk). This mirrors Rollup's
+            // OutputChunk.imports which lists statically imported chunks.
+            const imports = isEntryChunk
+                ? initialJsFileNames.filter((f) => f !== file)
+                : computeAsyncChunkImports(chunk, file);
+            const normalizedChunk = {
+                fileName: file,
+                isEntry: isEntryChunk,
+                imports,
+                dynamicImports,
+                css: [],
+                routeFilePaths,
+                hydrationIds,
+            };
+            chunksByFileName.set(file, normalizedChunk);
+            if (isEntryChunk && !entryChunkFileName) {
+                entryChunkFileName = file;
+            }
+        }
+        for (const cssFile of cssFiles) {
+            for (const file of jsFiles) {
+                const existing = chunksByFileName.get(file);
+                if (existing && !existing.css.includes(cssFile)) {
+                    existing.css.push(cssFile);
+                }
+            }
+        }
+    }
+    if (!entryChunkFileName) {
+        throw new Error('No entry file found in rspack client build');
+    }
+    if (inlineCssEnabled) {
+        cssContentByFileName = new Map();
+        for (const asset of compilation.getAssets()) {
+            if (!asset.name.endsWith('.css')) {
+                continue;
+            }
+            const css = getCssAssetSource(asset.source.source());
+            if (css !== undefined) {
+                cssContentByFileName.set(asset.name, css);
+            }
+        }
+    }
+    // In RSC mode, CSS from server components is associated with the 'rsc'
+    // client entry chunk (not the main 'index' entry). The manifest builder
+    // merges the entry chunk's CSS into __root__, so by appending RSC CSS
+    // to the entry chunk, those stylesheets get loaded on all pages.
+    // CSS may appear in either `files` or `auxiliaryFiles` depending on
+    // rspack's CSS extraction strategy.
+    const rscEntrypoint = compilation.entrypoints.get('rsc');
+    if (rscEntrypoint && entryChunkFileName) {
+        const mainEntryChunk = chunksByFileName.get(entryChunkFileName);
+        if (mainEntryChunk) {
+            for (const rscChunk of rscEntrypoint.chunks) {
+                const allFiles = [...rscChunk.files, ...rscChunk.auxiliaryFiles];
+                for (const file of allFiles) {
+                    if (file.endsWith('.css') && !mainEntryChunk.css.includes(file)) {
+                        mainEntryChunk.css.push(file);
+                    }
+                }
+            }
+        }
+    }
+    return {
+        entryChunkFileName,
+        chunksByFileName,
+        cssContentByFileName,
+    };
+}

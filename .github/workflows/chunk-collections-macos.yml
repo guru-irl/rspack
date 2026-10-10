@@ -1,0 +1,103 @@
+name: Chunk collections macOS memory
+on:
+  push:
+    branches: [bench/chunk-collections-macos]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  packs:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-collections-macos
+          use-cache: false
+      - name: Build frozen packs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export BENCH_ROOT="$GITHUB_WORKSPACE/.spider/scratch/chunk-collections"
+          export TMPDIR="$BENCH_ROOT/tmp"
+          export CARGO_TARGET_DIR="$BENCH_ROOT/target"
+          mkdir -p "$TMPDIR" "$BENCH_ROOT/packs/base" "$BENCH_ROOT/packs/candidate"
+          cp -R .bench/chunk-collections "$BENCH_ROOT/harness"
+          git diff f2903b6482cb7a0fcdca912d23062bd94d3d5636 HEAD -- crates packages tests > "$BENCH_ROOT/candidate.patch"
+          git apply --reverse "$BENCH_ROOT/candidate.patch"
+          pnpm install --frozen-lockfile
+          pnpm run build:cli:release 2>&1 | tee "$BENCH_ROOT/base-build.log"
+          cp crates/node_binding/*.node "$BENCH_ROOT/packs/base/"
+          cp -R packages/rspack/dist "$BENCH_ROOT/packs/base/"
+          shasum -a 256 "$BENCH_ROOT/packs/base/"*.node > "$BENCH_ROOT/base-sha256.txt"
+          git apply "$BENCH_ROOT/candidate.patch"
+          find crates xtask -name '*.rs' -exec touch {} +
+          pnpm run build:cli:release 2>&1 | tee "$BENCH_ROOT/candidate-build.log"
+          cp crates/node_binding/*.node "$BENCH_ROOT/packs/candidate/"
+          cp -R packages/rspack/dist "$BENCH_ROOT/packs/candidate/"
+          shasum -a 256 "$BENCH_ROOT/packs/candidate/"*.node > "$BENCH_ROOT/candidate-sha256.txt"
+          grep 'Compiling rspack_core\|Compiling rspack_binding_api\|Compiling rspack_node' "$BENCH_ROOT/candidate-build.log"
+          node "$BENCH_ROOT/harness/fixture.mjs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-collections-macos-packs
+          path: |
+            .spider/scratch/chunk-collections/packs
+            .spider/scratch/chunk-collections/harness
+            .spider/scratch/chunk-collections/fixture-small
+            .spider/scratch/chunk-collections/fixture-large
+            .spider/scratch/chunk-collections/*-build.log
+            .spider/scratch/chunk-collections/*-sha256.txt
+          include-hidden-files: true
+  memory:
+    needs: packs
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        size: [small, large]
+        workload: [single, multi, no-reader]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/pnpm/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: chunk-collections-macos-packs
+          path: .spider/scratch/chunk-collections
+      - name: Calibrate and compare
+        shell: bash
+        env:
+          SIZE: ${{ matrix.size }}
+          WORKLOAD: ${{ matrix.workload }}
+        run: |
+          set -euo pipefail
+          export BENCH_ROOT="$GITHUB_WORKSPACE/.spider/scratch/chunk-collections"
+          export TMPDIR="$BENCH_ROOT/tmp"
+          mkdir -p "$TMPDIR" "$BENCH_ROOT/results" "$BENCH_ROOT/logs"
+          pnpm install --frozen-lockfile
+          for arm in base candidate; do
+            ln -s "$GITHUB_WORKSPACE/packages/rspack/node_modules" "$BENCH_ROOT/packs/$arm/node_modules"
+            ln -s "$GITHUB_WORKSPACE/packages/rspack/compiled" "$BENCH_ROOT/packs/$arm/compiled"
+          done
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$BENCH_ROOT/node_modules"
+          for rep in $(seq 1 56); do
+            if (( rep % 2 )); then order='base baseprime'; else order='baseprime base'; fi
+            for arm in $order; do node --expose-gc "$BENCH_ROOT/harness/bench.mjs" "$arm" "$SIZE" "$WORKLOAD" memory "aa-$rep" > "$BENCH_ROOT/logs/$SIZE-$WORKLOAD-aa-$rep-$arm.log" 2>&1; done
+          done
+          for rep in $(seq 1 7); do
+            if (( rep % 2 )); then order='base candidate'; else order='candidate base'; fi
+            for arm in $order; do node --expose-gc "$BENCH_ROOT/harness/bench.mjs" "$arm" "$SIZE" "$WORKLOAD" memory "ab-$rep" > "$BENCH_ROOT/logs/$SIZE-$WORKLOAD-ab-$rep-$arm.log" 2>&1; done
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chunk-collections-macos-${{ matrix.size }}-${{ matrix.workload }}
+          path: |
+            .spider/scratch/chunk-collections/results
+            .spider/scratch/chunk-collections/logs
+          include-hidden-files: true
