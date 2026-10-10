@@ -632,3 +632,7 @@ regex_creation_in_loops = "warn"
 # regex
 invalid_regex = "warn"
 trivial_regex = "warn"
+
+# Measurement branch only. Never upstream.
+[patch.crates-io]
+rayon-core = { path = "vendor/rayon-core" }

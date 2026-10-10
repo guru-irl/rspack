@@ -368,6 +368,7 @@ impl ChunkCombinations<'_> {
 }
 
 impl Combinator {
+  pub(super) fn census_len(&self) -> usize { self.combinations.len()+self.used_exports_combinations.len()+self.non_used_exports_chunks_keys.len()+self.grouped_by_exports.len() }
   fn candidates(&self, used_exports: bool) -> Option<&CandidateRelations> {
     if used_exports {
       self.used_exports_candidates.as_ref()
@@ -410,6 +411,7 @@ impl Combinator {
         modules_by_row[*row].push(module);
       }
     }
+    let _site=crate::census::Site::new("direct_candidates",candidates.intersections.len(),1);
     candidates
       .intersections
       .par_iter()
@@ -534,6 +536,7 @@ impl Combinator {
       Self::index_original_sets_from_postings(combinations, chunk_sets_by_count);
       return;
     }
+    let row_site=crate::census::Site::new("subset_rows",chunk_sets_by_count.len(),1);
     let rows = chunk_sets_by_count
       .par_iter()
       .map(|set| {
@@ -553,6 +556,7 @@ impl Combinator {
         )
       })
       .collect::<Vec<_>>();
+    drop(row_site);
     combinations.extend(rows);
   }
 
@@ -568,6 +572,7 @@ impl Combinator {
     }
     // Every superset must contain the rarest chunk of this original. Check
     // only those rows instead of testing every smaller/larger pair in the graph.
+    let row_site=crate::census::Site::new("posting_rows",originals.len(),1);
     let supersets = originals
       .par_iter()
       .map(|set| {
@@ -588,6 +593,7 @@ impl Combinator {
           .collect::<Vec<_>>()
       })
       .collect::<Vec<_>>();
+    drop(row_site);
     let mut subsets = vec![vec![]; originals.len()];
     // Transpose in original order so each cached row keeps the same iteration
     // order as the full scan, independently of parallel discovery scheduling.
@@ -596,7 +602,8 @@ impl Combinator {
         subsets[superset].push(subset);
       }
     }
-    combinations.extend(
+    let row_site=crate::census::Site::new("materialize_rows",subsets.len(),1);
+    let rows=
       subsets
         .into_par_iter()
         .enumerate()
@@ -612,8 +619,9 @@ impl Combinator {
             },
           )
         })
-        .collect::<Vec<_>>(),
-    );
+        .collect::<Vec<_>>();
+    drop(row_site);
+    combinations.extend(rows);
   }
 
   fn prepare_combinations(
@@ -623,6 +631,7 @@ impl Combinator {
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
     preparation: &IntersectionPreparation<'_>,
   ) -> Option<CandidateRelations> {
+    crate::census::structural("original_sets", || serde_json::json!({"D":chunk_sets_by_count.len(),"row_placements":chunk_sets_by_count.iter().map(|s|s.len()).sum::<usize>()}));
     // Both indexing paths retain candidates in this order.
     chunk_sets_by_count.sort_unstable_by_key(|set| (set.len(), set.key));
     let Some((min_chunks, _)) = &preparation.settings else {
@@ -692,10 +701,12 @@ impl Combinator {
     min_chunks: usize,
     intersection_preparation: IntersectionPreparation<'_>,
   ) {
+    let _parent=crate::census::Site::new("combination_parent",all_modules.len(),1);
     let intersection_min_chunks = intersection_preparation
       .settings
       .as_ref()
       .map(|(min_chunks, _)| *min_chunks);
+    let key_site=crate::census::Site::new("module_keys",all_modules.len(),1);
     self.non_used_exports_chunks_keys = all_modules
       .par_iter()
       .enumerate()
@@ -711,6 +722,7 @@ impl Combinator {
       })
       .collect::<Vec<_>>();
 
+    drop(key_site);
     let mut chunk_sets_in_graph = FxHashMap::with_capacity_and_hasher(
       self.non_used_exports_chunks_keys.len(),
       Default::default(),
@@ -759,10 +771,12 @@ impl Combinator {
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
     intersection_preparation: IntersectionPreparation<'_>,
   ) {
+    let _parent=crate::census::Site::new("used_exports_parent",all_modules.len(),1);
     let intersection_min_chunks = intersection_preparation
       .settings
       .as_ref()
       .map(|(min_chunks, _)| *min_chunks);
+    let key_site=crate::census::Site::new("used_exports_keys",all_modules.len(),1);
     let (grouped_by_exports, used_exports_chunks): (Vec<_>, Vec<_>) = all_modules
       .par_iter()
       .enumerate()
@@ -789,6 +803,7 @@ impl Combinator {
       })
       .unzip();
 
+    drop(key_site);
     self.grouped_by_exports = grouped_by_exports;
 
     let mut used_exports_chunk_sets_in_graph = FxHashSet::default();
@@ -958,6 +973,7 @@ impl SplitChunksPlugin {
         match_chunk(job);
       }
     } else {
+      let _site=crate::census::Site::new("native_predicates",jobs.len(),1);
       jobs.into_par_iter().enumerate().for_each(match_chunk);
     }
     for stage in matches.iter_mut().flatten() {
@@ -1182,6 +1198,10 @@ impl SplitChunksPlugin {
     };
 
     if !native_positions.is_empty() {
+      let count=candidates.as_ref().map_or(all_modules.len(),|c|c.count_ones(..));
+      let min=if candidates.is_some() {MIN_NATIVE_MODULES_PER_JOB} else if use_native_preparation && native_filters.iter().all(|f|*f==0) {1} else {MIN_FILTERED_MODULES_PER_JOB};
+      let _site=crate::census::Site::new("native_candidates",count,if count<NATIVE_SEQUENTIAL_MODULES && candidates.is_some() {usize::MAX} else {min});
+      crate::census::structural("native_candidate_branch",||serde_json::json!({"matched_modules":count,"branch":if candidates.is_some() {"matched"} else if min==1 {"all"} else {"filtered_or_mixed"}}));
       if let Some(candidates) = &candidates {
         if candidates.count_ones(..) < NATIVE_SEQUENTIAL_MODULES {
           for index in candidates.ones() {
@@ -1210,6 +1230,7 @@ impl SplitChunksPlugin {
       }
     }
     if !use_native_preparation {
+      let _site=crate::census::Site::new("callback_stage",all_modules.len(),usize::MAX);
       callback::prepare_callback_groups(
         callback::Stage {
           plugin: self,
@@ -1260,6 +1281,12 @@ impl SplitChunksPlugin {
   ) {
     // remove all modules from other entries and update size
     let placed_chunk_mask = placed_module_chunks.chunk_mask();
+    crate::census::structural("cleanup_shape",|| {
+      let mut positive=0usize; let mut work=0usize; let mut maximum=0usize;
+      for g in module_group_map.values() { if g.may_have_chunks_in_mask(placed_chunk_mask) {positive+=1; let n=g.modules.len().saturating_mul(g.chunks.len().max(1));work=work.saturating_add(n);maximum=maximum.max(n); } }
+      serde_json::json!({"G":module_group_map.len(),"mask_positive":positive,"positive_work":work,"maximum_positive_work":maximum})
+    });
+    let cleanup_site=crate::census::Site::new("remaining_cleanup",module_group_map.len(),1);
     let keys_of_invalid_group = module_group_map
       .par_iter_mut()
       .map_init(Vec::new, |duplicated_modules, (key, other_module_group)| {
@@ -1366,10 +1393,12 @@ impl SplitChunksPlugin {
       .filter_map(std::convert::identity)
       .collect::<Vec<_>>();
 
+    drop(cleanup_site);
     let removed = keys_of_invalid_group
       .into_iter()
       .filter_map(|key| module_group_map.swap_remove(&key))
       .collect::<Vec<_>>();
+    let _site=crate::census::Site::new("cleanup_invalid_drop",removed.len(),1);
     removed.into_par_iter().for_each(drop);
   }
 }

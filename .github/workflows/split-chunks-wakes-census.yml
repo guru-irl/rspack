@@ -1,0 +1,73 @@
+name: SplitChunks wakes census
+on:
+  push:
+    branches: [bench/split-chunks-wakes-census]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  census:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUST_TARGET: ${{ matrix.target }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Scratch paths
+        run: |
+          mkdir -p "$PWD/.spider/scratch/sc-census/tmp" "$PWD/.spider/scratch/sc-census/results"
+          echo "TMPDIR=$PWD/.spider/scratch/sc-census/tmp" >> "$GITHUB_ENV"
+          df -h .
+      - uses: ./.github/actions/pnpm/setup
+      - uses: ./.github/actions/rustup
+        with:
+          key: sc-census-${{ matrix.target }}-release
+          save-if: true
+      - name: Setup and build JS
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build:js
+      - name: Host receipt
+        run: |
+          { uname -a; node --version; rustc -Vv; pnpm --version; git rev-parse HEAD; df -h .; getconf PAGESIZE; sysctl -n hw.ncpu 2>/dev/null || true; } > .spider/scratch/sc-census/results/host.txt
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            { lscpu; grep -E 'Cpus_allowed_list|Mems_allowed_list' /proc/self/status; grep -E 'MemAvailable' /proc/meminfo; uptime; for f in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpuset.cpus.effective; do test ! -f "$f" || head "$f"; done; } >> .spider/scratch/sc-census/results/host.txt
+          fi
+      - name: Instrumentation build
+        run: |
+          cargo fmt --all
+          pnpm run build:binding:release 2>&1 | tee .spider/scratch/sc-census/results/instrument-build.log
+          cp crates/node_binding/rspack.*.node .spider/scratch/sc-census/instrument.node
+      - name: Original baseline build
+        run: |
+          git restore --source=86e4cf5ffebf098b5056b291525e0d3f44556052 -- Cargo.toml Cargo.lock crates/rspack_plugin_split_chunks
+          # Cargo freshness must not reuse instrumented same-version crates.
+          find crates/rspack_plugin_split_chunks/src -type f -exec touch {} +
+          pnpm run build:binding:release 2>&1 | tee .spider/scratch/sc-census/results/baseline-build.log
+          cp crates/node_binding/rspack.*.node .spider/scratch/sc-census/baseline.node
+      - name: Artifact hashes and qualified bounded census
+        run: |
+          shasum -a 256 .spider/scratch/sc-census/*.node > .spider/scratch/sc-census/results/bindings.sha256
+          python3 tools/split-chunks-census/series.py
+      - name: Preserve receipts including failed qualifications
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: split-chunks-census-${{ matrix.os }}
+          path: .spider/scratch/sc-census/results/
+          retention-days: 14

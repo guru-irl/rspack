@@ -15,6 +15,9 @@ futures            = { workspace = true }
 hashbrown          = { workspace = true }
 itertools          = { workspace = true }
 rayon              = { workspace = true }
+rayon-core         = { path = "../../vendor/rayon-core" }
+libc               = "0.2"
+serde_json         = { workspace = true }
 regex              = { workspace = true }
 rspack_collections = { workspace = true }
 rspack_core        = { workspace = true }

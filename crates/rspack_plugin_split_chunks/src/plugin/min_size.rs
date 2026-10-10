@@ -184,6 +184,7 @@ impl SplitChunksPlugin {
     module_group_map: &mut ModuleGroupMap,
     module_sizes: &ModuleSizes,
   ) {
+    let validation_site=crate::census::Site::new("initial_validation",module_group_map.len(),1);
     let invalidated_module_groups = module_group_map
       .par_iter_mut()
       .filter_map(|(module_group_key, module_group)| {
@@ -221,6 +222,7 @@ impl SplitChunksPlugin {
       })
       .collect::<Vec<_>>();
 
+    drop(validation_site);
     let removed = invalidated_module_groups
       .into_iter()
       .filter_map(|key| {
@@ -231,6 +233,7 @@ impl SplitChunksPlugin {
         module_group_map.swap_remove(&key)
       })
       .collect::<Vec<_>>();
+    let _site=crate::census::Site::new("initial_invalid_drop",removed.len(),1);
     removed.into_par_iter().for_each(drop);
   }
 }

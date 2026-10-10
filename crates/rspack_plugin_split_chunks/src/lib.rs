@@ -1,3 +1,4 @@
+mod census;
 mod common;
 mod module_group;
 mod options;

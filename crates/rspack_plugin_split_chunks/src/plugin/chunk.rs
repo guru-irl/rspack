@@ -31,6 +31,7 @@ impl SplitChunksPlugin {
     all_modules: &[ModuleIdentifier],
     compilation: &Compilation,
   ) -> Vec<SsoHashSet<ChunkUkey>> {
+    let _site=crate::census::Site::new("initial_placements",all_modules.len(),1);
     let chunk_graph = &compilation.build_chunk_graph_artifact.chunk_graph;
     all_modules
       .par_iter()

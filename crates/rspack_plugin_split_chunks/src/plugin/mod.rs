@@ -120,6 +120,7 @@ impl SplitChunksPlugin {
   }
   #[instrument(name = "Compilation:SplitChunks",target=TRACING_BENCH_TARGET, skip_all)]
   async fn inner_impl(&self, compilation: &mut Compilation) -> Result<()> {
+    let _census_pass = crate::census::Pass::new();
     let logger = compilation.get_logger(self.name());
     let start = logger.time("prepare module data");
 
@@ -132,7 +133,9 @@ impl SplitChunksPlugin {
     // Use the precomputed identifier hash first to avoid repeated long string comparisons.
     all_modules.sort_unstable_by_key(|module| (module.precomputed_hash(), *module));
 
+    let sizes_site = crate::census::Site::new("initial_sizes",all_modules.len(),1);
     let module_sizes = get_module_sizes(all_modules.par_iter().copied(), compilation);
+    drop(sizes_site);
     let mut module_chunks = Self::get_module_chunks(&all_modules, compilation);
     let module_indices = all_modules
       .iter()
@@ -224,22 +227,28 @@ impl SplitChunksPlugin {
       stages.iter().map(|_| None).collect()
     };
     let priority_len = priority_cache_groups.len();
+    crate::census::structural("invocation", || serde_json::json!({"M":all_modules.len(),"C":chunk_index_map.len(),"P":priority_len,"E":module_chunks.iter().map(|c|c.len()).sum::<usize>(),"cache_groups":self.cache_groups.len(),"dedup_depth":self.dedup_depth}));
+    let mut prior_signature = None;
     for (index, ((_, cache_groups, _), native_matches)) in priority_cache_groups
       .into_iter()
       .zip(native_matches)
       .enumerate()
     {
+      crate::census::context(index,0);
+      let mut boundary_deletions = 0usize;
       for (module, removed) in removed_module_chunks.drain() {
         let remaining = &mut module_chunks[module_indices[&module]];
         for chunk in removed {
-          remaining.remove(&chunk);
+          let deleted = remaining.remove(&chunk);
+          boundary_deletions += usize::from(deleted);
         }
       }
       let available_module_chunks = &module_chunks;
       // Precompute once for this priority, then reuse the prepared combinations
       // throughout candidate preparation and selection.
       let previous = std::mem::take(&mut combinator);
-      rayon::spawn(move || drop(previous));
+      let payload_len = previous.census_len();
+      crate::census::spawn_drop("previous_drop_submit", previous, payload_len);
       let intersection_settings = |used_exports| {
         if self.dedup_depth == 0 {
           return None;
@@ -279,6 +288,11 @@ impl SplitChunksPlugin {
         .map(|cache_group| cache_group.cache_group.min_chunks as usize)
         .min();
 
+      let eligible = self.dedup_depth==0 && cache_groups.iter().all(|g|!g.cache_group.used_exports);
+      let signature = eligible.then_some(non_used_exports_min_chunks).flatten();
+      let predicted_hit = signature.is_some() && signature==prior_signature && boundary_deletions==0;
+      crate::census::structural("reuse_boundary", || serde_json::json!({"actual_deletions":boundary_deletions,"min_chunks":non_used_exports_min_chunks,"eligible":eligible,"predicted_hit":predicted_hit,"miss":if boundary_deletions>0 {"dirty"} else if !eligible {"ineligible"} else if prior_signature.is_none() {"unprepared"} else if signature!=prior_signature {"minimum"} else {"hit"}}));
+      prior_signature=signature;
       if let Some(min_chunks) = non_used_exports_min_chunks {
         combinator.prepare_group_by_chunks(
           &all_modules,
@@ -313,6 +327,7 @@ impl SplitChunksPlugin {
         );
       }
 
+      let candidate_site=crate::census::Site::new("candidate_parent",all_modules.len(),1);
       let mut module_group_map = self
         .prepare_module_group_map(
           &combinator,
@@ -324,16 +339,28 @@ impl SplitChunksPlugin {
           &chunk_index_map,
         )
         .await?;
+      drop(candidate_site);
+      crate::census::structural("initial_groups", || serde_json::json!({"G":module_group_map.len(),"I":module_group_map.values().map(|g|g.modules.len()).sum::<usize>(),"J":module_group_map.values().map(|g|g.chunks.len()).sum::<usize>()}));
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
+      let snapshot_site=crate::census::Site::new("candidate_snapshots",module_group_map.len(),1);
       module_group_map
         .par_iter_mut()
         .for_each(|(_, module_group)| module_group.prepare_modules_for_sizes_and_compare());
+      drop(snapshot_site);
       self.ensure_min_size_fit(&mut module_group_map, &module_sizes);
 
+      let mut attempts=0usize;
+      let mut winners=0usize;
+      let mut named_winners=0usize;
       while !module_group_map.is_empty() {
+        attempts+=1;
+        crate::census::context(index,attempts);
+        let selection_site=crate::census::Site::new("serial_selection",module_group_map.len(),usize::MAX);
         let (module_group_key, mut module_group) =
           self.find_best_module_group(&mut module_group_map);
+        drop(selection_site);
+        let placement_site=crate::census::Site::new("winner_placement_checks",module_group.modules.len(),usize::MAX);
 
         tracing::trace!(
           "ModuleGroup({}) wins, {:?} `ModuleGroup` remains",
@@ -523,6 +550,10 @@ impl SplitChunksPlugin {
           continue;
         }
 
+        drop(placement_site);
+        winners+=1;
+        named_winners+=usize::from(module_group.chunk_name.is_some());
+        let movement_site=crate::census::Site::new("graph_movement",module_group.modules.len(),usize::MAX);
         // Only mutate metadata on an existing destination after the winning group has passed all
         // checks. A group skipped after max-request pruning must not leave cache-group metadata on
         // a chunk it did not actually use.
@@ -561,6 +592,7 @@ impl SplitChunksPlugin {
 
         self.split_from_original_chunks(&module_group, &used_chunks, new_chunk, compilation);
 
+        drop(movement_site);
         self.remove_all_modules_from_other_module_groups(
           &placed_module_chunks,
           &mut module_group_map,
@@ -588,16 +620,20 @@ impl SplitChunksPlugin {
           }
         }
       }
+      crate::census::structural("priority_totals", || serde_json::json!({"A":attempts,"W":winners,"named_W":named_winners,"shared_W":winners-named_winners}));
     }
     logger.time_end(start);
 
+    let max_site=crate::census::Site::new("max_size",max_size_setting_map.len(),1);
     let start = logger.time("ensure max size fit");
     self
       .ensure_max_size_fit(compilation, &max_size_setting_map)
       .await?;
     logger.time_end(start);
 
-    rayon::spawn(move || drop(combinator));
+    drop(max_site);
+    let payload_len = combinator.census_len();
+    crate::census::spawn_drop("final_drop_submit",combinator,payload_len);
     Ok(())
   }
 }
