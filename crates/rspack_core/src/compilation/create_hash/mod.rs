@@ -78,6 +78,20 @@ fn strip_ansi(message: &str) -> Cow<'_, str> {
   Cow::Owned(text)
 }
 
+fn hash_diagnostic_fields(hasher: &mut RspackHasher, error: &rspack_error::Error) {
+  let message = strip_ansi(&error.message);
+  hasher.write(&(message.len() as u64).to_le_bytes());
+  hasher.write(message.as_bytes());
+  if let Some(help) = error.help.as_deref() {
+    hasher.write(&[1]);
+    let help = strip_ansi(help);
+    hasher.write(&(help.len() as u64).to_le_bytes());
+    hasher.write(help.as_bytes());
+  } else {
+    hasher.write(&[0]);
+  }
+}
+
 fn hash_diagnostics<'a>(
   hash_function: &HashFunction,
   diagnostics: impl Iterator<Item = &'a Diagnostic>,
@@ -87,14 +101,13 @@ fn hash_diagnostics<'a>(
     .filter(|diagnostic| diagnostic.code.as_deref() != Some("NotFriendlyForIncremental"))
     .map(|diagnostic| {
       let mut hasher = RspackHasher::new(hash_function);
-      let mut error = Some(&diagnostic.error);
-      while let Some(current) = error {
-        hasher.update(&strip_ansi(&current.message).as_ref());
-        hasher.write(b"\0");
-        let help = current.help.as_deref().map(strip_ansi);
-        hasher.update(&help.as_deref());
-        hasher.write(b"\0");
-        error = current.source_error.as_deref();
+      hash_diagnostic_fields(&mut hasher, &diagnostic.error);
+      let causes = std::iter::successors(diagnostic.source_error.as_deref(), |error| {
+        error.source_error.as_deref()
+      });
+      hasher.write(&(causes.clone().count() as u64).to_le_bytes());
+      for cause in causes {
+        hash_diagnostic_fields(&mut hasher, cause);
       }
       hasher.finish()
     })
@@ -467,8 +480,14 @@ pub async fn create_hash(
   logger.time_end(start);
 
   // Fold the entry snapshot before chunk hashes, with each kind sorted separately.
-  for hash in warning_hashes.into_iter().chain(error_hashes) {
-    compilation_hasher.write(&hash.to_be_bytes());
+  // Like webpack/lib/Compilation.js createHash, skip empty diagnostic lists
+  // so diagnostic-free builds retain their existing full hash.
+  if !warning_hashes.is_empty() || !error_hashes.is_empty() {
+    compilation_hasher.write(&(warning_hashes.len() as u64).to_le_bytes());
+    compilation_hasher.write(&(error_hashes.len() as u64).to_le_bytes());
+    for hash in warning_hashes.into_iter().chain(error_hashes) {
+      compilation_hasher.write(&hash.to_be_bytes());
+    }
   }
 
   // create full hash
