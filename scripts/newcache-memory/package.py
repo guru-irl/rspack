@@ -15,6 +15,7 @@ manifest = {
     'profile': 'release, fat LTO, opt-level=3, codegen-units=1, panic=abort',
     'features': ['plugin', 'info-level'],
     'unwind_tables': False,
-    'symbol_twin': 'Same build with symbols retained, measured copy stripped afterwards',
+    'binding_bytes': bindings[0].stat().st_size,
+    'allocator': 'Repository default native allocator; unchanged between arms',
 }
 (root / 'bundle/build.json').write_text(json.dumps(manifest, indent=2))

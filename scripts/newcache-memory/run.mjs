@@ -121,10 +121,17 @@ clearInterval(sampler);
 if (events.some(e => /Resetting cache|Failed to .*cache|cache.*unavailable/i.test(String(e.args))) && phase !== 'seed') {
   throw new Error('Warm cache reset or failure');
 }
+if (events.some(e => /Failed to (?:encode|decode) cache entry/i.test(String(e.args)))) {
+  throw new Error('Cache codec failure, not a sample');
+}
 if (!cache_closed.files) throw new Error('Empty cache');
-if (phase === 'seed' && !events.some(e => /Stored cache/.test(String(e.args)))) throw new Error('Seed did not persist');
+if (phase === 'seed' && (!events.some(e => /Stored cache/.test(String(e.args))) ||
+    !events.some(e => /Measurement idle complete/.test(String(e.args))))) {
+  throw new Error('Seed did not complete persistence and idle compaction');
+}
+const compaction_passes = events.filter(e => String(e.args).includes('measurement compaction pass'));
 fs.writeFileSync(output, JSON.stringify({ arm, phase, rounds, end, memory_end, closed, memory_closed,
-  cache_end, cache_closed, events, beforeCloseEvents, curve }));
+  cache_end, cache_closed, events, beforeCloseEvents, compaction_passes, curve }));
 complete = true;
 clearTimeout(watchdog);
 console.log(JSON.stringify({ arm, phase, rounds: rounds.length, done: rounds[0].done, peak: memory_closed.peak }));

@@ -1,0 +1,13 @@
+Outstanding verification before any recommendation:
+- Confirm all source bindings build and isolated runtime imports succeed.
+- Confirm each phase has exactly 20 successful A/A pairs and 20 successful A/B pairs.
+- Confirm readonly and no-idle watch acceptance on both hosts.
+- Confirm macOS proc_pid_rusage current and lifetime counters are nonzero.
+- Confirm page-cache drop command succeeds on each platform.
+- Confirm cache hit/restoration and no encode/decode failures; parity alone does not prove a hit.
+- Run a separate diagnostic stats binding for live block-cache hits, misses, occupancy, insertions and evictions.
+- Verify actual seed idle-compaction completion; elapsed time alone is not proof.
+- Measure multiple edit/store/compaction cycles and per-pass compaction wall/CPU.
+- Repeat flagged >8 MiB out-of-A/A tails in the pre-set five-pair confirmation batch.
+- Run existing relevant new-cache and shared-compiler integration cases after building their artifacts.
+- Native Windows/wasm verification remains outside the requested two-platform measurement and blocks a universal rollout claim.

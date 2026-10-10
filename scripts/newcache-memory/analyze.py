@@ -48,13 +48,26 @@ for name in metrics:
     margin = 8 * 1024 * 1024
     tail_threshold = max(margin, sorted(diffs['AA'])[18])
     flags = [i + 1 for i, delta in enumerate(diffs['AB']) if delta > tail_threshold]
+    confirmed = []
+    confirmation_deltas = []
+    for pair_id in range(21, 26):
+        pair = {r['slot']: r for r in records if r['comparison'] == 'CONFIRM' and r['pair'] == pair_id}
+        if set(pair) != {0, 1}:
+            raise RuntimeError('Missing fixed confirmation pair')
+        delta = metric(pair[1], name) - metric(pair[0], name)
+        confirmation_deltas.append(delta)
+        if delta > tail_threshold:
+            confirmed.append(pair_id)
     is_memory = name not in ('wall_ms', 'cpu_ms', 'disk_bytes')
     summary['metrics'][name] = {'aa': aa, 'ab': ab, 'relative_percent': stats(relative['AB']),
         'mde_80': (1.729133 + 0.842) * aa['sd'] / math.sqrt(20),
         'memory_margin_bytes': margin if is_memory else None,
         'mean_equivalent': ab['upper95'] <= margin if is_memory else None,
         'tail_confirmation_required': flags if is_memory else [],
-        'tail_rule': 'A flagged tail requires a separate pre-set five-pair confirmation; not passed by omission.'}
+        'confirmation_deltas': confirmation_deltas,
+        'tail_reproduced': bool(flags and confirmed) if is_memory else None,
+        'confirmed_tail_pairs': confirmed if is_memory else [],
+        'tail_rule': 'Flagged memory tails block recommendation only when reproduced in the separate fixed five-pair batch.'}
 (root / 'summary.json').write_text(json.dumps(summary, indent=2))
 lines = ['# Paired prototype results', '', f"Candidate: {meta['candidate']}; phase: {meta['phase']}; 20 A/A and 20 A/B pairs.", '',
          '| Metric | Mean paired delta | 95% CI | Relative delta | A/A MDE | Tail flags |',
