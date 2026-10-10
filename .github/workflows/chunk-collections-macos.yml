@@ -7,51 +7,20 @@ permissions:
   actions: read
 jobs:
   packs:
-    runs-on: macos-15
-    timeout-minutes: 180
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/pnpm/setup
-      - uses: ./.github/actions/rustup
-        with:
-          key: chunk-collections-macos
-          use-cache: false
-      - name: Build frozen packs
-        shell: bash
+      - name: Repackage existing macOS frozen packs
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          export BENCH_ROOT="$GITHUB_WORKSPACE/.spider/scratch/chunk-collections"
-          export TMPDIR="$BENCH_ROOT/tmp"
-          export CARGO_TARGET_DIR="$BENCH_ROOT/target"
-          mkdir -p "$TMPDIR" "$BENCH_ROOT/packs/base" "$BENCH_ROOT/packs/candidate"
-          cp -R .bench/chunk-collections "$BENCH_ROOT/harness"
-          git diff f2903b6482cb7a0fcdca912d23062bd94d3d5636 HEAD -- crates packages tests > "$BENCH_ROOT/candidate.patch"
-          git apply --reverse "$BENCH_ROOT/candidate.patch"
-          pnpm install --frozen-lockfile
-          pnpm run build:cli:release 2>&1 | tee "$BENCH_ROOT/base-build.log"
-          cp crates/node_binding/*.node "$BENCH_ROOT/packs/base/"
-          cp -R packages/rspack/dist "$BENCH_ROOT/packs/base/"
-          shasum -a 256 "$BENCH_ROOT/packs/base/"*.node > "$BENCH_ROOT/base-sha256.txt"
-          git apply "$BENCH_ROOT/candidate.patch"
-          find crates xtask -name '*.rs' -exec touch {} +
-          pnpm run build:cli:release 2>&1 | tee "$BENCH_ROOT/candidate-build.log"
-          cp crates/node_binding/*.node "$BENCH_ROOT/packs/candidate/"
-          cp -R packages/rspack/dist "$BENCH_ROOT/packs/candidate/"
-          shasum -a 256 "$BENCH_ROOT/packs/candidate/"*.node > "$BENCH_ROOT/candidate-sha256.txt"
-          grep 'Compiling rspack_core\|Compiling rspack_binding_api\|Compiling rspack_node' "$BENCH_ROOT/candidate-build.log"
-          node "$BENCH_ROOT/harness/fixture.mjs"
+          mkdir -p .spider/scratch/repack
+          gh run download 38056241596 --repo guru-irl/rspack --name chunk-collections-macos-packs --dir .spider/scratch/repack
+          tar -czf .spider/scratch/chunk-collections-macos.tar.gz -C .spider/scratch/repack .
       - uses: actions/upload-artifact@v4
         with:
-          name: chunk-collections-macos-packs
-          path: |
-            .spider/scratch/chunk-collections/packs
-            .spider/scratch/chunk-collections/harness
-            .spider/scratch/chunk-collections/fixture-small
-            .spider/scratch/chunk-collections/fixture-large
-            .spider/scratch/chunk-collections/*-build.log
-            .spider/scratch/chunk-collections/*-sha256.txt
+          name: chunk-collections-macos-tar
+          path: .spider/scratch/chunk-collections-macos.tar.gz
           include-hidden-files: true
   memory:
     needs: packs
@@ -67,8 +36,8 @@ jobs:
       - uses: ./.github/actions/pnpm/setup
       - uses: actions/download-artifact@v4
         with:
-          name: chunk-collections-macos-packs
-          path: .spider/scratch/chunk-collections
+          name: chunk-collections-macos-tar
+          path: .spider/scratch
       - name: Calibrate and compare
         shell: bash
         env:
@@ -79,6 +48,7 @@ jobs:
           export BENCH_ROOT="$GITHUB_WORKSPACE/.spider/scratch/chunk-collections"
           export TMPDIR="$BENCH_ROOT/tmp"
           mkdir -p "$TMPDIR" "$BENCH_ROOT/results" "$BENCH_ROOT/logs"
+          tar -xzf .spider/scratch/chunk-collections-macos.tar.gz -C "$BENCH_ROOT"
           pnpm install --frozen-lockfile
           for arm in base candidate; do
             ln -s "$GITHUB_WORKSPACE/packages/rspack/node_modules" "$BENCH_ROOT/packs/$arm/node_modules"
