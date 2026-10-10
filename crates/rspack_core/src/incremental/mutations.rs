@@ -165,7 +165,15 @@ impl Mutations {
                   .filter_map(|c| c.original_module_identifier),
               );
             }
-            Mutation::ChunkAdd { chunk } => {
+            // A rebuilt chunk can be new by Ukey but identical by membership.
+            // Keep ChunkAdd for chunk artifacts; IDs and module updates already
+            // select the precise hash consumers of a matched reconstruction.
+            Mutation::ChunkAdd { chunk }
+              if !compilation
+                .chunk_ids_diff_artifact
+                .matched_membership
+                .contains(chunk) =>
+            {
               chunks.insert(chunk);
             }
             Mutation::ChunkRemove { chunk } => {

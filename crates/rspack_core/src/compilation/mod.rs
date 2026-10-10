@@ -260,6 +260,7 @@ pub struct Compilation {
   pub module_ids_artifact: StealCell<ModuleIdsArtifact>,
   // artifact for named_chunk_ids
   pub named_chunk_ids_artifact: StealCell<ChunkNamedIdArtifact>,
+  pub chunk_ids_diff_artifact: crate::ChunkIdsDiffArtifact,
   // artifact for code_generation
   pub code_generation_results: BindingCell<CodeGenerationResults>,
   // artifact for create_module_hashes
@@ -442,6 +443,7 @@ impl Compilation {
       side_effects_optimize_artifact: StealCell::new(Default::default()),
       module_ids_artifact: StealCell::new(Default::default()),
       named_chunk_ids_artifact: StealCell::new(Default::default()),
+      chunk_ids_diff_artifact: Default::default(),
       code_generation_results: Default::default(),
       cgm_hash_artifact: StealCell::new(Default::default()),
       cgm_runtime_requirements_artifact: StealCell::new(Default::default()),

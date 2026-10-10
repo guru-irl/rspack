@@ -1,14 +1,15 @@
 use rayon::prelude::*;
 use rspack_core::{
-  ChunkByUkey, ChunkNamedIdArtifact, CompilationChunkIds, Plugin, incremental::IncrementalPasses,
+  ChunkByUkey, ChunkIdIdentity, ChunkNamedIdArtifact, CompilationChunkIds,
+  DeterministicChunkIdsInputs, Plugin, incremental::IncrementalPasses,
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::id_helpers::{
-  NaturalChunkCompareCache, assign_deterministic_ids, compare_chunks_natural, get_full_chunk_name,
-  get_used_chunk_ids,
+  NaturalChunkCompareCache, assign_deterministic_ids, compare_chunks_natural,
+  get_deterministic_id_range, get_full_chunk_name, get_used_chunk_ids,
 };
 
 #[plugin]
@@ -28,11 +29,25 @@ async fn chunk_ids(
   _named_chunk_ids_artifact: &mut ChunkNamedIdArtifact,
   diagnostics: &mut Vec<Diagnostic>,
 ) -> rspack_error::Result<()> {
-  if let Some(diagnostic) = compilation.incremental.disable_passes(
-    IncrementalPasses::CHUNK_IDS | IncrementalPasses::MODULES_HASHES,
-    "DeterministicChunkIdsPlugin (optimization.chunkIds = \"deterministic\")",
-    "it requires calculating the id of all the chunks, which is a global effect",
-  ) && let Some(diagnostic) = diagnostic
+  let track_ids = compilation.incremental.enabled();
+  compilation
+    .chunk_ids_diff_artifact
+    .track_effective_ids
+    .store(track_ids, std::sync::atomic::Ordering::Relaxed);
+  let hooks = &compilation.plugin_driver.compilation_hooks;
+  let can_reuse = hooks.chunk_ids.tap_stages().len() == 1
+    && !hooks.chunk_ids.has_interceptors()
+    && compilation
+      .incremental
+      .passes_enabled(IncrementalPasses::CHUNK_IDS);
+  // Other taps may alter reservations or allocation order. Keep their replay,
+  // but final ID differences still drive module hashing in ChunkIdsPass.
+  if !can_reuse
+    && let Some(Some(diagnostic)) = compilation.incremental.disable_passes(
+      IncrementalPasses::CHUNK_IDS,
+      "DeterministicChunkIdsPlugin (optimization.chunkIds = \"deterministic\")",
+      "its chunk ID hook chain has additional taps or interceptors",
+    )
   {
     diagnostics.push(diagnostic);
   }
@@ -81,6 +96,91 @@ async fn chunk_ids(
     .collect::<Result<FxHashMap<_, _>>>()?;
 
   let mut chunk_compare_cache = NaturalChunkCompareCache::default();
+  let mut ordered = if can_reuse {
+    chunks.clone()
+  } else {
+    Vec::new()
+  };
+  if can_reuse {
+    ordered.sort_unstable_by(|a, b| {
+      compare_chunks_natural(
+        chunk_graph,
+        &compilation.build_chunk_graph_artifact.chunk_group_by_ukey,
+        &compilation.module_ids_artifact,
+        a,
+        b,
+        &mut chunk_compare_cache,
+      )
+    });
+  }
+  let inputs = can_reuse.then(|| {
+    let mut reserved_ids = used_ids
+      .iter()
+      .map(|id| id.as_str().into())
+      .collect::<Vec<_>>();
+    reserved_ids.sort_unstable();
+    DeterministicChunkIdsInputs {
+      candidates: ordered
+        .iter()
+        .map(|chunk| {
+          (
+            ChunkIdIdentity::new(chunk, chunk_graph),
+            chunk_names
+              .get(&chunk.ukey())
+              .expect("should have full chunk name")
+              .clone(),
+          )
+        })
+        .collect(),
+      reserved_ids,
+      context: context.clone(),
+      delimiter: self.delimiter.clone(),
+      range: get_deterministic_id_range(chunks.len(), &[1000], expand_factor, used_ids_len),
+    }
+  });
+  let reused_ids = if let Some(inputs) = &inputs
+    && compilation
+      .incremental
+      .mutations_readable(IncrementalPasses::CHUNK_IDS)
+    && compilation
+      .chunk_ids_diff_artifact
+      .deterministic_inputs
+      .as_ref()
+      == Some(inputs)
+  {
+    let mut ids = FxHashMap::default();
+    for (identity, id) in &compilation.chunk_ids_diff_artifact.previous_ids {
+      ids
+        .entry(identity)
+        .and_modify(|id| *id = None)
+        .or_insert(Some(id));
+    }
+    inputs
+      .candidates
+      .iter()
+      .zip(&ordered)
+      .map(|((identity, _), chunk)| {
+        ids
+          .get(identity)
+          .copied()
+          .flatten()
+          .map(|id| (chunk.ukey(), id.clone()))
+      })
+      .collect::<Option<Vec<_>>>()
+  } else {
+    None
+  };
+  if let Some(reused_ids) = reused_ids {
+    for (ukey, id) in reused_ids {
+      chunk_by_ukey.expect_get_mut(&ukey).set_id(id);
+    }
+    *compilation
+      .chunk_ids_diff_artifact
+      .pending_inputs
+      .lock()
+      .expect("Mutex poisoned: deterministic chunk ID inputs") = inputs;
+    return Ok(());
+  }
 
   assign_deterministic_ids(
     chunks,
@@ -121,6 +221,13 @@ async fn chunk_ids(
     chunk.set_id(id.to_string());
   }
 
+  if track_ids {
+    *compilation
+      .chunk_ids_diff_artifact
+      .pending_inputs
+      .lock()
+      .expect("Mutex poisoned: deterministic chunk ID inputs") = inputs;
+  }
   Ok(())
 }
 
