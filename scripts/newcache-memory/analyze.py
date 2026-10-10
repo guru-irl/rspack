@@ -17,7 +17,7 @@ def metric(record, name):
     if name == 'warm_peak':
         return first['memory_done']['peak']
     if name == 'lifetime_peak':
-        return record['memory_closed']['peak']
+        return record['memory_exit']['peak']
     if name == 'disk_bytes':
         return record['cache_end']['bytes']
     anchor, counter = name.split(':')

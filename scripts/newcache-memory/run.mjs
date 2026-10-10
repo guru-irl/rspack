@@ -130,8 +130,14 @@ if (phase === 'seed' && (!events.some(e => /Stored cache/.test(String(e.args))) 
   throw new Error('Seed did not complete persistence and idle compaction');
 }
 const compaction_passes = events.filter(e => String(e.args).includes('measurement compaction pass'));
-fs.writeFileSync(output, JSON.stringify({ arm, phase, rounds, end, memory_end, closed, memory_closed,
-  cache_end, cache_closed, events, beforeCloseEvents, compaction_passes, curve }));
+const result = { arm, phase, rounds, end, memory_end, closed, memory_closed,
+  cache_end, cache_closed, events, beforeCloseEvents, compaction_passes, curve };
+fs.writeFileSync(output, JSON.stringify(result));
+process.once('beforeExit', () => {
+  result.memory_exit = memory();
+  result.exit = checkpoint();
+  fs.writeFileSync(output, JSON.stringify(result));
+});
 complete = true;
 clearTimeout(watchdog);
 console.log(JSON.stringify({ arm, phase, rounds: rounds.length, done: rounds[0].done, peak: memory_closed.peak }));

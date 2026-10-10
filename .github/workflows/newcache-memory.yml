@@ -3,8 +3,6 @@ on:
   push:
     branches: [bench/newcache-mem-p1, bench/newcache-mem-p2]
     paths:
-      - '.github/workflows/newcache-memory.yml'
-      - 'scripts/newcache-memory/**'
       - 'crates/rspack_core/**'
       - 'crates/rspack_cacheable/**'
       - 'Cargo.toml'
