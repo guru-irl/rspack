@@ -13,6 +13,10 @@ on:
         description: Reuse successful bindings after a harness-only correction
         default: ''
         type: string
+      baseline_run:
+        description: Reuse identical f2903b6482 main bindings from another completed build
+        default: ''
+        type: string
       diagnostic:
         description: Build stats-only diagnostics, never acceptance samples
         default: false
@@ -119,6 +123,13 @@ jobs:
           run-id: ${{ inputs.binding_run || github.run_id }}
           pattern: binding-${{ matrix.host }}-*
           path: artifacts
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.baseline_run != '' }}
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.baseline_run }}
+          name: binding-${{ matrix.host }}-main
+          path: artifacts/binding-${{ matrix.host }}-main
       - name: Prepare isolated runtimes and exact footprint helper
         shell: bash
         env:
