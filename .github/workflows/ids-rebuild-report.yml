@@ -1,0 +1,46 @@
+name: ID rebuild report
+
+on:
+  push:
+    branches: ['bench/ids-rebuild-cost']
+    paths:
+      - '.github/workflows/ids-rebuild-report.yml'
+      - 'scripts/ids-rebuild-report.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MEASUREMENT_RUN: '38078156307'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+      - name: Download and verify completed measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$GITHUB_WORKSPACE/.spider/scratch/ids-rebuild-cost"
+          mkdir -p "$BASE/raw" "$BASE/tmp"
+          export TMPDIR="$BASE/tmp"
+          gh run watch "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --interval 30 --exit-status
+          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --dir "$BASE/raw"
+          node --check scripts/ids-rebuild-report.cjs
+          node scripts/ids-rebuild-report.cjs "$BASE/raw" "$BASE/report.md"
+          if grep -Ein 'pkgs\.dev\.azure|visualstudio\.com|office\.net|gh[pousr]_[A-Za-z0-9]{20,}' "$BASE/report.md"; then
+            echo 'Public safety scan failed'; exit 1
+          fi
+          cat "$BASE/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ids-rebuild-cost-report
+          path: .spider/scratch/ids-rebuild-cost/report.md
+          retention-days: 30
