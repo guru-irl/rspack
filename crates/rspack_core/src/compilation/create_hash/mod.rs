@@ -1,5 +1,8 @@
+use std::borrow::Cow;
+
 use async_trait::async_trait;
-use rspack_hash::RspackHasher;
+use rspack_error::Diagnostic;
+use rspack_hash::{HashFunction, RspackHasher};
 use rustc_hash::FxHashSet;
 
 use super::*;
@@ -30,12 +33,108 @@ impl PassExt for CreateHashPass {
   }
 }
 
+// Strip terminal control sequences already embedded in diagnostic messages.
+// The renderer's color setting cannot remove those, and code frames are not hash inputs.
+fn strip_ansi(message: &str) -> Cow<'_, str> {
+  if !message.contains('\x1b') {
+    return Cow::Borrowed(message);
+  }
+  let mut text = String::with_capacity(message.len());
+  let mut chars = message.chars().peekable();
+  while let Some(c) = chars.next() {
+    if c != '\x1b' {
+      text.push(c);
+      continue;
+    }
+    match chars.next() {
+      Some('[') => {
+        for c in chars.by_ref() {
+          if ('@'..='~').contains(&c) {
+            break;
+          }
+        }
+      }
+      Some(']') => {
+        while let Some(c) = chars.next() {
+          if c == '\x07' {
+            break;
+          }
+          if c == '\x1b' && chars.peek() == Some(&'\\') {
+            chars.next();
+            break;
+          }
+        }
+      }
+      Some(c) if (' '..='/').contains(&c) => {
+        // Other ESC sequences have optional intermediate bytes and a final byte.
+        while chars.peek().is_some_and(|c| (' '..='/').contains(c)) {
+          chars.next();
+        }
+        chars.next();
+      }
+      _ => {}
+    }
+  }
+  Cow::Owned(text)
+}
+
+fn hash_diagnostic_fields(hasher: &mut RspackHasher, error: &rspack_error::Error) {
+  let message = strip_ansi(&error.message);
+  hasher.write(&(message.len() as u64).to_le_bytes());
+  hasher.write(message.as_bytes());
+  if let Some(help) = error.help.as_deref() {
+    hasher.write(&[1]);
+    let help = strip_ansi(help);
+    hasher.write(&(help.len() as u64).to_le_bytes());
+    hasher.write(help.as_bytes());
+  } else {
+    hasher.write(&[0]);
+  }
+}
+
+fn hash_diagnostics<'a>(
+  hash_function: &HashFunction,
+  diagnostics: impl Iterator<Item = &'a Diagnostic>,
+) -> Vec<u64> {
+  let mut hashes = diagnostics
+    // These warnings describe the rebuild machinery, not the compiled output.
+    .filter(|diagnostic| diagnostic.code.as_deref() != Some("NotFriendlyForIncremental"))
+    .map(|diagnostic| {
+      let mut hasher = RspackHasher::new(hash_function);
+      hash_diagnostic_fields(&mut hasher, &diagnostic.error);
+      let causes = std::iter::successors(diagnostic.source_error.as_deref(), |error| {
+        error.source_error.as_deref()
+      });
+      hasher.write(&(causes.clone().count() as u64).to_le_bytes());
+      for cause in causes {
+        hash_diagnostic_fields(&mut hasher, cause);
+      }
+      hasher.finish()
+    })
+    .collect::<Vec<_>>();
+  // Diagnostics may arrive from parallel tasks. Keep their order deterministic
+  // without retaining diagnostic text or rendering source code frames.
+  hashes.sort_unstable();
+  hashes
+}
+
 #[instrument(name = "Compilation:create_hash",target=TRACING_BENCH_TARGET, skip_all)]
 pub async fn create_hash(
   compilation: &mut Compilation,
   plugin_driver: SharedPluginDriver,
 ) -> Result<()> {
   let logger = compilation.get_logger("rspack.Compilation");
+
+  // Like webpack/lib/Compilation.js createHash, snapshot diagnostics before sorting
+  // and hashing chunks. Warnings emitted by hashing itself must not affect this hash.
+  let warning_hashes = hash_diagnostics(
+    &compilation.options.output.hash_function,
+    compilation.get_warnings(),
+  );
+  let error_hashes = hash_diagnostics(
+    &compilation.options.output.hash_function,
+    compilation.get_errors(),
+  );
 
   // Check if there are any chunks that depend on full hash, usually only runtime chunks are
   // possible to depend on full hash, but for library type commonjs/module, it's possible to
@@ -379,6 +478,17 @@ pub async fn create_hash(
     }
   }
   logger.time_end(start);
+
+  // Fold the entry snapshot before chunk hashes, with each kind sorted separately.
+  // Like webpack/lib/Compilation.js createHash, skip empty diagnostic lists
+  // so diagnostic-free builds retain their existing full hash.
+  if !warning_hashes.is_empty() || !error_hashes.is_empty() {
+    compilation_hasher.write(&(warning_hashes.len() as u64).to_le_bytes());
+    compilation_hasher.write(&(error_hashes.len() as u64).to_le_bytes());
+    for hash in warning_hashes.into_iter().chain(error_hashes) {
+      compilation_hasher.write(&hash.to_be_bytes());
+    }
+  }
 
   // create full hash
   compilation
