@@ -1,0 +1,155 @@
+name: New Cache Memory Prototypes
+on:
+  push:
+    branches: [bench/newcache-mem-p1, bench/newcache-mem-p2]
+    paths:
+      - '.github/workflows/newcache-memory.yml'
+      - 'scripts/newcache-memory/**'
+      - 'crates/rspack_core/**'
+      - 'crates/rspack_cacheable/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+    inputs:
+      binding_run:
+        description: Reuse successful bindings after a harness-only correction
+        default: ''
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    if: ${{ inputs.binding_run == '' }}
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [main, p1]
+        host: [ubuntu-24.04, macos-15]
+        include:
+          - host: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - host: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.host }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_PROFILE_RELEASE_STRIP: none
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || github.sha }}
+          path: source
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: source/package.json
+      - name: Build release-equivalent native binding
+        working-directory: source
+        shell: bash
+        env:
+          ARM: ${{ matrix.arm }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp bundle
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          elif [[ "$(readlink "$HOME/.cargo/bin/rustup" || true)" == */rustup-init ]]; then
+            rustup-init -y --default-toolchain none
+          fi
+          if [[ "$ARM" == p2-* ]]; then
+            python3 ../harness/scripts/newcache-memory/capacity.py "$ARM"
+          fi
+          pnpm install --frozen-lockfile
+          rustup component add rust-src
+          cargo codegen
+          pnpm run build:binding:release
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            strip --strip-all crates/node_binding/*.node
+          else
+            strip -x crates/node_binding/*.node
+          fi
+          pnpm --filter @rspack/core run build
+          python3 ../harness/scripts/newcache-memory/package.py
+          git diff -- Cargo.lock > bundle/cargo-resolution.diff
+          cargo tree -p rspack_core > bundle/dependencies.txt
+          uname -a > bundle/build-host.txt
+          tar -czf bundle/runtime.tar.gz packages/rspack/dist packages/rspack/compiled packages/rspack/package.json packages/rspack/hot crates/node_binding/binding.js crates/node_binding/package.json crates/node_binding/*.node
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binding-${{ matrix.host }}-${{ matrix.arm }}
+          path: source/bundle
+          if-no-files-found: error
+  measure:
+    if: ${{ always() && (needs.build.result == 'success' || inputs.binding_run != '') }}
+    needs: build
+    timeout-minutes: 330
+    runs-on: ${{ matrix.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [ubuntu-24.04, macos-15]
+        candidate: [p1]
+        phase: [warm, drop, edit, watch, readonly]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.binding_run || github.run_id }}
+          pattern: binding-${{ matrix.host }}-*
+          path: artifacts
+      - name: Prepare isolated runtimes and exact footprint helper
+        shell: bash
+        env:
+          CANDIDATE: ${{ matrix.candidate }}
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp results
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          for arm in main "$CANDIDATE"; do
+            mkdir -p "runtime/$arm/node_modules/@rspack" "runtime/$arm/packages/rspack/node_modules/@rspack"
+            tar -xzf "artifacts/binding-${{ matrix.host }}-$arm/runtime.tar.gz" -C "runtime/$arm"
+            ln -s "$PWD/runtime/$arm/crates/node_binding" "runtime/$arm/node_modules/@rspack/binding"
+            ln -s "$PWD/runtime/$arm/crates/node_binding" "runtime/$arm/packages/rspack/node_modules/@rspack/binding"
+            NODE_PATH="$PWD/runtime/$arm/node_modules" node --input-type=module -e "import('./runtime/$arm/packages/rspack/dist/index.js').then(m => console.log(m.rspack.version))"
+          done
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            curl -fsSL "https://nodejs.org/dist/$(node -p process.version)/node-$(node -p process.version)-headers.tar.gz" -o .spider/scratch/headers.tar.gz
+            tar -xzf .spider/scratch/headers.tar.gz -C .spider/scratch
+            clang -O2 -shared -undefined dynamic_lookup -I".spider/scratch/node-$(node -p process.version)/include/node" scripts/newcache-memory/memory.c -o scripts/newcache-memory/memory.node
+          fi
+          node --check scripts/newcache-memory/run.mjs
+          python3 -m py_compile scripts/newcache-memory/series.py
+      - name: Twenty A/A pairs and twenty candidate pairs
+        shell: bash
+        env:
+          CANDIDATE: ${{ matrix.candidate }}
+          PHASE: ${{ matrix.phase }}
+        run: |
+          set -euo pipefail
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          python3 scripts/newcache-memory/series.py
+          python3 scripts/newcache-memory/analyze.py results
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: memory-${{ matrix.host }}-${{ matrix.candidate }}-${{ matrix.phase }}
+          path: results
+          if-no-files-found: error
+          retention-days: 14

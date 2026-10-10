@@ -149,7 +149,7 @@ fn encode_cache_entry<T: CacheValueData>(
     .clone()
     .downcast::<T>()
     .map_err(|_| rspack_error::error!("Cache value type mismatch"))?;
-  codec.encode(&StoredCacheEntry {
+  codec.encode_small_value(&StoredCacheEntry {
     etag: entry.etag.clone(),
     value,
   })
@@ -160,6 +160,6 @@ fn decode_cache_entry<T: CacheValueData>(
   etag: Option<&Etag>,
   codec: &CacheCodec,
 ) -> Result<Option<ErasedCacheValue>> {
-  let entry = codec.decode::<StoredCacheEntry<T>>(bytes)?;
+  let entry = codec.decode_small_value::<StoredCacheEntry<T>>(bytes)?;
   Ok((entry.etag.as_ref() == etag).then(|| ErasedCacheValue::new(entry.value)))
 }

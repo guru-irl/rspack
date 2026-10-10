@@ -84,6 +84,7 @@ swc_experimental_ecma_parser   = { workspace = true }
 swc_experimental_ecma_semantic = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+lzzzz = "2.0.0"
 turbo-persistence = { workspace = true }
 
 [dev-dependencies]

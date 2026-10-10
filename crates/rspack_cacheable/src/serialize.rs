@@ -24,11 +24,19 @@ pub fn to_bytes<T, C: CacheableContext>(value: &T, ctx: &C) -> Result<Vec<u8>>
 where
   T: for<'a> Serialize<Serializer<'a>>,
 {
+  Ok(to_aligned_bytes(value, ctx)?.into_vec())
+}
+
+/// Serialize without copying the aligned archive into a Vec.
+pub fn to_aligned_bytes<T, C: CacheableContext>(value: &T, ctx: &C) -> Result<AlignedVec>
+where
+  T: for<'a> Serialize<Serializer<'a>>,
+{
   let guard = ContextGuard::new(ctx);
   let mut arena = Arena::new();
   let mut serializer = RkyvSerializer::new(AlignedVec::new(), arena.acquire(), Share::new());
   guard.add_to_sharing(&mut serializer)?;
 
   serialize_using(value, &mut serializer)?;
-  Ok(serializer.into_writer().into_vec())
+  Ok(serializer.into_writer())
 }
