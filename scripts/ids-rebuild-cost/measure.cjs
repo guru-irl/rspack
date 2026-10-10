@@ -39,6 +39,7 @@ const compiler = rspack({
   infrastructureLogging: { level: 'warn' },
   plugins: [{ apply(c) {
     c.hooks.invalid.tap('IdsBenchmark', filename => {
+      console.error(JSON.stringify({ invalidatedFile: filename, step, pending }));
       assert(pending, 'Unsolicited invalidation');
       assert(filename && fs.realpathSync(filename) === leaf, `Unexpected invalidated file: ${filename}`);
       assert.equal(invalidStart, null, 'Multiple invalidations for one edit');
