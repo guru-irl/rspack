@@ -90,8 +90,10 @@ fn hash_diagnostics<'a>(
       let mut error = Some(&diagnostic.error);
       while let Some(current) = error {
         hasher.update(&strip_ansi(&current.message).as_ref());
+        hasher.write(b"\0");
         let help = current.help.as_deref().map(strip_ansi);
         hasher.update(&help.as_deref());
+        hasher.write(b"\0");
         error = current.source_error.as_deref();
       }
       hasher.finish()
