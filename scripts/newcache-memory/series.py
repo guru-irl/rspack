@@ -16,7 +16,8 @@ PROJECT = WORK / 'project'
 CACHE = PROJECT / 'cache'
 PHASE = os.environ['PHASE']
 CANDIDATE = os.environ['CANDIDATE']
-N = 20
+DIAGNOSTIC = os.environ.get('DIAGNOSTIC') == '1'
+N = 1 if DIAGNOSTIC else 20
 for directory in (WORK, RESULTS):
     directory.mkdir(parents=True, exist_ok=True)
 records = []
@@ -102,8 +103,9 @@ try:
         elif data['rounds'][0]['outputs'] != baseline_output:
             raise RuntimeError('Cold output parity failed')
     # Fixed schedule before any outcome is known. Alternate experiment blocks and AB/BA order.
-    for pair in range(N):
-        for comparison in ('AA', 'AB') if pair % 2 == 0 else ('AB', 'AA'):
+    for pair in range(N + (0 if DIAGNOSTIC else 5)):
+        comparisons = (('AA', 'AB') if pair % 2 == 0 else ('AB', 'AA')) if pair < N else ('CONFIRM',)
+        for comparison in comparisons:
             arms = ('main', 'main') if comparison == 'AA' else ('main', CANDIDATE)
             paired = {}
             for slot in (0, 1) if pair % 2 == 0 else (1, 0):
@@ -126,7 +128,8 @@ try:
             if paired[0]['rounds'][0]['outputs'] != baseline_output:
                 raise RuntimeError('Warm versus cold output parity failed')
             records.extend(paired.values())
-    (RESULTS / 'success.json').write_text(json.dumps({'aa_pairs': N, 'ab_pairs': N, 'parity': True}))
+    (RESULTS / 'success.json').write_text(json.dumps({'aa_pairs': N, 'ab_pairs': N,
+        'confirmation_pairs': 0 if DIAGNOSTIC else 5, 'diagnostic': DIAGNOSTIC, 'parity': True}))
 except BaseException as error:
     (RESULTS / 'failure.json').write_text(json.dumps({'error': repr(error), 'accepted_records': len(records)}))
     raise

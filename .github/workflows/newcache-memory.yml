@@ -15,6 +15,10 @@ on:
         description: Reuse successful bindings after a harness-only correction
         default: ''
         type: string
+      diagnostic:
+        description: Build stats-only diagnostics, never acceptance samples
+        default: false
+        type: boolean
 permissions:
   contents: read
   actions: read
@@ -70,6 +74,10 @@ jobs:
           if [[ "$ARM" == p2-* ]]; then
             python3 ../harness/scripts/newcache-memory/capacity.py "$ARM"
           fi
+          if [[ '${{ inputs.diagnostic }}' == true ]]; then
+            python3 ../harness/scripts/newcache-memory/diagnostic.py
+          fi
+          python3 ../harness/scripts/newcache-memory/observe.py
           pnpm install --frozen-lockfile
           rustup component add rust-src
           cargo codegen
@@ -134,18 +142,21 @@ jobs:
             clang -O2 -shared -undefined dynamic_lookup -I".spider/scratch/node-$(node -p process.version)/include/node" scripts/newcache-memory/memory.c -o scripts/newcache-memory/memory.node
           fi
           node --check scripts/newcache-memory/run.mjs
-          python3 -m py_compile scripts/newcache-memory/series.py
+          python3 -m py_compile scripts/newcache-memory/series.py scripts/newcache-memory/analyze.py
       - name: Twenty A/A pairs and twenty candidate pairs
         shell: bash
         env:
           CANDIDATE: ${{ matrix.candidate }}
           PHASE: ${{ matrix.phase }}
+          DIAGNOSTIC: ${{ inputs.diagnostic && '1' || '0' }}
         run: |
           set -euo pipefail
           export TMPDIR="$PWD/.spider/scratch/tmp"
           python3 scripts/newcache-memory/series.py
-          python3 scripts/newcache-memory/analyze.py results
-          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$DIAGNOSTIC" != 1 ]]; then
+            python3 scripts/newcache-memory/analyze.py results
+            cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
