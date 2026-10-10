@@ -25,7 +25,7 @@ export type { AssetInfo } from '@rspack/binding';
 import * as liteTapable from '@rspack/lite-tapable';
 import type { Source } from 'webpack-sources';
 import type { EntryOptions, EntryPlugin } from './builtin-plugin';
-import './Chunk';
+import { scopeChunkCollectionReads } from './Chunk';
 import type { Chunk } from './Chunk';
 import type { ChunkGraph } from './ChunkGraph';
 import type { Compiler } from './Compiler';
@@ -375,6 +375,7 @@ export class Compilation {
     const processAssetsHook = new liteTapable.AsyncSeriesHook<Assets>([
       'assets',
     ]);
+    scopeChunkCollectionReads(processAssetsHook, inner);
     const createProcessAssetsHook = <T>(
       name: string,
       stage: number,
