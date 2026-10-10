@@ -2,6 +2,10 @@ name: New Cache Parity
 on:
   workflow_dispatch:
     inputs:
+      attribution_only:
+        description: 'Linux diagnostic interventions and warm/dropped-page perf profiles only'
+        default: false
+        type: boolean
       binding_run:
         description: 'Reuse bindings from a completed run after a harness-only retry'
         default: ''
@@ -92,9 +96,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        host: [ubuntu-24.04, macos-15]
+        host: ${{ fromJSON(inputs.attribution_only && '["ubuntu-24.04"]' || '["ubuntu-24.04", "macos-15"]') }}
         modules: [3000, 60000]
-        pair: [LN, LP, LL, NN]
+        pair: ${{ fromJSON(inputs.attribution_only && '["LN", "LP"]' || '["LN", "LP", "LL", "NN"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -137,6 +141,7 @@ jobs:
           PAIR: ${{ matrix.pair }}
           REPEATS: ${{ matrix.host == 'ubuntu-24.04' && (inputs.linux_repeats || '7') || (inputs.mac_repeats || '3') }}
           HOST: ${{ matrix.host }}
+          ATTRIBUTION_ONLY: ${{ inputs.attribution_only && '1' || '0' }}
         run: |
           set -euo pipefail
           export TMPDIR="$PWD/.spider/scratch/tmp"

@@ -120,7 +120,7 @@ def reset_leaf():
     os.utime(leaf, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
 
 try:
-    for rep in range(REPEATS):
+    for rep in range(0 if os.environ.get('ATTRIBUTION_ONLY') == '1' else REPEATS):
         if time.monotonic() - started > 4.5 * 3600:
             raise RuntimeError('Budget exhausted before requested repetitions; preserve partial dataset')
         order = [0, 1] if rep % 2 == 0 else [1, 0]
@@ -167,22 +167,35 @@ try:
             if platform.system() == 'Linux':
                 # Profile all warm arms, then use the measured largest gap in analysis.
                 # Flat IP samples do not require release unwind tables.
+                profile_seed = WORK / f'profile-seed-{arm}'
+                stash(profile_seed)
+                restore(profile_seed)
                 data = sample(arm, 'warm', f'profile-{arm}-warm', profile=True)
+                remove(CACHE)
+                restore(profile_seed)
+                drop_pages()
+                sample(arm, 'drop', f'profile-{arm}-drop', profile=True)
+                remove(profile_seed)
                 binding = next((REPO / 'runtime' / ('next' if arm == 'P' else 'main') / 'crates/node_binding').glob('*.node'))
                 symbols = next((REPO / 'artifacts').glob(f"binding-*-{'next' if arm == 'P' else 'main'}/symbols.node"))
                 shutil.copyfile(symbols, binding)
-                with (RESULTS / f'profile-{arm}-warm.txt').open('w') as out:
-                    checked([os.environ.get('PERF_TOOL', 'perf'), 'report', '--stdio', '--no-children', '--sort', 'dso,symbol',
-                             '-i', str(RESULTS / f'profile-{arm}-warm.perf.data')], stdout=out)
+                for profile_phase in ('warm', 'drop'):
+                    with (RESULTS / f'profile-{arm}-{profile_phase}.txt').open('w') as out:
+                        checked([os.environ.get('PERF_TOOL', 'perf'), 'report', '--stdio', '--no-children', '--sort', 'dso,symbol',
+                                 '-i', str(RESULTS / f'profile-{arm}-{profile_phase}.perf.data')], stdout=out)
+                    with (RESULTS / f'profile-{arm}-{profile_phase}.script').open('w') as out:
+                        checked([os.environ.get('PERF_TOOL', 'perf'), 'script', '-F', 'time,period,dso,sym',
+                                 '-i', str(RESULTS / f'profile-{arm}-{profile_phase}.perf.data')], stdout=out)
                 # Restore the stripped measured runtime after symbolization.
                 checked(['tar', '-xzf', str(next((REPO / 'artifacts').glob(f"binding-*-{'next' if arm == 'P' else 'main'}/runtime.tar.gz"))),
                          '-C', str(REPO / 'runtime' / ('next' if arm == 'P' else 'main'))])
-        if PAIR == 'LN':
+        if PAIR in ('LN', 'LP'):
             reset_leaf()
             remove(CACHE)
-            sample('N', 'cold', 'diagnostic-nores-cold', no_resolver=True)
-            sample('N', 'warm', 'diagnostic-nores-warm', no_resolver=True)
-            sample('N', 'idle', 'diagnostic-nores-idle', no_resolver=True)
+            arm = 'N' if PAIR == 'LN' else 'P'
+            sample(arm, 'cold', f'diagnostic-nores-{arm}-cold', no_resolver=True)
+            sample(arm, 'warm', f'diagnostic-nores-{arm}-warm', no_resolver=True)
+            sample(arm, 'idle', f'diagnostic-nores-{arm}-idle', no_resolver=True)
     (RESULTS / 'success.json').write_text(json.dumps({'samples': len(records), 'repeats': REPEATS, 'parity': True}))
 except BaseException as error:
     failures.append({'error': repr(error)})

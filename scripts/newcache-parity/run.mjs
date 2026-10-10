@@ -12,6 +12,7 @@ const counted = process.env.COUNT === '1';
 const { rspack } = await import(path.resolve(process.env.RSPACK_CORE));
 const footprint = process.platform === 'darwin' ? require('./memory.node') : null;
 const start = performance.now();
+const monotonicStartSeconds = Number(process.hrtime.bigint()) / 1e9;
 const cpuStart = process.cpuUsage();
 const events = [];
 const rounds = [];
@@ -182,7 +183,7 @@ const cacheEnd = disk(cacheLocation);
 const closeStart = checkpoint();
 await close(); // Includes the legacy storage flush; success is mandatory before seeding warm phases.
 const closed = checkpoint();
-const result = { arm, phase, counted, no_resolver: process.env.NO_RESOLVER === '1', pid: process.pid,
+const result = { monotonic_start_seconds: monotonicStartSeconds, arm, phase, counted, no_resolver: process.env.NO_RESOLVER === '1', pid: process.pid,
   rounds, idle_start: idleStart, end, memory_end: memoryEnd, cache_end: cacheEnd,
   close_start: closeStart, closed, memory_closed: memory(), cache_closed: disk(cacheLocation), sawStored, events };
 if (events.some(e => /Failed to .*cache|cache.*unavailable/i.test(String(e.args)))) throw new Error('Cache persistence failure in events');
