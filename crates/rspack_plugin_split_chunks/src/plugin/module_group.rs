@@ -1,3 +1,5 @@
+mod callback;
+
 use std::{
   hash::{Hash, Hasher},
   ops::Deref,
@@ -7,11 +9,6 @@ use std::{
   },
 };
 
-use futures::{
-  FutureExt, StreamExt,
-  channel::{mpsc, oneshot},
-  future::join_all,
-};
 use itertools::Either;
 use rayon::prelude::*;
 use rspack_collections::SsoHashSet;
@@ -19,10 +16,9 @@ use rspack_core::{
   ChunkByUkey, ChunkUkey, Compilation, ExportsInfoArtifact, Module, ModuleIdentifier,
   RuntimeKeyMap, UsageKey, get_runtime_key,
 };
-use rspack_error::{Result, ToStringResultToRspackResultExt};
+use rspack_error::Result;
 use rspack_util::{fx_hash::FxDashMap, tracing_preset::TRACING_BENCH_TARGET};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
-use tokio::sync::OnceCell;
 use tracing::instrument;
 
 use super::{
@@ -30,7 +26,7 @@ use super::{
   intersections::{Intersection, collect_intersections},
 };
 use crate::{
-  SplitChunksNameBatchFn, SplitChunksPlugin,
+  SplitChunksPlugin,
   common::{
     ChunkFilter, ModuleChunkMap, ModuleSizes, is_default_module_layer_filter,
     is_default_module_type_filter,
@@ -38,9 +34,7 @@ use crate::{
   min_size::remove_min_size_violating_modules,
   module_group::{IndexedCacheGroup, ModuleGroup, ModuleGroupKey, compare_entries},
   options::{
-    cache_group::CacheGroup,
-    cache_group_test::{CacheGroupTest, CacheGroupTestFnCtx},
-    chunk_name::{ChunkNameGetter, ChunkNameGetterFnCtx},
+    cache_group::CacheGroup, cache_group_test::CacheGroupTest, chunk_name::ChunkNameGetter,
   },
 };
 
@@ -199,13 +193,6 @@ impl Deref for ChunkCombination {
   }
 }
 
-struct SelectedChunksCacheEntry {
-  combination: Arc<ChunkCombinationData>,
-  selected: Arc<OnceCell<FxHashSet<ChunkUkey>>>,
-}
-
-type SelectedChunksCache = FxDashMap<(u32, ChunksKey), Vec<SelectedChunksCacheEntry>>;
-
 enum SelectedChunks<'a> {
   All(&'a ChunkCombination),
   Filtered(Vec<ChunkUkey>),
@@ -243,16 +230,6 @@ struct MatchedItem<'a> {
   selected_chunks: SelectedChunks<'a>,
 }
 
-struct PendingNameRequest {
-  module: ModuleIdentifier,
-  chunks: Vec<ChunkUkey>,
-  cache_group_position: usize,
-  response: Option<oneshot::Sender<Option<String>>>,
-}
-
-// Keep each N-API payload bounded while amortizing the fixed cost of crossing into JavaScript.
-const JS_CHUNK_NAME_BATCH_SIZE: usize = 128;
-
 pub(super) fn cache_group_uses_intersections(
   cache_group: &CacheGroup,
   has_name_batch_getter: bool,
@@ -264,66 +241,6 @@ pub(super) fn cache_group_uses_intersections(
         .min_size_reduction
         .iter()
         .any(|(_, size)| *size > 0.0))
-}
-
-async fn process_name_requests(
-  mut receiver: mpsc::UnboundedReceiver<PendingNameRequest>,
-  cache_groups: &[IndexedCacheGroup<'_>],
-  name_batch_getters: &[Option<SplitChunksNameBatchFn>],
-  compilation: &Compilation,
-) -> Result<()> {
-  let module_graph = compilation.get_module_graph();
-
-  while let Some(first_request) = receiver.next().await {
-    let mut requests = Vec::with_capacity(JS_CHUNK_NAME_BATCH_SIZE);
-    requests.push(first_request);
-    while requests.len() < JS_CHUNK_NAME_BATCH_SIZE
-      && let Ok(request) = receiver.try_recv()
-    {
-      requests.push(request);
-    }
-
-    let mut run_start = 0;
-    while run_start < requests.len() {
-      let cache_group_position = requests[run_start].cache_group_position;
-      let mut run_end = run_start + 1;
-      while run_end < requests.len()
-        && requests[run_end].cache_group_position == cache_group_position
-      {
-        run_end += 1;
-      }
-
-      let indexed_cache_group = &cache_groups[cache_group_position];
-      let cache_group = indexed_cache_group.cache_group;
-      let get_name = name_batch_getters
-        .get(indexed_cache_group.cache_group_index as usize)
-        .and_then(Option::as_ref)
-        .expect("pending name request should use a batch name callback");
-      let contexts = requests[run_start..run_end]
-        .iter()
-        .map(|request| ChunkNameGetterFnCtx {
-          module: module_graph
-            .module_by_identifier(&request.module)
-            .expect("should have module")
-            .as_ref(),
-          compilation,
-          chunks: &request.chunks,
-          cache_group_key: &cache_group.key,
-        })
-        .collect();
-      let names = get_name(contexts).await?;
-      debug_assert_eq!(names.len(), run_end - run_start);
-
-      for (request, name) in requests[run_start..run_end].iter_mut().zip(names) {
-        if let Some(response) = request.response.take() {
-          let _ = response.send(name);
-        }
-      }
-      run_start = run_end;
-    }
-  }
-
-  Ok(())
 }
 
 fn get_key<I: Iterator<Item = ChunkUkey>>(
@@ -906,24 +823,17 @@ impl SplitChunksPlugin {
   ) -> Result<ModuleGroupMap> {
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
-    // Only function filters use this preparation-scoped memo. Native-only
-    // preparation does not allocate a table or change its Rayon fast path.
-    let selected_chunks_cache = cache_groups
-      .iter()
-      .any(|indexed| indexed.cache_group.chunk_filter.is_func())
-      .then(SelectedChunksCache::default);
-    let name_batch_getters = self.name_batch_getters.as_deref();
-    // Module callbacks still run once in the existing asynchronous pass.
-    // Anonymous all-chunk candidates can then be assembled independently,
+    let batch_getters = self.batch_getters.as_deref();
+    // Anonymous all-chunk candidates can be assembled independently,
     // avoiding a shared-map lookup for every candidate/module association.
     let direct_matches: Vec<_> = cache_groups
       .iter()
       .map(|indexed| {
         let group = indexed.cache_group;
-        let has_name_batch_getter = name_batch_getters.is_some_and(|getters| {
+        let has_name_batch_getter = batch_getters.is_some_and(|getters| {
           getters
             .get(indexed.cache_group_index as usize)
-            .is_some_and(Option::is_some)
+            .is_some_and(|getters| getters.name.is_some())
         });
         (combinator.candidates(group.used_exports).is_some()
           && cache_group_uses_intersections(group, has_name_batch_getter)
@@ -935,35 +845,35 @@ impl SplitChunksPlugin {
         })
       })
       .collect();
-    let has_name_batch_callback = name_batch_getters.is_some_and(|name_batch_getters| {
-      cache_groups.iter().any(|indexed_cache_group| {
-        name_batch_getters
-          .get(indexed_cache_group.cache_group_index as usize)
-          .is_some_and(Option::is_some)
-      })
-    });
-    let (name_sender, name_receiver) = if has_name_batch_callback {
-      let (sender, receiver) = mpsc::unbounded();
-      (Some(sender), Some(receiver))
-    } else {
-      (None, None)
-    };
-
-    // These filters cannot yield or invoke user callbacks. Run their CPU work
-    // on Rayon instead of allocating and joining one Tokio task per module.
-    let use_native_preparation = !has_name_batch_callback
-      && cache_groups.iter().all(|indexed| {
+    let native_positions = cache_groups
+      .iter()
+      .enumerate()
+      .filter_map(|(position, indexed)| {
         let group = indexed.cache_group;
-        is_default_module_type_filter(&group.r#type)
-          && is_default_module_layer_filter(&group.layer)
+        let getters =
+          batch_getters.and_then(|getters| getters.get(indexed.cache_group_index as usize));
+        ((is_default_module_layer_filter(&group.layer) || group.layer.is_native())
           && !matches!(group.test, CacheGroupTest::Fn(_))
           && !group.chunk_filter.is_func()
           && !matches!(group.name, ChunkNameGetter::Fn(_))
-      });
-    let process_module = async |module_index: usize,
-                                module_identifier: ModuleIdentifier,
-                                name_sender: Option<mpsc::UnboundedSender<PendingNameRequest>>|
-           -> Result<()> {
+          && getters.is_none_or(|getters| getters.is_empty()))
+        .then_some(position)
+      })
+      .collect::<Vec<_>>();
+    // These filters cannot yield or invoke user callbacks. Run their CPU work
+    // on Rayon instead of allocating and joining one Tokio task per module.
+    let use_native_preparation = native_positions.len() == cache_groups.len();
+    const TYPE_FILTER: u8 = 1;
+    const LAYER_FILTER: u8 = 2;
+    let native_filters = native_positions
+      .iter()
+      .map(|position| {
+        let group = cache_groups[*position].cache_group;
+        (u8::from(!is_default_module_type_filter(&group.r#type)) * TYPE_FILTER)
+          | (u8::from(!is_default_module_layer_filter(&group.layer)) * LAYER_FILTER)
+      })
+      .collect::<Vec<_>>();
+    let process_module = |module_index: usize, module_identifier: ModuleIdentifier| -> Result<()> {
       let belong_to_chunks = module_chunks
         .get(module_index)
         .expect("should have module chunks");
@@ -978,18 +888,23 @@ impl SplitChunksPlugin {
       let mut used_exports_combinations = [None, None];
       let mut non_used_exports_combinations = [None, None];
 
-      for (cache_group_position, indexed_cache_group) in cache_groups.iter().enumerate() {
+      for (&cache_group_position, &filters) in native_positions.iter().zip(&native_filters) {
+        let indexed_cache_group = &cache_groups[cache_group_position];
         let cache_group = indexed_cache_group.cache_group;
-        let has_name_batch_getter = name_batch_getters.is_some_and(|getters| {
+        let has_name_batch_getter = batch_getters.is_some_and(|getters| {
           getters
             .get(indexed_cache_group.cache_group_index as usize)
-            .is_some_and(Option::is_some)
+            .is_some_and(|getters| getters.name.is_some())
         });
         let include_intersections = self.dedup_depth > 0
           && cache_group_uses_intersections(cache_group, has_name_batch_getter);
-        if !use_native_preparation
-          && (!(cache_group.r#type)(module)
-            || !(cache_group.layer)(module.get_layer().map(ToString::to_string)).await?)
+        if filters & TYPE_FILTER != 0 && !(cache_group.r#type)(module) {
+          continue;
+        }
+        if filters & LAYER_FILTER != 0
+          && !cache_group
+            .layer
+            .test_native(module.get_layer().map(|layer| layer.as_str()))
         {
           continue;
         }
@@ -1001,12 +916,7 @@ impl SplitChunksPlugin {
           CacheGroupTest::RegExp(test) => module
             .name_for_condition()
             .is_some_and(|name| test.test(&name)),
-          CacheGroupTest::Fn(test) => test(CacheGroupTestFnCtx {
-            compilation,
-            module,
-          })
-          .await?
-          .unwrap_or_default(),
+          CacheGroupTest::Fn(_) => unreachable!("native group should not have a test callback"),
           CacheGroupTest::Enabled => true,
         };
         if !is_match || belong_to_chunks.len() < cache_group.min_chunks as usize {
@@ -1064,61 +974,7 @@ impl SplitChunksPlugin {
 
           let selected_chunks = match &cache_group.chunk_filter {
             ChunkFilter::All => SelectedChunks::All(chunk_combination),
-            ChunkFilter::Func(_) => {
-              let selected = {
-                let mut entries = selected_chunks_cache
-                  .as_ref()
-                  .expect("function filters should have a selected chunks cache")
-                  .entry((indexed_cache_group.cache_group_index, chunk_combination.key))
-                  .or_default();
-                // ChunksKey is a hash, not exact set identity. Compare membership
-                // on every hit, including combinations from used-export grouping.
-                if let Some(entry) = entries.iter().find(|entry| {
-                  Arc::ptr_eq(&entry.combination, &chunk_combination.data)
-                    || entry.combination.chunks == chunk_combination.data.chunks
-                }) {
-                  Arc::clone(&entry.selected)
-                } else {
-                  let selected = Arc::new(OnceCell::new());
-                  entries.push(SelectedChunksCacheEntry {
-                    combination: Arc::clone(&chunk_combination.data),
-                    selected: Arc::clone(&selected),
-                  });
-                  selected
-                }
-              };
-              // Drop the map guard before awaiting the single-flight initializer.
-              // Failed/cancelled initializations leave the cell empty for retries.
-              let selected = selected
-                .get_or_try_init(|| async {
-                  let chunks = join_all(chunk_combination.iter().map(|chunk| async move {
-                    cache_group
-                      .chunk_filter
-                      .test_func(chunk, compilation)
-                      .await
-                      .map(|matched| (chunk, matched))
-                  }))
-                  .await
-                  .into_iter()
-                  .collect::<Result<Vec<_>>>()?
-                  .into_iter()
-                  .filter_map(|(chunk, matched)| matched.then_some(*chunk))
-                  .collect::<FxHashSet<_>>();
-                  Ok::<_, rspack_error::Error>(chunks)
-                })
-                .await?;
-              // Equal memberships can have different hash-set layouts. Keep
-              // only filter results in the cell, never the initializer's order.
-              // Every module follows its own combination, exactly as uncached
-              // filtering does, including the original Filtered/key() path.
-              SelectedChunks::Filtered(
-                chunk_combination
-                  .iter()
-                  .filter(|chunk| selected.contains(chunk))
-                  .copied()
-                  .collect(),
-              )
-            }
+            ChunkFilter::Func(_) => unreachable!("native group should not have a chunks callback"),
             _ => SelectedChunks::Filtered(
               chunk_combination
                 .iter()
@@ -1132,41 +988,10 @@ impl SplitChunksPlugin {
             continue;
           }
 
-          let chunk_name = if has_name_batch_getter {
-            let name_sender = name_sender
-              .as_ref()
-              .expect("name callback should have a batch coordinator");
-            let (response, response_receiver) = oneshot::channel();
-            if name_sender
-              .unbounded_send(PendingNameRequest {
-                module: module.identifier(),
-                chunks: selected_chunks.iter().copied().collect(),
-                cache_group_position,
-                response: Some(response),
-              })
-              .is_err()
-            {
-              return Ok(());
-            }
-            let Ok(chunk_name) = response_receiver.await else {
-              return Ok(());
-            };
-            chunk_name
-          } else {
-            match &cache_group.name {
-              ChunkNameGetter::String(name) => Some(name.clone()),
-              ChunkNameGetter::Disabled => None,
-              ChunkNameGetter::Fn(get_name) => {
-                let chunks = selected_chunks.iter().copied().collect::<Vec<_>>();
-                get_name(ChunkNameGetterFnCtx {
-                  module,
-                  compilation,
-                  chunks: &chunks,
-                  cache_group_key: &cache_group.key,
-                })
-                .await?
-              }
-            }
+          let chunk_name = match &cache_group.name {
+            ChunkNameGetter::String(name) => Some(name.clone()),
+            ChunkNameGetter::Disabled => None,
+            ChunkNameGetter::Fn(_) => unreachable!("native group should not have a name callback"),
           };
 
           merge_matched_item_into_module_group_map(
@@ -1185,61 +1010,35 @@ impl SplitChunksPlugin {
       Ok(())
     };
 
-    if use_native_preparation {
-      all_modules
-        .par_iter()
-        .enumerate()
-        .try_for_each(|(module_index, module_identifier)| {
-          process_module(module_index, *module_identifier, None)
-            .now_or_never()
-            .expect("native cache-group preparation should not yield")
-        })?;
-    } else {
-      let module_group_results = rspack_parallel::scope::<_, Result<_>>(|token| {
-        if let Some(name_receiver) = name_receiver {
-          let coordinator = unsafe {
-            token.used((
-              name_receiver,
-              &cache_groups,
-              name_batch_getters.expect("should have batch name getters"),
-              compilation,
-            ))
-          };
-          coordinator.spawn(
-            |(name_receiver, cache_groups, name_batch_getters, compilation)| async move {
-              process_name_requests(name_receiver, cache_groups, name_batch_getters, compilation)
-                .await
-            },
-          );
-        }
-        all_modules
-          .iter()
-          .enumerate()
-          .for_each(|(module_index, module_identifier)| {
-            let name_sender = name_sender.clone();
-            let s = unsafe {
-              token.used((
-                &process_module,
-                module_index,
-                *module_identifier,
-                name_sender,
-              ))
-            };
-            s.spawn(
-              |(process_module, module_index, module_identifier, name_sender)| async move {
-                process_module(module_index, module_identifier, name_sender).await
-              },
-            );
-          });
-        drop(name_sender);
-      })
-      .await
-      .into_iter()
-      .map(|result| result.to_rspack_result())
-      .collect::<Result<Vec<_>>>()?;
-      for result in module_group_results {
-        result?;
+    if !native_positions.is_empty() {
+      let modules = all_modules.par_iter().enumerate();
+      if use_native_preparation && native_filters.iter().all(|filters| *filters == 0) {
+        // Leave the default native fast path's scheduling unchanged.
+        modules.try_for_each(|(index, identifier)| process_module(index, *identifier))?;
+      } else {
+        // Native work in filtered or mixed stages stays parallel, with coarse
+        // tasks to amortize scheduling across at least 4096 modules.
+        modules
+          .with_min_len(4096)
+          .try_for_each(|(index, identifier)| process_module(index, *identifier))?;
       }
+    }
+    if !use_native_preparation {
+      callback::prepare_callback_groups(
+        callback::Stage {
+          plugin: self,
+          combinator,
+          all_modules,
+          compilation,
+          module_chunks,
+          module_group_map: &module_group_map,
+          chunk_index_map,
+        },
+        &cache_groups,
+        &native_positions,
+        &direct_matches,
+      )
+      .await?;
     }
 
     let module_group_count = module_group_map.len();

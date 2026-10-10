@@ -1,3 +1,4 @@
+mod batch;
 mod raw_split_chunk_cache_group_test;
 mod raw_split_chunk_chunks;
 mod raw_split_chunk_name;
@@ -14,14 +15,18 @@ use raw_split_chunk_name::{
 };
 use rspack_core::{DEFAULT_DELIMITER, Filename, SourceType};
 use rspack_napi::string::JsStringExt;
-use rspack_plugin_split_chunks::{ChunkNameGetter, SplitChunksNameBatchFn};
+use rspack_plugin_split_chunks::{ChunkNameGetter, GroupBatchGetters};
 use rspack_regex::RspackRegex;
 
 use self::{
   raw_split_chunk_cache_group_test::{
-    RawCacheGroupTest, default_cache_group_test, normalize_raw_cache_group_test,
+    RawCacheGroupTest, RawCacheGroupTestBatch, default_cache_group_test,
+    normalize_raw_cache_group_test, normalize_raw_cache_group_test_batch, test_batch_adapter,
   },
-  raw_split_chunk_chunks::{Chunks, create_chunks_filter},
+  raw_split_chunk_chunks::{
+    Chunks, RawChunksFilterBatch, chunks_batch_adapter, create_chunks_filter,
+    normalize_raw_chunks_filter_batch,
+  },
   raw_split_chunk_name::default_chunk_option_name,
   raw_split_chunk_size::RawSplitChunkSizes,
 };
@@ -46,6 +51,11 @@ pub struct RawSplitChunksOptions<'a> {
   #[napi(ts_type = "RegExp | 'async' | 'initial' | 'all' | Function")]
   #[debug(skip)]
   pub chunks: Option<Chunks<'a>>,
+  #[napi(
+    ts_type = "((batch: JsChunksFilterBatch) => boolean[] | { results: boolean[]; thrown: number[]; error: unknown })"
+  )]
+  #[debug(skip)]
+  pub chunks_batch: Option<RawChunksFilterBatch>,
   pub used_exports: Option<bool>,
   pub automatic_name_delimiter: Option<String>,
   pub max_async_requests: Option<f64>,
@@ -74,6 +84,11 @@ pub struct RawCacheGroupOptions<'a> {
   #[napi(ts_type = "RegExp | string | Function")]
   #[debug(skip)]
   pub test: Option<RawCacheGroupTest>,
+  #[napi(
+    ts_type = "((modules: Module[]) => (boolean | undefined)[] | { results: (boolean | undefined)[]; thrown: number[]; error: unknown })"
+  )]
+  #[debug(skip)]
+  pub test_batch: Option<RawCacheGroupTestBatch>,
   pub filename: Option<JsFilename>,
   //   pub enforce: bool,
   pub id_hint: Option<String>,
@@ -81,6 +96,11 @@ pub struct RawCacheGroupOptions<'a> {
   #[napi(ts_type = "RegExp | 'async' | 'initial' | 'all'")]
   #[debug(skip)]
   pub chunks: Option<Chunks<'a>>,
+  #[napi(
+    ts_type = "((batch: JsChunksFilterBatch) => boolean[] | { results: boolean[]; thrown: number[]; error: unknown })"
+  )]
+  #[debug(skip)]
+  pub chunks_batch: Option<RawChunksFilterBatch>,
   #[napi(ts_type = "RegExp | string")]
   #[debug(skip)]
   pub r#type: Option<Either<RspackRegex, JsString<'a>>>,
@@ -116,7 +136,7 @@ pub struct RawCacheGroupOptions<'a> {
 
 pub(crate) struct NormalizedSplitChunksOptions {
   pub options: rspack_plugin_split_chunks::PluginOptions,
-  pub name_batch_getters: Vec<Option<SplitChunksNameBatchFn>>,
+  pub batch_getters: Vec<GroupBatchGetters>,
 }
 
 impl<'a> RawSplitChunksOptions<'a> {
@@ -124,11 +144,15 @@ impl<'a> RawSplitChunksOptions<'a> {
     use rspack_plugin_split_chunks::SplitChunkSizes;
 
     let mut cache_groups = vec![];
-    let mut name_batch_getters = vec![];
+    let mut batch_getters = vec![];
 
     let overall_filename = raw_opts.filename.map(Filename::from);
 
-    let overall_chunk_filter = raw_opts.chunks.map(create_chunks_filter);
+    let overall_chunks_batch_getter = raw_opts.chunks_batch.map(normalize_raw_chunks_filter_batch);
+    let overall_chunk_filter = overall_chunks_batch_getter
+      .as_ref()
+      .map(chunks_batch_adapter)
+      .or_else(|| raw_opts.chunks.map(create_chunks_filter));
 
     let overall_min_chunks = raw_opts.min_chunks.unwrap_or(1);
 
@@ -228,23 +252,44 @@ impl<'a> RawSplitChunksOptions<'a> {
             name = overall_name_getter.clone();
             name_batch_getter = overall_name_batch_getter.clone();
           }
-          name_batch_getters.push(name_batch_getter);
+          let test_batch_getter = v.test_batch.map(normalize_raw_cache_group_test_batch);
+          let test = test_batch_getter.as_ref().map_or_else(
+            || {
+              v.test
+                .map_or_else(default_cache_group_test, normalize_raw_cache_group_test)
+            },
+            test_batch_adapter,
+          );
+          let chunks_batch_getter = if v.chunks.is_none() && v.chunks_batch.is_none() {
+            overall_chunks_batch_getter.clone()
+          } else {
+            v.chunks_batch.map(normalize_raw_chunks_filter_batch)
+          };
+          let chunk_filter = chunks_batch_getter.as_ref().map_or_else(
+            || {
+              v.chunks.map_or_else(
+                || {
+                  overall_chunk_filter
+                    .clone()
+                    .unwrap_or_else(rspack_plugin_split_chunks::create_async_chunk_filter)
+                },
+                create_chunks_filter,
+              )
+            },
+            chunks_batch_adapter,
+          );
+          batch_getters.push(GroupBatchGetters {
+            name: name_batch_getter,
+            test: test_batch_getter,
+            chunks: chunks_batch_getter,
+          });
           rspack_plugin_split_chunks::CacheGroup {
             id_hint: v.id_hint.unwrap_or_else(|| v.key.clone()),
             key: v.key,
             name,
             priority: v.priority.unwrap_or(0) as f64,
-            test: v.test.map_or(default_cache_group_test(), |test| {
-              normalize_raw_cache_group_test(test)
-            }),
-            chunk_filter: v.chunks.map_or_else(
-              || {
-                overall_chunk_filter
-                  .clone()
-                  .unwrap_or_else(rspack_plugin_split_chunks::create_async_chunk_filter)
-              },
-              create_chunks_filter,
-            ),
+            test,
+            chunk_filter,
             min_chunks,
             min_size,
             min_size_reduction,
@@ -309,7 +354,7 @@ impl<'a> RawSplitChunksOptions<'a> {
         },
         hide_path_info: raw_opts.hide_path_info,
       },
-      name_batch_getters,
+      batch_getters,
     }
   }
 }
@@ -349,26 +394,22 @@ fn create_module_layer_filter(
   raw: Either3<RspackRegex, JsString, ThreadsafeFunction<Option<String>, bool>>,
 ) -> rspack_plugin_split_chunks::ModuleLayerFilter {
   match raw {
-    Either3::A(regex) => Arc::new(move |layer| {
-      let regex = regex.clone();
-      Box::pin(async move { Ok(layer.map(|layer| regex.test(&layer)).unwrap_or_default()) })
-    }),
-    Either3::B(js_str) => {
-      let test = js_str.into_string();
-      Arc::new(move |layer| {
-        let test = test.clone();
-        Box::pin(async move {
-          Ok(if let Some(layer) = layer {
-            layer.starts_with(&test)
-          } else {
-            test.is_empty()
-          })
-        })
+    Either3::A(regex) => {
+      rspack_plugin_split_chunks::create_native_module_layer_filter(move |layer| {
+        layer.is_some_and(|layer| regex.test(layer))
       })
     }
-    Either3::C(f) => Arc::new(move |layer| {
-      let f = f.clone();
-      Box::pin(async move { f.call_with_sync(layer).await })
-    }),
+    Either3::B(js_str) => {
+      let test = js_str.into_string();
+      rspack_plugin_split_chunks::create_native_module_layer_filter(move |layer| {
+        layer.map_or_else(|| test.is_empty(), |layer| layer.starts_with(&test))
+      })
+    }
+    Either3::C(f) => Arc::new(
+      move |layer| -> futures::future::BoxFuture<'static, rspack_error::Result<bool>> {
+        let f = f.clone();
+        Box::pin(async move { f.call_with_sync(layer).await })
+      },
+    ),
   }
 }
