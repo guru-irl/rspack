@@ -1,0 +1,139 @@
+name: New Cache Parity
+on:
+  workflow_dispatch:
+    inputs:
+      linux_repeats:
+        default: '7'
+        type: string
+      mac_repeats:
+        default: '3'
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [main, next]
+        include:
+          - host: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - host: macos-15
+            target: aarch64-apple-darwin
+        host: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.host }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_PROFILE_RELEASE_STRIP: none
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source == 'main' && 'f2903b6482' || '0dffff63a1' }}
+          path: source
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: source/package.json
+      - name: Release-equivalent build
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp bundle
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          else
+            if [[ "$(readlink "$HOME/.cargo/bin/rustup" || true)" == */rustup-init ]]; then
+              rustup-init -y --default-toolchain none
+            fi
+          fi
+          pnpm install --frozen-lockfile
+          rustup component add rust-src
+          cargo codegen
+          export RUST_TARGET='${{ matrix.target }}'
+          pnpm run build:binding:release
+          cp crates/node_binding/*.node bundle/symbols.node
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            strip --strip-all crates/node_binding/*.node
+          else
+            strip -x crates/node_binding/*.node
+          fi
+          pnpm --filter @rspack/core run build
+          node --input-type=module -e 'import("./packages/rspack/dist/index.js").then(m => console.log(m.rspack.version))'
+          python3 ../harness/scripts/newcache-parity/package.py
+          git rev-parse HEAD > bundle/commit.txt
+          uname -a > bundle/build-host.txt
+          tar -czf bundle/runtime.tar.gz packages/rspack/dist packages/rspack/compiled packages/rspack/package.json packages/rspack/hot crates/node_binding/binding.js crates/node_binding/package.json crates/node_binding/*.node
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binding-${{ matrix.host }}-${{ matrix.source }}
+          path: source/bundle
+          if-no-files-found: error
+  measure:
+    needs: build
+    timeout-minutes: 330
+    runs-on: ${{ matrix.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [ubuntu-24.04, macos-15]
+        modules: [3000, 60000]
+        pair: [LN, LP, LL, NN]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binding-${{ matrix.host }}-*
+          path: artifacts
+      - name: Prepare isolated runtimes and memory sampler
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp results
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          for source in main next; do
+            mkdir -p "runtime/$source/node_modules/@rspack"
+            tar -xzf "artifacts/binding-${{ matrix.host }}-$source/runtime.tar.gz" -C "runtime/$source"
+            ln -s ../../../crates/node_binding "runtime/$source/node_modules/@rspack/binding"
+          done
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            curl -fsSL "https://nodejs.org/dist/$(node -p process.version)/node-$(node -p process.version)-headers.tar.gz" -o .spider/scratch/headers.tar.gz
+            tar -xzf .spider/scratch/headers.tar.gz -C .spider/scratch
+            clang -O2 -shared -undefined dynamic_lookup -I".spider/scratch/node-$(node -p process.version)/include/node" scripts/newcache-parity/memory.c -o scripts/newcache-parity/memory.node
+          else
+            sudo apt-get update
+            sudo apt-get install -y linux-tools-common linux-tools-generic
+            sudo sysctl kernel.perf_event_paranoid=-1
+            PERF_TOOL=$(find /usr/lib/linux-tools -name perf -type f | head -1)
+            "$PERF_TOOL" --version
+            echo "PERF_TOOL=$PERF_TOOL" >> "$GITHUB_ENV"
+          fi
+      - name: Measure paired phases
+        shell: bash
+        env:
+          FIXTURE_MODULES: ${{ matrix.modules }}
+          PAIR: ${{ matrix.pair }}
+          REPEATS: ${{ matrix.host == 'ubuntu-24.04' && inputs.linux_repeats || inputs.mac_repeats }}
+          HOST: ${{ matrix.host }}
+        run: |
+          set -euo pipefail
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          python3 scripts/newcache-parity/series.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-${{ matrix.host }}-${{ matrix.modules }}-${{ matrix.pair }}
+          path: results
+          if-no-files-found: error
