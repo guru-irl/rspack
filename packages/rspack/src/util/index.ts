@@ -1,5 +1,3 @@
-import type { LoaderObject } from '../loader-runner';
-
 const decoder = new TextDecoder();
 
 export function isNil(value: unknown): value is null | undefined {
@@ -59,10 +57,6 @@ export function serializeObject(
 export function indent(str: string, prefix: string) {
   const rem = str.replace(/\n([^\n])/g, `\n${prefix}$1`);
   return prefix + rem;
-}
-
-export function stringifyLoaderObject(o: LoaderObject): string {
-  return o.path + o.query + o.fragment;
 }
 
 export const unsupported = (name: string, issue?: string) => {

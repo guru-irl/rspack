@@ -336,6 +336,7 @@ impl<'context> CssModuleParser<'context> {
       .with_diagnostic(map_box_diagnostics_to_module_parse_diagnostics(
         self.diagnostics,
         self.parse_context.loaders,
+        &self.parse_context.compiler_options.context,
       )),
     )
   }
