@@ -32,10 +32,12 @@ jobs:
           cd .spider/scratch/incremental-precision/install
           printf '{"private":true}\n' > package.json
           npm view '${{ matrix.package }}' version gitHead dist --json > identity.json
-          npm install --registry=https://registry.npmjs.org --save-exact '${{ matrix.package }}'
+          npm install --prefix "$PWD" --registry=https://registry.npmjs.org --save-exact '${{ matrix.package }}'
+          npm ls --prefix "$PWD" --all --json > installed.json
           package='${{ matrix.package }}'
           package="${package%@*}"
-          echo "RSPACK_CORE_PATH=$PWD/node_modules/$package" >> "$GITHUB_ENV"
+          core_path=$(node -e 'const {createRequire}=require("node:module"); console.log(createRequire(process.cwd()+"/package.json").resolve(process.argv[1]));' "$package")
+          echo "RSPACK_CORE_PATH=$core_path" >> "$GITHUB_ENV"
           echo "VARIANT=$package" >> "$GITHUB_ENV"
       - name: Smoke fixture and logging schema
         shell: bash
@@ -45,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp .spider/scratch/incremental-precision/install/identity.json .spider/scratch/incremental-precision/results/
+          cp .spider/scratch/incremental-precision/install/{identity.json,installed.json,package-lock.json} .spider/scratch/incremental-precision/results/
           node scripts/bench/incremental-precision/run.mjs | tee .spider/scratch/incremental-precision/results/stdout.log
       - uses: actions/upload-artifact@v4
         if: always()
@@ -57,6 +59,7 @@ jobs:
             .spider/scratch/incremental-precision/install/identity.json
           if-no-files-found: error
   diagnostic:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
