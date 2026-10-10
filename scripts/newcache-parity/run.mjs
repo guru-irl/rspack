@@ -175,7 +175,7 @@ if (watch) {
 const idleStart = checkpoint();
 if (phase === 'idle') await delay(65000);
 if (phase === 'cold' && isNew) {
-  await Promise.race([stored, delay(120000).then(() => { throw new Error('No persistence completion event'); })]);
+  await Promise.race([stored, delay(120000, undefined, { ref: false }).then(() => { throw new Error('No persistence completion event'); })]);
 }
 const end = checkpoint();
 const memoryEnd = memory();

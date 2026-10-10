@@ -20,7 +20,7 @@ REPEATS = int(os.environ['REPEATS'])
 ARMS = {'LN': ['L', 'N'], 'LP': ['L', 'P'], 'LL': ['L', 'L'], 'NN': ['N', 'N']}[PAIR]
 PROJECT = WORK / 'project'
 CACHE = PROJECT / 'cache'
-PHASES = ['cold', 'warm', 'drop', 'watch1', 'watch5', 'idle', 'exit']
+PHASES = os.environ['PHASE_FILTER'].split(',') if os.environ.get('PHASE_FILTER') else ['cold', 'warm', 'drop', 'watch1', 'watch5', 'idle', 'exit']
 records = []
 failures = []
 started = time.monotonic()
@@ -153,7 +153,7 @@ try:
 
     # One separately counted cold/warm/watch process per distinct arm. Actual
     # factorize/resolve taps introduce bridge overhead, excluded from all timing samples.
-    if PAIR in ('LN', 'LP'):
+    if PAIR in ('LN', 'LP') and not os.environ.get('PHASE_FILTER'):
         for arm in dict.fromkeys(ARMS):
             reset_leaf()
             remove(CACHE)
