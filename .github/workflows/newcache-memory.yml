@@ -13,6 +13,14 @@ on:
         description: Reuse successful bindings after a harness-only correction
         default: ''
         type: string
+      hosts:
+        description: JSON runner labels for phase-only retries
+        default: '["ubuntu-24.04","macos-15"]'
+        type: string
+      phases:
+        description: JSON phases for phase-only retries
+        default: '["warm","drop","edit","watch","readonly"]'
+        type: string
       diagnostic:
         description: Build stats-only diagnostics, never acceptance samples
         default: false
@@ -105,9 +113,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        host: [ubuntu-24.04, macos-15]
+        host: ${{ fromJSON(inputs.hosts || '["ubuntu-24.04","macos-15"]') }}
         candidate: [p1]
-        phase: [warm, drop, edit, watch, readonly]
+        phase: ${{ fromJSON(inputs.phases || '["warm","drop","edit","watch","readonly"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
