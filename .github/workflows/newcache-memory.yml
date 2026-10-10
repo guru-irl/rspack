@@ -37,11 +37,6 @@ jobs:
       matrix:
         arm: [main, p1]
         host: ${{ fromJSON(inputs.hosts || '["ubuntu-24.04","macos-15"]') }}
-        include:
-          - host: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - host: macos-15
-            target: aarch64-apple-darwin
     runs-on: ${{ matrix.host }}
     env:
       CARGO_INCREMENTAL: '0'
@@ -67,7 +62,7 @@ jobs:
         shell: bash
         env:
           ARM: ${{ matrix.arm }}
-          RUST_TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.host == 'ubuntu-24.04' && 'x86_64-unknown-linux-gnu' || 'aarch64-apple-darwin' }}
         run: |
           set -euo pipefail
           mkdir -p .spider/scratch/tmp bundle
