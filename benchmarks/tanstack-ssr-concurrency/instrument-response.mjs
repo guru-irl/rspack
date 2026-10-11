@@ -75,7 +75,7 @@ const fetchLinked=async(label,html)=>{
  const watcher=watch.apply(this,args);if(watcher?.getInfo){const get=watcher.getInfo;watcher.getInfo=function(){const info=get.apply(this,arguments);emitDiagnostic('watch-getInfo',{name:environment.name,changed:[...(info.changes??[])].map(normalize),removed:[...(info.removals??[])].map(normalize)});return info;};}return watcher;
  };}
  compiler.hooks.watchRun.tap({name:'ResponseDiagnosticPaths',stage:-20000},()=>emitDiagnostic('watchRun-paths',{name:environment.name,modifiedFiles:[...(compiler.modifiedFiles??[])].map(normalize),removedFiles:[...(compiler.removedFiles??[])].map(normalize)}));`);
- replace("if(environment.name==='client') {\n  const prefix", "if(environment.name==='client') {\n  record.diagnosticAssets=compilation.getAssets().filter(a=>/\\.(css|js)$/.test(a.name)).map(a=>({name:a.name,sha256:hash(a.source.buffer()),bytes:a.source.size()}));\n  const prefix");
+ replace("if(environment.name==='client') {", "if(environment.name==='client') {\n  record.diagnosticAssets=compilation.getAssets().filter(a=>/\\.(css|js)$/.test(a.name)).map(a=>({name:a.name,sha256:hash(a.source.buffer()),bytes:a.source.size()}));");
  replace("windowEvidence.status=r.status;", "emitDiagnostic('window-fetch-response-end',manifestInfo(publishedManifest));windowEvidence.responseEnded=now();windowEvidence.status=r.status;");
  replace("windowEvidence.css=[...html.matchAll", "windowEvidence.linkedURLs=linkedURLs(html);windowEvidence.css=[...html.matchAll");
  replace("assert.ok(windowEvidence.css.every(url=>next.includes(url)),'window HTML has no stale or replaced CSS link');", `windowEvidence.withinArmLiteralMatch=windowEvidence.css.every(url=>next.includes(url));
