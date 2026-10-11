@@ -17,6 +17,22 @@ const pkg=path.join(app,'node_modules/@tanstack/start-plugin-core');
 const dist=path.join(pkg,'dist/esm/rsbuild');
 const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
 fs.copyFileSync(path.join(app,'package-lock.json'),path.join(work,'package-lock.json'));
+// Independently reconstruct the measured candidate and regenerate the corrected
+// patch from pristine bytes. Retain complete non-RSC partition hashes as evidence.
+const measuredRoot=path.join(work,'measured-dist');fs.mkdirSync(measuredRoot,{recursive:true});
+const pristineRoot=path.join(work,'pristine-dist');fs.mkdirSync(pristineRoot,{recursive:true});
+for(const f of ['plugin.js','virtual-modules.js'])fs.writeFileSync(path.join(pristineRoot,f),originals[f]);
+const measuredFiles=path.join(measuredRoot,'dist/esm/rsbuild');fs.mkdirSync(measuredFiles,{recursive:true});
+for(const f of ['plugin.js','virtual-modules.js'])fs.writeFileSync(path.join(measuredFiles,f),originals[f]);
+const historical=spawnSync('git',['show','67fd504fa122769f2ad5939e1204971335d1d376:benchmarks/tanstack-ssr-concurrency/start-plugin-core-1.171.46-combined.patch'],{encoding:'utf8'});assert.equal(historical.status,0);
+const historicalPatch=path.join(work,'measured-r2.patch');fs.writeFileSync(historicalPatch,historical.stdout);
+assert.equal(crypto.createHash('sha256').update(historical.stdout).digest('hex'),'efa592177b50e221d2c88ec901ca6ade48243254649e83bdffa0e5b913baa7dd');
+const appliedMeasured=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',historicalPatch],{cwd:measuredRoot,encoding:'utf8'});assert.equal(appliedMeasured.status,0);assert.ok(!/offset|fuzz|FAILED/i.test(appliedMeasured.stdout+appliedMeasured.stderr));
+for(const f of ['plugin.js','virtual-modules.js'])fs.copyFileSync(path.join(measuredFiles,f),path.join(measuredRoot,`measured-${f}`));
+const generatedRoot=path.join(work,'generated-dist'),generatedPatch=path.join(work,'generated-combined.patch');
+const generated=spawnSync('python3',[path.join(fixture,'generate-r2b.py'),pristineRoot,measuredRoot,generatedRoot,generatedPatch],{encoding:'utf8'});assert.equal(generated.status,0,generated.stdout+generated.stderr);
+assert.deepEqual(fs.readFileSync(generatedPatch),fs.readFileSync(path.join(fixture,'start-plugin-core-1.171.46-combined.patch')),'scoped generator must exactly reproduce the tested patch');
+fs.copyFileSync(path.join(generatedRoot,'non-rsc-region-proof.json'),path.join(work,'r2b-non-rsc-region-proof.json'));
 const structuralApply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',path.join(fixture,'start-plugin-core-1.171.46-combined.patch')],{cwd:pkg,encoding:'utf8'});
 fs.writeFileSync(path.join(work,'r2b-clean-apply.log'),structuralApply.stdout+structuralApply.stderr);
 assert.equal(structuralApply.status,0);assert.ok(!/offset|fuzz|FAILED/i.test(structuralApply.stdout+structuralApply.stderr));

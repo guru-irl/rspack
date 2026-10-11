@@ -27,6 +27,8 @@ jobs:
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
+          git fetch --no-tags origin 67fd504fa122769f2ad5939e1204971335d1d376
+          node --check benchmarks/tanstack-ssr-concurrency/check-rsc.mjs
           node --check benchmarks/tanstack-ssr-concurrency/run.mjs
           node --check benchmarks/tanstack-ssr-concurrency/setup.mjs
           node benchmarks/tanstack-ssr-concurrency/setup.mjs

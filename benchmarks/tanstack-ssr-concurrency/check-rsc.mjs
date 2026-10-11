@@ -10,6 +10,17 @@ export function structural(pristine,patched) {
  const check=(file,name,a,b)=>{rows.push({file,name,pristineSha256:sha(a),patchedSha256:sha(b),equal:a===b});};
  const pluginRegions=[['RSC branch','\t\t\tif (rscEnabled) {','\t\t\tconst logConcurrencyState'],['seedResolveModules','function seedResolveModules','function rebuildModulesContaining'],['rebuildModulesContaining','function rebuildModulesContaining','/**\n* Return the realpath']];
  for(const [name,start,end] of pluginRegions){const pristineEnd=name==='RSC branch'?'\t\t\tif (!rscEnabled) api.onAfterCreateCompiler':end;check('plugin.js',name,between(pristine['plugin.js'],start,pristineEnd),between(patched['plugin.js'],start,end));}
+ for(const [name,start,end] of [['RSC production manifest call sites','\t\t\tif (api.context.action !== "dev" && rscEnabled) {','\t\t\tapi.onAfterEnvironmentCompile'],['shared RSC post-build call site','\t\t\tif (api.context.action === "build") api.onAfterBuild','\t\t}\n\t};']])check('plugin.js',name,between(pristine['plugin.js'],start,end),between(patched['plugin.js'],start,end));
+ const changeStart='\t\t\t\tonServerFnsByIdChange: () => {';
+ const changeEnd='\t\t\t});';
+ const changeGuard='\t\t\t\t\tif (concurrentDev) resolverRevision = virtualModuleState.getResolverWriteRevision(serverFnProviderEnv);\n';
+ check('plugin.js','RSC transform notification (non-RSC guard excluded)',between(pristine['plugin.js'],changeStart,changeEnd),between(patched['plugin.js'],changeStart,changeEnd).replace(changeGuard,''));
+ const envStart='\t\t\tapi.onAfterEnvironmentCompile';
+ const envEnd='\t\t\tif (api.context.action === "build")';
+ let env=between(patched['plugin.js'],envStart,envEnd);
+ const nonRscFollowUp=between(env,'\t\t\t\t\tif (concurrentDev) {','\t\t\t\t}\n');
+ env=env.replace(nonRscFollowUp,'').replace('\t\t\t\tif (clientBuild) {\n\t\t\t\t\tvirtualModuleState.updateManifest(clientBuild);\n\t\t\t\t}\n','\t\t\t\tif (clientBuild) virtualModuleState.updateManifest(clientBuild);\n');
+ check('plugin.js','RSC client publication call sites (non-RSC guard excluded)',between(pristine['plugin.js'],envStart,envEnd),env);
  let v=patched['virtual-modules.js'];
  v=v.replace('\tconst resolverWriteRevisionByEnvironment = {};\n','');
  v=v.replace('\t\tgetResolverWriteRevision(environmentName) {\n\t\t\treturn resolverWriteRevisionByEnvironment[environmentName] ?? 0;\n\t\t},\n','');
