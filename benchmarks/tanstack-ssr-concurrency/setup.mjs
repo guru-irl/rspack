@@ -51,7 +51,7 @@ if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0
 } else if(mode==='aa-route') {for(let i=0;i<2;i++){const r=execute('stock','aa-route',i);if(r.status!==0)failed=true;}
 } else if(mode==='red-after-make') { const r=execute('after-make','red-after-make',0);failed=r.status!==0;
 } else if(mode==='regression') {
- for(const scenario of ['red-overlap','red-recovery']) {const r=execute('barrier',scenario,0); if(r.status!==0) failed=true;}
+ for(const [arm,scenario] of [['barrier','red-overlap'],['barrier','red-recovery'],['barrier','red-aba'],['after-make','red-after-make']]) {const r=execute(arm,scenario,0); if(r.status!==0) failed=true;}
 } else if(mode==='red') {
  for(const [arm,scenario] of [['stock','red-overlap'],['v2','red-recovery']]) { const r=execute(arm,scenario,0); if(r.status!==0) failed=true; }
 } else {

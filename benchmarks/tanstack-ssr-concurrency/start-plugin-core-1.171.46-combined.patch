@@ -49,16 +49,22 @@
  				}
  			});
  			registerImportProtection(api, {
-@@ -177,12 +212,25 @@
+@@ -177,12 +212,30 @@
  			if (!rscEnabled) api.modifyRspackConfig((config, utils) => {
  				if (!startCompilerServerEnvironmentNames.includes(utils.environment.name)) return;
  				config.plugins.push({ apply(compiler) {
-+					let lastRebuiltResolverContent;
-+					const resolverBuilt = new WeakSet();
++					let lastBuiltResolverRevision = -1;
++					const resolverBuildRevisions = new WeakMap();
 +					compiler.hooks.thisCompilation.tap("TanStackStartResolverBuildTracking", (compilation) => {
-+						compilation.hooks.succeedModule.tap("TanStackStartResolverBuildTracking", (module) => {
-+							if (module.identifier().includes(virtualModuleState.serverFnResolverPath)) resolverBuilt.add(compilation);
++						compilation.hooks.buildModule.tap("TanStackStartResolverBuildTracking", (module) => {
++							if (module.identifier().includes(virtualModuleState.serverFnResolverPath)) resolverBuildRevisions.set(module, virtualModuleState.getResolverWriteRevision(utils.environment.name));
 +						});
++						compilation.hooks.succeedModule.tap("TanStackStartResolverBuildTracking", (module) => {
++							if (resolverBuildRevisions.has(module)) lastBuiltResolverRevision = resolverBuildRevisions.get(module);
++						});
++					});
++					compiler.hooks.done.tap("TanStackStartResolverWriteCheck", () => {
++						if (lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) set					mmediate(() => compiler.watching?.invalidate());
 +					});
  					compiler.hooks.finishMake.tapPromise({
  						name: "TanStackStartServerFnResolverRebuild",
@@ -68,24 +74,29 @@
  						virtualModuleState.updateServerFnResolver();
 -						await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
 +						if (concurrentDev && compilation.compiler === ssrCompiler) ssrResolverRevision = resolverRevision;
-+						if (compilation.compiler !== compiler || resolverBuilt.has(compilation) || resolverContent !== lastRebuiltResolverContent) {
++						if (compilation.compiler !== compiler || lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) {
 +							await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
-+							if (compilation.compiler === compiler) lastRebuiltResolverContent = resolverContent;
++							// The buildModule snapshot, not the post-await revision, records what was read.
 +						}
-+						resolverBuilt.delete(compilation);
  					});
  				} });
  			});
-@@ -243,13 +291,24 @@
+@@ -243,13 +296,29 @@
  							}
  						}));
  						config.plugins.push({ apply(compiler) {
-+							let lastRebuiltResolverContent;
-+							const resolverBuilt = new WeakSet();
++							let lastBuiltResolverRevision = -1;
++							const resolverBuildRevisions = new WeakMap();
 +							compiler.hooks.thisCompilation.tap("TanStackStartResolverBuildTracking", (compilation) => {
-+								compilation.hooks.succeedModule.tap("TanStackStartResolverBuildTracking", (module) => {
-+									if (module.identifier().includes(virtualModuleState.serverFnResolverPath)) resolverBuilt.add(compilation);
++								compilation.hooks.buildModule.tap("TanStackStartResolverBuildTracking", (module) => {
++									if (module.identifier().includes(virtualModuleState.serverFnResolverPath)) resolverBuildRevisions.set(module, virtualModuleState.getResolverWriteRevision(utils.environment.name));
 +								});
++								compilation.hooks.succeedModule.tap("TanStackStartResolverBuildTracking", (module) => {
++									if (resolverBuildRevisions.has(module)) lastBuiltResolverRevision = resolverBuildRevisions.get(module);
++								});
++							});
++							compiler.hooks.done.tap("TanStackStartResolverWriteCheck", () => {
++								if (lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) set							mmediate(() => compiler.watching?.invalidate());
 +							});
  							compiler.hooks.finishMake.tapPromise({
  								name: "TanStackStartRscServerFnResolverRebuild",
@@ -94,15 +105,14 @@
  								const resolverContent = virtualModuleState.generateCurrentResolverContent(true);
  								virtualModuleState.tryUpdateServerFnResolver(resolverContent);
 -								await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
-+								if (compilation.compiler !== compiler || resolverBuilt.has(compilation) || resolverContent !== lastRebuiltResolverContent) {
++								if (compilation.compiler !== compiler || lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) {
 +									await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
-+									if (compilation.compiler === compiler) lastRebuiltResolverContent = resolverContent;
++									// The buildModule snapshot, not the post-await revision, records what was read.
 +								}
-+								resolverBuilt.delete(compilation);
  							});
  						} });
  						if (api.context.action !== "dev") config.plugins.push({ apply(compiler) {
-@@ -273,6 +332,37 @@
+@@ -273,6 +342,37 @@
  				});
  			}
  			if (!rscEnabled) api.onAfterCreateCompiler(({ compiler }) => {
@@ -140,7 +150,7 @@
  				if ("compilers" in compiler) for (const environmentName of startCompilerServerEnvironmentNames) {
  					const serverCompiler = compiler.compilers.find((c) => c.name === environmentName);
  					if (serverCompiler) {
-@@ -317,7 +407,22 @@
+@@ -317,7 +417,22 @@
  				if (environment.name !== RSBUILD_ENVIRONMENT_NAMES.client) return;
  				virtualModuleState.updateServerFnResolver();
  				const clientBuild = getClientBuild();
@@ -164,3 +174,41 @@
  			});
  			if (api.context.action === "build") api.onAfterBuild(async () => {
  				const { startConfig } = getConfig();
+--- a/dist/esm/rsbuild/virtual-modules.js
++++ b/dist/esm/rsbuild/virtual-modules.js
+@@ -138,6 +138,7 @@
+ 	const pendingWrites = /* @__PURE__ */ new Map();
+ 	let clientBuild;
+ 	const lastResolverContentByEnvironment = {};
++	const resolverWriteRevisionByEnvironment = {};
+ 	const hasSeparateProviderEnvironment = !opts.rscEnabled && opts.providerEnvName !== RSBUILD_ENVIRONMENT_NAMES.server;
+ 	const hasSerializationAdapters = Boolean(opts.serializationAdapters?.length);
+ 	function isProviderEnvironment(environmentName) {
+@@ -175,6 +176,7 @@
+ 			return false;
+ 		}
+ 		vmPlugin.writeModule(filePath, content);
++		if (filePath === paths.serverFnResolver) resolverWriteRevisionByEnvironment[environmentName] = (resolverWriteRevisionByEnvironment[environmentName] ?? 0) + 1;
+ 		return true;
+ 	}
+ 	function flushPendingWrites(environmentName) {
+@@ -255,6 +257,9 @@
+ 	});
+ 	return {
+ 		serverFnResolverPath: paths.serverFnResolver,
++		getResolverWriteRevision(environmentName) {
++			return resolverWriteRevisionByEnvironment[environmentName] ?? 0;
++		},
+ 		manifestPath: paths.manifest,
+ 		vmPlugins,
+ 		generateCurrentResolverContent(forProvider) {
+@@ -292,8 +297,7 @@
+ 			if (hasSeparateProviderEnvironment) updateEnvironment(opts.providerEnvName);
+ 		},
+ 		tryUpdateServerFnResolver(content) {
+-			lastResolverContentByEnvironment[RSBUILD_ENVIRONMENT_NAMES.server] = content;
+-			tryWriteModule(RSBUILD_ENVIRONMENT_NAMES.server, paths.serverFnResolver, content);
++			writeResolverContent(RSBUILD_ENVIRONMENT_NAMES.server, content);
+ 		},
+ 		getVirtualPath(moduleId) {
+ 			return virtualPath(root, moduleId);
