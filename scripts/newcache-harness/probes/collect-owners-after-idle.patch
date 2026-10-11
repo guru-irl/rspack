@@ -1,0 +1,43 @@
+--- a/crates/rspack_core/src/new_cache/db/turbo.rs
++++ b/crates/rspack_core/src/new_cache/db/turbo.rs
+@@ -244,6 +244,11 @@
+ 
+   pub fn clear_block_caches(&self) {
+     self.inner.clear_block_caches();
++    unsafe extern "C" {
++      fn mi_collect(force: bool);
++    }
++    rayon::broadcast(|_| unsafe { mi_collect(true) });
++    unsafe { mi_collect(true) };
+   }
+ 
+   pub fn compact(&self) -> Result<()> {
+--- a/crates/rspack_core/src/new_cache/idle_file_cache.rs
++++ b/crates/rspack_core/src/new_cache/idle_file_cache.rs
+@@ -97,8 +97,6 @@
+           .mul_f64(0.9)
+           .saturating_add(build_time);
+         if self.idle_epoch.load(Ordering::Acquire) == epoch {
+-          // Release decompressed blocks between builds without waiting for persistence.
+-          self.strategy.clear_block_caches();
+           let is_initial_store = self.avg_time_spent_in_store.is_none();
+           let is_large_change = self.time_spent_in_build
+             > self
+@@ -128,12 +126,15 @@
+     }
+   }
+ 
+-  async fn process_idle_tasks(&mut self, check_idle_ended: impl FnMut() -> bool) {
++  async fn process_idle_tasks(&mut self, mut check_idle_ended: impl FnMut() -> bool) {
+     let start = Instant::now();
+     self
+       .strategy
+-      .after_all_stored(MAX_IDLE_COMPACTION_PASSES, check_idle_ended)
++      .after_all_stored(MAX_IDLE_COMPACTION_PASSES, &mut check_idle_ended)
+       .await;
++    if !check_idle_ended() {
++      self.strategy.clear_block_caches();
++    }
+     let time_spent_in_store = start.elapsed();
+     self.avg_time_spent_in_store = Some(
+       self
