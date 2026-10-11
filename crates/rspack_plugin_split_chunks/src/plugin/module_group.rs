@@ -44,13 +44,16 @@ use crate::{
   },
 };
 
-// Invocation-local, indexed by the existing sorted module order. Cache absent
-// names too, and only allocate names for modules reached by native tests.
-pub(crate) struct ModuleNames {
+// Invocation-local, indexed by the existing sorted module order.
+// `name_for_condition` reads only module data that SplitChunks never changes,
+// so one cached value per run equals recomputing it at each test.
+// With string or regex tests, allocate one empty cell per module; a name is
+// boxed on its first native test, including cached `None`.
+pub(crate) struct ConditionNames {
   names: Vec<OnceLock<Option<Box<str>>>>,
 }
 
-impl ModuleNames {
+impl ConditionNames {
   pub(super) fn new(module_count: usize, cache_groups: &[CacheGroup]) -> Self {
     let needs_names = cache_groups.iter().any(|group| {
       matches!(
@@ -68,6 +71,10 @@ impl ModuleNames {
   }
 
   fn get<'a>(&'a self, module_index: usize, module: &dyn Module) -> Option<&'a str> {
+    debug_assert!(
+      !self.names.is_empty(),
+      "condition-name cache requires a string or regex cache-group test"
+    );
     self.names[module_index]
       .get_or_init(|| module.name_for_condition())
       .as_deref()
@@ -141,7 +148,7 @@ pub(super) struct IntersectionPreparation<'a> {
   pub dedup_depth: u32,
   pub settings: Option<(usize, Vec<&'a CacheGroup>)>,
   pub module_sizes: &'a ModuleSizes,
-  pub module_names: &'a ModuleNames,
+  pub module_names: &'a ConditionNames,
   pub compilation: &'a Compilation,
 }
 
@@ -934,7 +941,7 @@ impl SplitChunksPlugin {
     &self,
     combinator: &Combinator,
     all_modules: &[ModuleIdentifier],
-    module_names: &ModuleNames,
+    module_names: &ConditionNames,
     cache_groups: Vec<IndexedCacheGroup<'_>>,
     compilation: &Compilation,
     module_chunks: &[SsoHashSet<ChunkUkey>],

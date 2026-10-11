@@ -103,7 +103,7 @@ impl SplitChunksPlugin {
     all_modules.sort_unstable_by_key(|module| (module.precomputed_hash(), *module));
 
     let module_sizes = get_module_sizes(all_modules.par_iter().copied(), compilation);
-    let module_names = module_group::ModuleNames::new(all_modules.len(), &self.cache_groups);
+    let module_names = module_group::ConditionNames::new(all_modules.len(), &self.cache_groups);
     let mut module_chunks = Self::get_module_chunks(&all_modules, compilation);
     let module_indices = all_modules
       .iter()
