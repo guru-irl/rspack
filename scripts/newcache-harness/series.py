@@ -100,7 +100,9 @@ else:
 protocol.update(seed_hashes=seed_manifest['seed_hashes'])
 (results/'measurement-protocol.json').write_text(json.dumps(protocol,indent=2))
 leaf=project/'src/d0/m9.js'
-original=leaf.read_bytes(); source_stat=leaf.stat()
+source_copy=work/'original-leaf.js'
+if not source_copy.exists(): shutil.copy2(leaf,source_copy)
+original=source_copy.read_bytes(); source_stat=source_copy.stat()
 phases=config.get('phases',['warm','watch'])
 for phase in phases:
   for pair in range(max(config['aa_pairs'],config['pairs'])):
@@ -122,6 +124,7 @@ for phase in phases:
         row=dict(phase=phase,kind=kind,pair=pair,order=order,baseline=observed[0],candidate=observed[1])
         records.append(row)
         (results/'pairs.json').write_text(json.dumps(records))
+leaf.write_bytes(original);os.utime(leaf,ns=(source_stat.st_atime_ns,source_stat.st_mtime_ns))
 summary={}
 for phase in phases:
   summary[phase]={}
