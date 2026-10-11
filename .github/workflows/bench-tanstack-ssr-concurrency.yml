@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [r3-request-red, r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
+        options: [r3-custom-red,r3-request-red, r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
         default: red
 permissions:
   contents: read
@@ -14,6 +14,10 @@ jobs:
   validate:
     if: github.repository == 'guru-irl/rspack'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rsbuild: ['2.2.12', '2.2.2']
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -23,7 +27,9 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Run public watch fixture
         env:
-          MODE: ${{ inputs.mode || 'r3-request-red' }}
+          RSBUILD_VERSION: ${{ matrix.rsbuild }}
+          WORK_DIR: ${{ github.workspace }}/bench-results/tanstack-ssr-concurrency
+          MODE: ${{ inputs.mode || 'r3-custom-red' }}
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
@@ -36,7 +42,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tanstack-ssr-concurrency-${{ github.run_id }}
+          name: tanstack-ssr-concurrency-${{ github.run_id }}-${{ matrix.rsbuild }}
           path: |
             bench-results/tanstack-ssr-concurrency/*/unobserved-*.js
             bench-results/tanstack-ssr-concurrency/*/*.json

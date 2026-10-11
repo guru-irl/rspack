@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { createServer } from 'node:http';
+import { NodeRequest, sendNodeResponse } from 'srvx/node';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -11,7 +13,8 @@ const scenario = process.env.SCENARIO || 'correctness';
 const compilerNames=process.env.COMPILER_COUNT==='4'?['client','ssr','aux-a','aux-b']:['client','ssr'];
 const userEdges=process.env.USER_EDGES || '';
 const measuring=scenario.startsWith('warm-')||scenario==='cold-measure';
-const requestWindowEnabled=scenario==='r3-request'||scenario==='correctness';
+const customWindow=scenario==='r3-custom-request';
+const requestWindowEnabled=customWindow||scenario==='r3-request'||scenario==='correctness';
 let windowRequest;
 let windowEvidence;
 fs.mkdirSync(out, { recursive: true });
@@ -34,13 +37,14 @@ const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, 
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
 const probe = { name: 'watch-observer', setup(api) {
+  api.onBeforeStartDevServer(({server})=>{hookEnvironment=server.environments.ssr;});
 
   api.modifyRspackConfig((config, { environment }) => {
     config.devtool = false;
     if(scenario==='r2-topology'&&environment.name==='ssr')config.dependencies=['client'];
     if(requestWindowEnabled && environment.name==='client') {
       const entry=config.entry.index;
-      config.entry.index=typeof entry==='string'||Array.isArray(entry)?{import:[...[entry].flat(),'./aux/request.css']}:{...entry,import:[...[entry.import].flat(),'./aux/request.css']};
+      config.entry.index=typeof entry==='string'||Array.isArray(entry)?{import:[...[entry].flat(),customWindow?'./aux/request-entry.js':'./aux/request.css']}:{...entry,import:[...[entry.import].flat(),customWindow?'./aux/request-entry.js':'./aux/request.css']};
     }
     if(scenario==='no-resolver' && environment.name==='ssr') {config.entry={index:{import:['./src/no-resolver.ts']}};}
     config.plugins.push({ apply(compiler) {
@@ -65,7 +69,7 @@ const probe = { name: 'watch-observer', setup(api) {
         if(requestWindowEnabled && environment.name==='client') compilation.hooks.afterSeal.tapPromise({name:'RequestWindow',stage:-10000},async()=>{
           if(step!=='request-window'||windowRequest)return;
           windowEvidence={started:now(),invalidSeen:events.some(e=>e.step===step&&e.name==='client'&&e.kind==='invalid')};
-          windowRequest=(async()=>{const r=await fetch('http://localhost:3100/',{signal:AbortSignal.timeout(15000)});const html=await r.text();windowEvidence.status=r.status;windowEvidence.latencyMs=now()-windowEvidence.started;windowEvidence.css=[...html.matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"/g)].map(m=>m[1]).sort();fs.writeFileSync(path.join(out,'request-window.html'),html);})();
+          windowRequest=(async()=>{const r=await fetch(`http://localhost:${customWindow?3101:3100}/`,{signal:AbortSignal.timeout(15000)});const html=await r.text();windowEvidence.status=r.status;windowEvidence.latencyMs=now()-windowEvidence.started;windowEvidence.css=[...html.matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"/g)].map(m=>m[1]).sort();fs.writeFileSync(path.join(out,'request-window.html'),html);})();
           // Only the client is held. Stock's graph and v3's request gate wait;
           // v2's independent SSR bundle is otherwise immediately ready.
           await pause(750);
@@ -97,7 +101,7 @@ const probe = { name: 'watch-observer', setup(api) {
         if(scenario==='r2b-delete' && step.startsWith('delete-') && record.errors.length) {
           const request={step,triggerCompiler:environment.name,started:now(),triggerErrors:record.errors.map(e=>e.message)};
           pendingDeletionRequests.push((async()=>{
-            try {const response=await fetch('http://localhost:3100/',{signal:AbortSignal.timeout(10000)});const html=await response.text();Object.assign(request,{status:response.status,lastGoodContent:html.includes('Public leaf baseline')&&html.includes('alpha-public'),errorPage:/module not found|internal server error|can't resolve/i.test(html),htmlSha256:hash(html)});}
+            try {const response=await fetch(`http://localhost:${customWindow?3101:3100}/`,{signal:AbortSignal.timeout(10000)});const html=await response.text();Object.assign(request,{status:response.status,lastGoodContent:html.includes('Public leaf baseline')&&html.includes('alpha-public'),errorPage:/module not found|internal server error|can't resolve/i.test(html),htmlSha256:hash(html)});}
             catch(e){request.error=String(e);}
             request.ended=now();deletionRequests.push(request);
           })());
@@ -189,18 +193,23 @@ const edit = async (name, file, content, expected, leaf='Public leaf baseline', 
   await sample(expected, leaf, removed, addedRoute);
 };
 let server;
+let pageServer;
+let hookEnvironment;
+
 let readyTime;
 const checkRequestWindow=async()=>{
   const previous=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
-  assert.ok(previous.length,'client-only CSS entry exists');
+  if(!customWindow)assert.ok(previous.length,'client-only CSS entry exists');
   step='request-window';lastEvent=now();
-  fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\n');
+  if(customWindow)fs.writeFileSync('aux/request-entry.js',"import './new-request.css';\n");
+  else fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\n');
   await waitIdle(1);assert.ok(windowRequest,'request issued during client compilation');await windowRequest;
   const next=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
   Object.assign(windowEvidence,{previousCSS:previous,newCSS:next,ssrPasses:builds.filter(b=>b.step===step&&b.name==='ssr').length});
   fs.writeFileSync(path.join(out,'request-window.json'),JSON.stringify(windowEvidence,null,2));
   assert.ok(windowEvidence.invalidSeen,'request follows client invalid');
-  assert.notDeepEqual(next,previous,'client-only CSS edit changes asset hash');
+  if(customWindow)assert.ok(next.some(url=>!previous.includes(url)),'client-only edit emits a NEW CSS asset');
+  else assert.notDeepEqual(next,previous,'client-only CSS edit changes asset hash');
   assert.equal(windowEvidence.status,200,'window request succeeds');
   assert.deepEqual(windowEvidence.css,next,'window HTML references NEW CSS asset');
 };
@@ -208,8 +217,21 @@ let readiness;
 let closeRequested=false;
 const started=now();
 try {
-  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, output:requestWindowEnabled?{filename:{css:'[name].[contenthash:8].css'}}:undefined, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
-  server=await rsbuild.startDevServer();
+  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, output:requestWindowEnabled?{filename:customWindow?{js:'[name].js',css:'[name].css'}:{css:'[name].[contenthash:8].css'}}:undefined, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
+  if(customWindow) {
+    server=await rsbuild.createDevServer();
+    assert.equal(server.environments.ssr,hookEnvironment,'createDevServer exposes the same SSR environment as the hook');
+    fs.writeFileSync(path.join(out,'environment-identity.json'),JSON.stringify({passed:true}));
+    await server.listen();
+    pageServer=createServer(async(req,res)=>{
+      try {
+        const entry=(await server.environments.ssr.loadBundle('index')).default;
+        const handler=typeof entry==='function'?entry:entry.fetch.bind(entry);
+        await sendNodeResponse(res,await handler(new NodeRequest({req,res})));
+      } catch(error) {console.error(error);res.statusCode=500;res.end(String(error));}
+    });
+    await new Promise(resolve=>pageServer.listen(3101,resolve));
+  } else server=await rsbuild.startDevServer();
   if(['r2-close','r2-restart'].includes(scenario)) {
     const deadline=now()+10000;
     while(!events.some(e=>e.name==='ssr'&&e.kind==='watchRun')) {assert.ok(now()<deadline,'SSR enters cold watchRun');await pause(5);}
@@ -270,7 +292,7 @@ try {
     fs.writeFileSync('src/functions.ts',baselineFns+"\nexport const delta=createServerFn({method:'GET'}).handler(async()=> 'delta-public');\n");
     await waitIdle(2);checkResolver(false);
     await saveEntry('resolver-readd-import',imported,true);checkResolver(true,true);
-  } else if (scenario==='r3-request') {
+  } else if (['r3-request','r3-custom-request'].includes(scenario)) {
     await checkRequestWindow();
   } else if (scenario==='red-after-make') {
     const e=events.filter(e=>e.step==='initial');
@@ -370,6 +392,7 @@ try {
   console.error(error); process.exitCode=1;
 } finally {
   clearInterval(timer);
+  if(pageServer)await new Promise(resolve=>pageServer.close(resolve));
   fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events,null,2));
   fs.writeFileSync(path.join(out,'builds.json'),JSON.stringify(builds,null,2));
   if(['r2-close','r2-restart'].includes(scenario)&&closeRequested) {process.exit(process.exitCode||1);}
