@@ -89,7 +89,7 @@ const fetchLinked=async(label,html)=>{
  replace("pageServer=createServer(async(req,res)=>{", "pageServer=createServer((req,res)=>requestContext.run({id:++requestNumber,path:req.url,pagePath:'custom-server'},async()=>{\n emitDiagnostic('request-arrival',manifestInfo(publishedManifest));res.once('finish',()=>emitDiagnostic('response-end',{status:res.statusCode,...manifestInfo(publishedManifest)}));");
  replace("} catch(error) {console.error(error);res.statusCode=500;res.end(String(error));}\n    });", "} catch(error) {console.error(error);res.statusCode=500;res.end(String(error));}\n    }));");
  replace("const customWindow=scenario==='r3-custom-request';", "const customWindow=process.env.DIAGNOSTIC_PAGE_PATH==='custom-server';");
- replace("clearInterval(timer);\n   if(pageServer)", "clearInterval(timer);\n   fs.writeFileSync(path.join(out,'response-diagnostic.json'),JSON.stringify({diagnosticOnly:true,pagePath:customWindow?'custom-server':'middleware',events:diagnostic,manifests:Object.fromEntries(manifests)},null,2));\n   if(pageServer)");
+ replace("clearInterval(timer);\n  if(pageServer)", "clearInterval(timer);\n   fs.writeFileSync(path.join(out,'response-diagnostic.json'),JSON.stringify({diagnosticOnly:true,pagePath:customWindow?'custom-server':'middleware',events:diagnostic,manifests:Object.fromEntries(manifests)},null,2));\n   if(pageServer)");
  return source;
 };
 export const instrumentGate=source=>source.replace('release?.();','globalThis.__responseDiagnostic?.("gate-release",{clientRequestRevision,compilingClientRequestRevision});\n\t\t\t\trelease?.();').replace('return bundle;','globalThis.__responseDiagnostic?.("outer-loadBundle-return",{clientRequestRevision,compilingClientRequestRevision});\n\t\t\t\t\treturn bundle;');
