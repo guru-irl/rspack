@@ -40,7 +40,8 @@ const wrapBundle=bundle=>{
  return new Proxy(bundle,{get(target,key,receiver){const value=Reflect.get(target,key,receiver);if(key!=='default')return value;if(typeof value==='function')return wrapHandler(value);if(value&&typeof value.fetch==='function')return new Proxy(value,{get(t,k,r){const v=Reflect.get(t,k,r);return k==='fetch'?wrapHandler(v):v;}});return value;}});
 };
 const observeServer=server=>{
- server.middlewares.unshift((req,res,next)=>requestContext.run({id:++requestNumber,path:req.url,pagePath:'middleware'},()=>{emitDiagnostic('request-arrival',manifestInfo(publishedManifest));res.once('finish',()=>emitDiagnostic('response-end',{status:res.statusCode,...manifestInfo(publishedManifest)}));next();}));
+ assert.ok(Array.isArray(server.middlewares.stack),'Connect middleware stack available for observation');
+ server.middlewares.stack.unshift({route:'',handle:(req,res,next)=>requestContext.run({id:++requestNumber,path:req.url,pagePath:'middleware'},()=>{emitDiagnostic('request-arrival',manifestInfo(publishedManifest));res.once('finish',()=>emitDiagnostic('response-end',{status:res.statusCode,...manifestInfo(publishedManifest)}));next();})});
  const env=server.environments.ssr,load=env.loadBundle;
  env.loadBundle=async function(...args){emitDiagnostic('loadBundle-enter',{entry:args[0],...manifestInfo(publishedManifest)});const b=await load.apply(this,args);emitDiagnostic('inner-loadBundle-return',{entry:args[0],...manifestInfo(publishedManifest)});return wrapBundle(b);};
 };
@@ -59,7 +60,7 @@ const fetchLinked=async(label,html)=>{
  const result={label,step,t:performance.now(),pagePath:customWindow?'custom-server':'middleware',client:clientState(),manifest:manifestInfo(publishedManifest),records};linkedChecks.push(result);
  fs.writeFileSync(path.join(out,'linked-assets.json'),JSON.stringify(linkedChecks,null,2));return result;
 };`);
- replace("const compilers = new Map();", "const compilers = new Map();");
+ replace("const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);", "const timer = undefined; // No memory sampling in diagnosis.");
  replace("const event = (name, kind, extra = {}) => {", "const event = (name, kind, extra = {}) => { if(name==='client'){if(kind==='invalid')pendingInvalid.add(name);if(kind==='watchRun')pendingInvalid.delete(name);} emitDiagnostic('compiler-'+kind,{name,...extra});");
  replace("api.onBeforeStartDevServer(({server})=>{hookEnvironment=server.environments.ssr;});", "api.onBeforeStartDevServer(({server})=>{hookEnvironment=server.environments.ssr;observeServer(server);});");
  replace("config.plugins.push({ apply(compiler) {", `for(const p of config.plugins)if(typeof p.writeModule==='function'){
