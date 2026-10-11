@@ -792,7 +792,20 @@ fn stream_chunks_of_source_map_lines_final<'chunk, 'source>(
   on_source: OnSource<'_, 'source>,
   _on_name: OnName,
 ) -> GeneratedInfo {
-  let result = get_generated_source_info(source);
+  stream_chunks_of_source_map_lines_final_with_generated_info(
+    get_generated_source_info(source),
+    source_map,
+    on_chunk,
+    on_source,
+  )
+}
+
+pub(crate) fn stream_chunks_of_source_map_lines_final_with_generated_info<'source>(
+  result: GeneratedInfo,
+  source_map: &'source SourceMapFields<'_>,
+  on_chunk: OnChunk,
+  on_source: OnSource<'_, 'source>,
+) -> GeneratedInfo {
   if result.generated_line == 1 && result.generated_column == 0 {
     return GeneratedInfo {
       generated_line: 1,
