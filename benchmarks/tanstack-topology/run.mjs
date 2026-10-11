@@ -98,6 +98,20 @@ const probe = {
                   });
                 },
               );
+              compilation.hooks.afterOptimizeDependencies.tap('PublicTopologyProbe', () => {
+                const snapshot = [...compilation.modules].filter(m => target(m.identifier())).map(m => ({
+                  id: m.identifier(), ...dependencies(m, compilation),
+                }));
+                fs.writeFileSync(path.join(out, `${name}-${index}-optimized.json`), JSON.stringify(snapshot, null, 2));
+              });
+              compilation.hooks.afterSeal.tapPromise('PublicTopologyProbe', async () => {
+                const snapshot = [...compilation.modules].filter(m => target(m.identifier())).map(m => ({
+                  id: m.identifier(),
+                  chunks: [...compilation.chunkGraph.getModuleChunksIterable(m)].map(c => c.name ?? c.id),
+                  ...dependencies(m, compilation),
+                }));
+                fs.writeFileSync(path.join(out, `${name}-${index}-sealed.json`), JSON.stringify(snapshot, null, 2));
+              });
               compilation.hooks.finishModules.tap(
                 { name: 'PublicTopologyProbe', stage: 10000 },
                 (modules) => {
@@ -110,7 +124,6 @@ const probe = {
                         id: m.identifier(),
                         source,
                         hash: hash(source),
-                        buildInfo: m.buildInfo,
                         ...dependencies(m, compilation),
                       };
                     });

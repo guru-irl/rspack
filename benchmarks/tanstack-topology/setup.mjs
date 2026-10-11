@@ -12,8 +12,11 @@ fs.writeFileSync(
   JSON.stringify(metadata['dist-tags'], null, 2),
 );
 const versions = ['2.2.8'];
-const canary = metadata['dist-tags'].canary;
-if (canary && canary !== versions[0]) versions.push(canary);
+const canaryResponse = await fetch('https://registry.npmjs.org/@rspack-canary%2fcore');
+const canaryMetadata = canaryResponse.ok ? await canaryResponse.json() : null;
+fs.writeFileSync(path.join(out, 'main-canary.json'), JSON.stringify(canaryMetadata ? { tags: canaryMetadata['dist-tags'], published: canaryMetadata.time[canaryMetadata['dist-tags'].latest] } : { unavailable: canaryResponse.status }, null, 2));
+const canary = canaryMetadata?.['dist-tags'].latest;
+if (canary) versions.push(canary);
 fs.writeFileSync(
   path.join(out, 'selected-versions.json'),
   JSON.stringify(versions),
@@ -41,9 +44,9 @@ for (const version of versions) {
       '@tanstack/react-router': 'latest',
       react: 'latest',
       'react-dom': 'latest',
-      '@rspack/core': version,
+      '@rspack/core': version === '2.2.8' ? version : `npm:@rspack-canary/core@${version}`, 
     },
-    overrides: { '@rspack/core': version },
+    overrides: { '@rspack/core': version === '2.2.8' ? version : `npm:@rspack-canary/core@${version}` },
   };
   fs.writeFileSync(
     path.join(dir, 'package.json'),
@@ -91,12 +94,33 @@ for (const version of versions) {
     }
   };
   walk(path.join(dir, 'node_modules/@tanstack/start-plugin-core'));
-  for (const variant of ['baseline']) {
+  const pluginPath = path.join(dir, 'node_modules/@tanstack/start-plugin-core/dist/esm/rsbuild/plugin.js');
+  const wrapperPath = path.join(dir, 'node_modules/@tanstack/start-server-core/dist/esm/getServerFnById.js');
+  const originalPlugin = fs.readFileSync(pluginPath, 'utf8');
+  const originalWrapper = fs.readFileSync(wrapperPath, 'utf8');
+  for (const variant of ['baseline', 'content-gated-resolver', 'retain-wrapper']) {
+    fs.writeFileSync(pluginPath, originalPlugin);
+    fs.writeFileSync(wrapperPath, originalWrapper);
+    fs.cpSync(path.join(root, 'benchmarks/tanstack-topology/src'), path.join(dir, 'src'), { recursive: true });
+    if (variant === 'content-gated-resolver') {
+      const before = 'virtualModuleState.updateServerFnResolver();\n\t\t\t\t\t\tawait rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);';
+      const after = `const nextContent = virtualModuleState.generateCurrentResolverContent(false);
+                        const changed = compilation.compiler.__publicResolverContent !== nextContent;
+                        virtualModuleState.updateServerFnResolver();
+                        if (changed) await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
+                        compilation.compiler.__publicResolverContent = nextContent;`;
+      if (!originalPlugin.includes(before)) throw new Error('Published plugin patch anchor missing');
+      fs.writeFileSync(pluginPath, originalPlugin.replace(before, after));
+    }
+    if (variant === 'retain-wrapper') fs.writeFileSync(wrapperPath, `globalThis.__PUBLIC_TOPOLOGY_WRAPPER_RETAIN__ = true;\n${originalWrapper}`);
+    fs.mkdirSync(path.join(result, variant), { recursive: true });
+    fs.writeFileSync(path.join(result, variant, 'tanstack-plugin.js'), fs.readFileSync(pluginPath));
+    fs.writeFileSync(path.join(result, variant, 'getServerFnById.js'), fs.readFileSync(wrapperPath));
     fs.cpSync(
       path.join(root, 'benchmarks/tanstack-topology/run.mjs'),
       path.join(dir, 'run.mjs'),
     );
-    const run = spawnSync('node', ['run.mjs'], {
+    const run = spawnSync('/usr/bin/time', ['-v', '-o', path.join(result, variant, 'process-time.txt'), 'node', 'run.mjs'], {
       cwd: dir,
       env: {
         ...process.env,
