@@ -210,3 +210,9 @@ rstack-examples/
 
 # rstest event report files
 /*-report.txt
+
+# Local benchmark runtimes and compact results
+.bench-work/
+results/
+scripts/newcache-harness/memory.node
+scripts/newcache-harness/__pycache__/
