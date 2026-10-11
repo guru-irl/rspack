@@ -94,11 +94,11 @@ impl Compiler {
     let mut values = self.incremental_artifacts.debug_drop_retained();
     drop(std::mem::take(&mut self.compilation.build_chunk_graph_artifact));
     values.push(rspack_allocator::LIVE_BYTES.load(Ordering::Relaxed) as i64);
-    drop(std::mem::take(&mut self.compilation.chunk_render_cache_artifact));
+    drop(self.compilation.chunk_render_cache_artifact.steal());
     values.push(rspack_allocator::LIVE_BYTES.load(Ordering::Relaxed) as i64);
-    drop(std::mem::take(&mut self.compilation.code_generate_cache_artifact));
+    drop(self.compilation.code_generate_cache_artifact.steal());
     values.push(rspack_allocator::LIVE_BYTES.load(Ordering::Relaxed) as i64);
-    drop(std::mem::take(&mut self.compilation.process_runtime_requirements_cache_artifact));
+    drop(self.compilation.process_runtime_requirements_cache_artifact.steal());
     values.push(rspack_allocator::LIVE_BYTES.load(Ordering::Relaxed) as i64);
     values
   }
