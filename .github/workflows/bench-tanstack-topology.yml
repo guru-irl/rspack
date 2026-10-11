@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: web-infra-dev/rspack
-          ref: f2903b64
+          ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636
           path: .spider/scratch/tanstack-topology/canary-source
       - name: Instrument exact canary predicate and build consumed binding
         run: |
