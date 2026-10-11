@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
+        options: [r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
         default: red
 permissions:
   contents: read

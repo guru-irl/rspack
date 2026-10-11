@@ -34,6 +34,9 @@ const probe = { name: 'watch-observer', setup(api) {
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
         active.add(environment.name); event(environment.name, 'watchRun');
       });
+      if(scenario===r2-close && environment.name===client) compiler.hooks.finishMake.tapPromise({name:ColdCloseWindow,stage:900},async()=>{while(!closeRequested)await pause(5);await pause(250);});
+      if(scenario===r2-done && environment.name===client) compiler.hooks.done.tapPromise({name:DoneBarrierWindow,stage:15000},async()=>pause(250));
+      compiler.hooks.afterDone.tap(WatchAfterDoneObserver,()=>event(environment.name,afterDone));
       compiler.hooks.make.tap({name:'WatchMakeObserver',stage:-10000},()=>event(environment.name,'make'));
       compiler.hooks.finishMake.tap({name:'WatchMakeObserver',stage:10000},()=>event(environment.name,'finishMake'));
       compiler.hooks.thisCompilation.tap('WatchObserver', compilation => {
@@ -151,10 +154,20 @@ const edit = async (name, file, content, expected, leaf='Public leaf baseline', 
 let server;
 let readyTime;
 let readiness;
+let closeRequested=false;
 const started=now();
 try {
   const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   server=await rsbuild.startDevServer();
+  if(scenario===r2-close) {
+    const deadline=now()+10000;
+    while(!events.some(e=>e.name===ssr&&e.kind===watchRun)) {assert.ok(now()<deadline,SSR enters cold watchRun);await pause(5);}
+    closeRequested=true;
+    await Promise.race([server.close(),pause(5000).then(()=>{throw new Error(server.close did not resolve during the cold barrier)})]);
+    server=undefined;
+    fs.writeFileSync(path.join(out,success.json),JSON.stringify({passed:true,arm,scenario,closed:true}));
+    clearInterval(timer);fs.writeFileSync(path.join(out,events.json),JSON.stringify(events));process.exit(0);
+  }
   readiness=(async()=>{
     if(scenario==='no-resolver') {readyTime=now();return;}
     const deadline=now()+120000;
@@ -258,6 +271,7 @@ try {
   clearInterval(timer);
   fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events,null,2));
   fs.writeFileSync(path.join(out,'builds.json'),JSON.stringify(builds,null,2));
+  if(scenario===r2-close&&closeRequested) {process.exit(process.exitCode||1);}
   if(server?.close) await server.close();
   else if(server?.server?.close) await server.server.close();
 }
