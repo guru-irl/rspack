@@ -1,12 +1,6 @@
 name: Bench TanStack topology
 on:
-  push:
-    branches: ['bench/tanstack-topology']
-    paths:
-      [
-        '.github/workflows/bench-tanstack-topology.yml',
-        'benchmarks/tanstack-topology/**',
-      ]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -21,10 +15,12 @@ jobs:
           node-version: '24'
           registry-url: https://registry.npmjs.org
       - name: Reproduce published stable and main canary
-        run: CHILD_ONLY=1 node benchmarks/tanstack-topology/gate-setup.mjs
+        run: |
+          CHILD_ONLY=1 WORK_DIR="$PWD/.spider/scratch/tanstack-topology/child" node benchmarks/tanstack-topology/gate-setup.mjs
+          node benchmarks/tanstack-topology/gate-setup.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: tanstack-topology-${{ github.run_id }}
-          path: .spider/scratch/tanstack-topology/results
+          path: .spider/scratch/tanstack-topology/**/results
           retention-days: 14

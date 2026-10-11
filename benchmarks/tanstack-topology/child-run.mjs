@@ -15,6 +15,7 @@ const probe = { name: 'public-child-resolver-check', setup(api) {
     if (environment.name !== 'ssr') return;
     // SSR-only discovery cannot be pre-populated by the preceding client build.
     config.entry.late = { import: [path.resolve('src/late-functions.ts')] };
+    config.module.rules.push({ test: /late-functions\.ts$/, enforce: 'pre', use: [path.resolve('late-loader.cjs')] });
     config.plugins.push({ apply(compiler) {
       const observe = (compilation, child) => {
         const rebuild = compilation.rebuildModule.bind(compilation);
@@ -25,16 +26,27 @@ const probe = { name: 'public-child-resolver-check', setup(api) {
       };
       compiler.hooks.thisCompilation.tap('PublicChildResolverCheck', (compilation) => {
         observe(compilation, false);
+        globalThis.__publicResolverBuilt = new Promise((resolve) => {
+          compilation.hooks.succeedModule.tap('PublicResolverBeforeLateDiscovery', (module) => {
+            if (isResolver(module)) resolve();
+          });
+        });
         compilation.hooks.finishModules.tap('PublicChildResolverCheck', (modules) => {
           evidence.parentResolvers = [...modules].filter(isResolver).map((m) => String(m.originalSource()?.source() ?? ''));
         });
       });
-      compiler.hooks.finishMake.tapPromise({ name: 'PublicChildResolverCheck', stage: -100 }, async (compilation) => {
+      compiler.hooks.finishMake.tapPromise({ name: 'PublicChildResolverCheck', stage: -15 }, async (compilation) => {
         if (compilation.compiler !== compiler) return;
-        evidence.events.push('parent-stage-minus-100');
+        evidence.events.push('parent-stage-minus-15');
         const child = compilation.createChildCompiler('public-resolver-child', { filename: 'child-resolver.js' }, [
-          new rspack.EntryPlugin(compiler.context, '#tanstack-start-server-fn-resolver', { name: 'child-resolver' }),
+          new rspack.EntryPlugin(compiler.context, path.resolve('src/child-entry.js'), { name: 'child-resolver' }),
         ]);
+        // Preserve the real parent metadata snapshot in the child. Otherwise the
+        // unrelated copied metadata tap drops SSR-only discoveries for this empty child.
+        child.hooks.finishMake.tap({ name: 'PublicChildMetadataSnapshot', stage: -21 }, (childCompilation) => {
+          const metadata = Object.assign({}, ...[...compilation.modules].map((m) => m.buildInfo['tanstack.start.serverFns']?.serverFnsById ?? {}));
+          [...childCompilation.modules][0].buildInfo['tanstack.start.serverFns'] = { version: 1, serverFnsById: metadata };
+        });
         child.hooks.thisCompilation.tap('PublicChildResolverObservation', (childCompilation) => observe(childCompilation, true));
         child.hooks.finishMake.tap({ name: 'PublicChildAfterGate', stage: 0 }, () => evidence.events.push('child-after-gate'));
         await new Promise((resolve, reject) => child.runAsChild((error, entries, childCompilation) => {
@@ -76,8 +88,8 @@ try {
   const html = await response.text();
   evidence.ssr = { status: response.status, valuesPresent: ['alpha-public', 'beta-public', 'gamma-public'].every((v) => html.includes(v)) };
   save();
-  assert.deepEqual(evidence.events, ['parent-stage-minus-100', 'child-after-gate', 'child-completed', 'parent-after-gate']);
-  assert.ok(evidence.childExplicit.length > 0, 'child copied finishMake rebuilds resolver');
+  assert.deepEqual(evidence.events, ['parent-stage-minus-15', 'child-after-gate', 'child-completed', 'parent-after-gate']);
+  assert.equal((globalThis.__publicResolverProbe ?? []).filter((p) => p.name === 'ssr').length, 2, 'copied child gate and parent gate both ran');
   assert.equal(evidence.parentResolvers.length, 1, 'parent resolver observed');
   assert.equal(compiled, generated, 'parent compiled resolver includes every discovered function');
   assert.deepEqual(Object.keys(ids).sort(), ['alpha', 'beta', 'gamma', 'late']);

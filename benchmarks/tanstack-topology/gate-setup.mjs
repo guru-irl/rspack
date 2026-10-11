@@ -3,15 +3,16 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 const root = process.cwd();
-const out = path.join(root, '.spider/scratch/tanstack-topology/results');
+const work = process.env.WORK_DIR || path.join(root, '.spider/scratch/tanstack-topology');
+const out = path.join(work, 'results');
 fs.mkdirSync(out, { recursive: true });
-const versions = ['2.2.8', '2.2.9-canary-f2903b64-20261010173351'];
-const pluginVersion = '1.171.46';
-const patchFile = path.join(root, `benchmarks/tanstack-topology/start-plugin-core-${pluginVersion}-gate-resolver-rebuild.patch`);
+const versions = process.env.RSPACK_VERSIONS?.split(',') || ['2.2.8', '2.2.9-canary-f2903b64-20261010173351'];
+const pluginVersion = process.env.PLUGIN_VERSION || '1.171.46';
+const patchFile = path.join(root, `benchmarks/tanstack-topology/start-plugin-core-${pluginVersion}-gate-resolver-rebuild${process.env.GATE_VERSION === "v1" ? "" : "-v2"}.patch`);
 let failed = false;
 const childOnly = process.env.CHILD_ONLY === '1';
 for (const version of versions) {
-  const dir = path.join(root, '.spider/scratch/tanstack-topology/apps', version);
+  const dir = path.join(work, 'apps', version);
   const result = path.join(out, version);
   fs.mkdirSync(dir, { recursive: true });
   fs.mkdirSync(result, { recursive: true });
@@ -34,6 +35,8 @@ for (const version of versions) {
   for (const variant of fs.existsSync(patchFile) ? ['ungated', 'gated'] : ['ungated']) {
     const variantOut = path.join(result, variant);
     fs.mkdirSync(variantOut, { recursive: true });
+    fs.rmSync(path.join(dir, 'src'), { recursive: true, force: true });
+    fs.rmSync(path.join(dir, 'dist'), { recursive: true, force: true });
     fs.writeFileSync(pluginPath, original);
     fs.cpSync(path.join(root, 'benchmarks/tanstack-topology/src'), path.join(dir, 'src'), { recursive: true });
     // Discover additions/removals through the existing imported function module, with no route edit.
@@ -64,6 +67,8 @@ function Home() {
     instrumented = instrumented.slice(0, update) + `globalThis.__publicResolverProbe ??= [];\n\t\t\t\t\t\tglobalThis.__publicResolverProbe.push({ name: utils.environment.name, content: virtualModuleState.generateCurrentResolverContent(utils.environment.name === serverFnProviderEnv) });\n\t\t\t\t\t\t` + instrumented.slice(update);
     fs.writeFileSync(pluginPath, instrumented);
     fs.copyFileSync(pluginPath, path.join(variantOut, 'observed-plugin.js'));
+    if (childOnly) fs.writeFileSync(path.join(dir, 'late-loader.cjs'), 'module.exports = function(source) { const done = this.async(); Promise.resolve(globalThis.__publicResolverBuilt).then(() => done(null, source), done); };\n');
+    if (childOnly) fs.writeFileSync(path.join(dir, 'src/child-entry.js'), 'export const child = true;\n');
     if (childOnly) fs.writeFileSync(path.join(dir, 'src/late-functions.ts'), "import { createServerFn } from '@tanstack/react-start';\nexport const late = createServerFn({ method: 'GET' }).handler(async () => 'late-public');\n");
     const runner = childOnly ? 'child-run.mjs' : 'gate-run.mjs';
     fs.copyFileSync(path.join(root, 'benchmarks/tanstack-topology', runner), path.join(dir, runner));
