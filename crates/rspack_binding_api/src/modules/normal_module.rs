@@ -2,6 +2,7 @@ use napi::{
   CallContext, Either, JsObject, JsString, NapiRaw,
   bindgen_prelude::{FnArgs, FromNapiValue, FromNapiMutRef, Function, JavaScriptClassExt, JsObjectValue, Object, ToNapiValue},
 };
+use rspack_collections::Identifiable;
 use rspack_core::{ResourceData, ResourceParsedData, parse_resource};
 use rspack_error::Diagnosable;
 
