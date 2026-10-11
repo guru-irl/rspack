@@ -30,7 +30,8 @@ race, now also after blob replacement commits. Deletion records are cleaned
 on reopening. Windows unlink failures use the existing deferred retry path.
 
 The patch includes one regression test and preserves the existing crate tests.
-CI runs the standalone crate suite on Linux, macOS and Windows. The crate is
+Fork-only benchmark checks run the standalone crate suite on Linux, macOS
+and Windows. The crate is
 excluded from Rspack's workspace so third-party code retains its own manifest
 and does not inherit Rspack's formatting or lint policies.
 
