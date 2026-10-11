@@ -57,7 +57,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<DecodedValue<'_>> {
     LZ4 if (9..=MAX_COMPRESSED_VALUE_SIZE).contains(&len) && bytes.len() < len => {
       let mut archive = AlignedVec::<16>::with_capacity(len);
       archive.resize(len, 0);
-      let decoded = decompress_into(payload, &mut archive).map_err(rspack_error::Error::from_error)?;
+      let decoded =
+        decompress_into(payload, &mut archive).map_err(rspack_error::Error::from_error)?;
       if decoded != len {
         return Err(error!("Cache value decoded length mismatch"));
       }

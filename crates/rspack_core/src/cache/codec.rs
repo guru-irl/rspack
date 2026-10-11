@@ -57,7 +57,10 @@ impl CacheCodec {
   }
 
   #[cfg(not(target_family = "wasm"))]
-  pub(crate) fn encode_aligned<T>(&self, data: &T) -> Result<rspack_cacheable::rkyv::util::AlignedVec>
+  pub(crate) fn encode_aligned<T>(
+    &self,
+    data: &T,
+  ) -> Result<rspack_cacheable::rkyv::util::AlignedVec>
   where
     T: for<'a> Serialize<Serializer<'a>>,
   {
