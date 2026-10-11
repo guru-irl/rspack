@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rsbuild: ['2.2.12', '2.2.2']
+        rsbuild: ${{ fromJSON(inputs.mode == 'r3-measure' && '["2.2.12"]' || '["2.2.12","2.2.2"]') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -38,6 +38,10 @@ jobs:
           node --check benchmarks/tanstack-ssr-concurrency/run.mjs
           node --check benchmarks/tanstack-ssr-concurrency/setup.mjs
           node --check benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/check-identity.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/check-request-gate.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/check-topology.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/run-production.mjs
           node benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
       - uses: actions/upload-artifact@v4
         if: always()

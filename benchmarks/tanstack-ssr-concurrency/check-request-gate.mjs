@@ -54,7 +54,7 @@ export async function requestGate(source) {
  }
  for(const [action,rsc,engaged] of [['build',false,true],['dev',true,false],['dev',false,false]]) {
   let captured;const raw=()=>{};const other={loadBundle:raw};
-  const off={...ctx,concurrentDev:engaged,rscEnabled:rsc,api:{context:{action},onBeforeStartDevServer:fn=>captured=fn,onAfterEnvironmentCompile(){}}};
+  const off={...ctx,devServerRef:null,concurrentDev:engaged,rscEnabled:rsc,api:{context:{action},onBeforeStartDevServer:fn=>captured=fn,onAfterEnvironmentCompile(){}}};
   vm.runInNewContext(source.slice(a,b),off);
   captured?.({server:{environments:{ssr:other}}});
   vm.runInNewContext('installClientRequestGate();',off);

@@ -39,6 +39,7 @@ fs.copyFileSync(path.join(generatedRoot,'non-rsc-region-proof.json'),path.join(w
 const v3Root=path.join(work,'generated-v3'),v3Patch=path.join(work,'generated-v3.patch');
 const generateV3=spawnSync('python3',[path.join(fixture,'generate-r3.py'),pristineRoot,generatedRoot,v3Root,v3Patch],{encoding:'utf8'});assert.equal(generateV3.status,0,generateV3.stdout+generateV3.stderr);
 fs.copyFileSync(path.join(v3Root,'v2-partition-proof.json'),path.join(work,'r3-v2-partition-proof.json'));
+assert.deepEqual(fs.readFileSync(v3Patch),fs.readFileSync(path.join(fixture,'start-plugin-core-1.171.46-combined.patch')),'v3 generator reproduces delivery patch');
 const v3=Object.fromEntries(['plugin.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(v3Root,f),'utf8')]));
 
 const structuralApply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',v3Patch],{cwd:pkg,encoding:'utf8'});
@@ -121,7 +122,7 @@ const parity=(results,label)=>{
   for(const check of visible(reference)) {
    const load=r=>JSON.parse(fs.readFileSync(path.join(r.result,`${check.step}-outputs.json`)));
    const a=load(reference),b=load(r);
-   for(const env of Object.keys(a)) {assert.deepEqual(b[env].modules,a[env].modules,`${label} ${r.arm} ${check.step}: ${env} modules`);const stable=assets=>assets.map(({hash,...rest})=>rest);assert.deepEqual(stable(b[env].assets),stable(a[env].assets),`${label} ${r.arm} ${check.step}: ${env} assets`);}
+   for(const env of Object.keys(a)) {assert.deepEqual(b[env].modules,a[env].modules,`${label} ${r.arm} ${check.step}: ${env} modules`);if(env.startsWith('aux-'))assert.deepEqual(b[env].assets,a[env].assets,`${label} ${r.arm} ${check.step}: auxiliary output bytes`);const stable=assets=>assets.map(({hash,...rest})=>rest);assert.deepEqual(stable(b[env].assets),stable(a[env].assets),`${label} ${r.arm} ${check.step}: ${env} assets`);}
   }
  }
  fs.writeFileSync(path.join(work,`${label}-parity.json`),JSON.stringify({passed:true,steps:22,arms:results.map(r=>r.arm)}));
@@ -169,9 +170,9 @@ const production=()=>{
 };
 if(mode==='r3-production') {production();process.exit(0);}
 if(mode==='r3-custom-green') {
- for(const count of ['2','4']) {process.env.COMPILER_COUNT=count;for(const arm of ['stock','v2','barrier']) {
+ for(const count of ['2','4']) {process.env.COMPILER_COUNT=count;for(const arm of ['stock','v2','barrier','after-make','overlap']) {
   const r=execute(arm,'r3-custom-request',count);
-  if(arm==='barrier')assert.equal(r.status,0,'v3 custom request window');
+  if(!['stock','v2'].includes(arm))assert.equal(r.status,0,'v3 custom request window');
  }} process.exit(0);
 }
 if(mode==='r3-measure') {
@@ -197,5 +198,5 @@ for(const edge of ['direct','transitive']) {
  assert.deepEqual(counts(edged),counts(baseline),`${edge}: gate-only pass counts`);
  fs.writeFileSync(path.join(work,`user-${edge}-counts.json`),JSON.stringify({passed:true,reference:counts(baseline),edge:counts(edged)},null,2));
 }
-for(const count of ['2','4']){process.env.COMPILER_COUNT=count;checked('barrier','r3-custom-request',count);}
+for(const count of ['2','4']){process.env.COMPILER_COUNT=count;for(const arm of ['barrier','after-make','overlap'])checked(arm,'r3-custom-request',count);}
 fs.writeFileSync(path.join(work,'r3-success.json'),JSON.stringify({passed:true}));

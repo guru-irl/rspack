@@ -51,6 +51,11 @@ for file in ['plugin.js','virtual-modules.js']:
   proof.append(dict(file=file,region=name,equal=before==after,beforeSha256=hashlib.sha256(before.encode()).hexdigest(),afterSha256=hashlib.sha256(after.encode()).hexdigest()))
  (output/file).write_text(new)
  patches.extend(difflib.unified_diff(stock.splitlines(keepends=True),new.splitlines(keepends=True),fromfile='a/dist/esm/rsbuild/'+file,tofile='b/dist/esm/rsbuild/'+file))
+assert all(p['equal'] for p in proof),'v2 compiler partitions remain byte-identical'
+old_vm=(v2/'virtual-modules.js').read_text();new_vm=(output/'virtual-modules.js').read_text()
+normalized_vm=new_vm.replace('if (isDev && !opts.rscEnabled) {\n\t\t\tconst writeModule','if (!opts.rscEnabled) {\n\t\t\tconst writeModule')
+assert normalized_vm==old_vm,'virtual module change is only the production no-op guard'
+proof.append(dict(file='virtual-modules.js',region='entire file excluding dev-only wrapper guard',equal=True,beforeSha256=hashlib.sha256(old_vm.encode()).hexdigest(),afterSha256=hashlib.sha256(normalized_vm.encode()).hexdigest()))
 patch.write_text(''.join(patches))
 (output/'v2-partition-proof.json').write_text(json.dumps(proof,indent=2))
 print(hashlib.sha256(patch.read_bytes()).hexdigest())
