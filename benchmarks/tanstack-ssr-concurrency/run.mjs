@@ -21,6 +21,7 @@ const builds = [];
 const events = [];
 const checks = [];
 const current = new Map();
+const compilers = new Map();
 const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
@@ -28,6 +29,7 @@ const probe = { name: 'watch-observer', setup(api) {
   api.modifyRspackConfig((config, { environment }) => {
     config.devtool = false;
     config.plugins.push({ apply(compiler) {
+      compilers.set(environment.name,compiler);
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
         active++; event(environment.name, 'watchRun');
       });
@@ -151,6 +153,7 @@ try {
   else if (scenario==='red-recovery') {
     step='resolver-recovery'; peak=process.memoryUsage().rss; lastEvent=now();
     globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("stale resolver") }\n');
+    compilers.get('ssr').watching.invalidateWithChangesAndRemovals(new Set([globalThis.__watchVirtualState.serverFnResolverPath]),new Set());
     await waitIdle(1); await sample(base,'Public leaf baseline');
   } else {
     const edits=scenario==='warm'?10:scenario==='red-overlap'?1:2;
