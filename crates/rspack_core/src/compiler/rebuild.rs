@@ -46,11 +46,9 @@ impl Compiler {
       }
     };
     self.store_cache_metadata();
-    if result.is_ok() && self.compilation.get_errors().next().is_none() {
-      // Recovery is complete. Keep the chunk graph snapshot for the next rebuild,
-      // but release the previous compilation's unrecovered data between edits.
-      self.incremental_artifacts.release_previous_compilation();
-    }
+    // Recovery has ended, even if the rebuild failed. Keep the chunk graph
+    // snapshot, but release the previous compilation's unrecovered data.
+    self.incremental_artifacts.release_previous_compilation();
     result
   }
 

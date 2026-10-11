@@ -490,13 +490,10 @@ impl JsCompiler {
               .to_napi_result_with_message(|e| {
                 print_error_diagnostic(e, compiler.options.stats.colors)
               });
+            // Return pages freed by the rebuild to the OS before control
+            // returns to JavaScript, on the same task without an await.
+            rspack_allocator::collect();
             result?;
-            if compiler.compilation.get_errors().next().is_none() {
-              // Rebuild released the previous compilation after Rust done.
-              // Collect on the same task with no intervening await, before
-              // returning to JavaScript and its public done hook.
-              rspack_allocator::collect();
-            }
             tracing::debug!("rebuild ok");
             Ok(())
           },

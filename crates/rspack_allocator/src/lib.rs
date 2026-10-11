@@ -25,7 +25,8 @@ static GLOBAL: sftrace_setup::SftraceAllocator<std::alloc::System> =
 static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
   tracy_client::ProfiledAllocator::new(std::alloc::System, 10); // adjust callstack_depth if needed with performance cost
 
-/// Return already-freed pages to the operating system when using mimalloc.
+/// Return already-freed pages through a process-wide purge at a rebuild boundary.
+/// May decommit pages other threads would reuse; a no-op without mimalloc.
 pub fn collect() {
   #[cfg(all(
     not(any(miri, target_family = "wasm", feature = "system-allocator")),
