@@ -6,9 +6,14 @@ on:
         description: Completed size run with head and candidate bindings
         required: true
         type: string
+      head_size_run:
+        description: Completed size run containing original head binding
+        default: '38126733189'
+        required: true
+        type: string
       candidate:
         required: true
-        default: '1c1d2714653f8bc50f0a7f625d59ecb8ac6b8075'
+        default: '3894dd6c984167ea7ef138b1902e30b01e43c2b4'
         type: string
 permissions:
   contents: read
@@ -34,6 +39,12 @@ jobs:
           github-token: ${{ github.token }}
           pattern: ids-size-*
           path: .spider/scratch/ids-parity/bindings
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.head_size_run }}
+          github-token: ${{ github.token }}
+          name: ids-size-856680217de22e88729429cf204606e7df727eac
+          path: .spider/scratch/ids-parity/bindings/ids-size-856680217de22e88729429cf204606e7df727eac
       - name: Public watch fixture, paired output and memory
         env:
           CANDIDATE: ${{ inputs.candidate }}
