@@ -155,7 +155,7 @@ fn encode_cache_entry<T: CacheValueData>(
   };
   #[cfg(not(target_family = "wasm"))]
   {
-    Ok(super::value_codec::encode(codec.encode_aligned(&entry)?))
+    super::value_codec::encode(codec.encode_aligned(&entry)?)
   }
   #[cfg(target_family = "wasm")]
   {

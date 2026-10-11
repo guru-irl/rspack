@@ -1,4 +1,4 @@
-use lz4_flex::block::{compress, decompress_into};
+use lzzzz::lz4;
 use rspack_cacheable::rkyv::util::AlignedVec;
 use rspack_error::{Result, error};
 
@@ -12,14 +12,16 @@ const LZ4: u32 = 0x7fff_ff01;
 // while either tag points past the end. Untagged entries therefore cannot be
 // mistaken for this representation, even when builds share a cache identity.
 // Layout: payload, u32 LE decoded length (zero for raw), u32 LE encoding tag.
-pub(super) fn encode(archive: AlignedVec) -> Vec<u8> {
+pub(super) fn encode(archive: AlignedVec) -> Result<Vec<u8>> {
   if (9..=MAX_COMPRESSED_VALUE_SIZE).contains(&archive.len()) {
-    let mut compressed = compress(&archive);
+    let mut compressed = Vec::new();
+    lz4::compress_to_vec(&archive, &mut compressed, lz4::ACC_LEVEL_DEFAULT)
+      .map_err(rspack_error::Error::from_error)?;
     if compressed.len() + TRAILER_SIZE < archive.len() {
       compressed.extend_from_slice(&(archive.len() as u32).to_le_bytes());
       compressed.extend_from_slice(&LZ4.to_le_bytes());
       // Do not retain the compression buffer's archive-sized spare capacity.
-      return compressed.into_boxed_slice().into_vec();
+      return Ok(compressed.into_boxed_slice().into_vec());
     }
   }
 
@@ -27,7 +29,7 @@ pub(super) fn encode(archive: AlignedVec) -> Vec<u8> {
   bytes.extend_from_slice(&archive);
   bytes.extend_from_slice(&0u32.to_le_bytes());
   bytes.extend_from_slice(&RAW.to_le_bytes());
-  bytes
+  Ok(bytes)
 }
 
 pub(super) enum DecodedValue<'a> {
@@ -58,7 +60,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<DecodedValue<'_>> {
       let mut archive = AlignedVec::<16>::with_capacity(len);
       archive.resize(len, 0);
       let decoded =
-        decompress_into(payload, &mut archive).map_err(rspack_error::Error::from_error)?;
+        lz4::decompress(payload, &mut archive).map_err(rspack_error::Error::from_error)?;
       if decoded != len {
         return Err(error!("Cache value decoded length mismatch"));
       }
