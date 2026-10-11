@@ -73,6 +73,8 @@ const execute=(arm,scenario,index)=>{
  fs.writeFileSync(path.join(app,'src/no-resolver.ts'),'export default {fetch:async()=>new Response("generic custom entry")};\n');
  fs.writeFileSync(path.join(app,'src/extra.css'),'.generic-extra { color: rgb(20, 20, 20); }\n');
  fs.mkdirSync(path.join(app,'aux'),{recursive:true});
+  fs.writeFileSync(path.join(app,'aux/request-entry.js'),'export {};\n');
+  fs.writeFileSync(path.join(app,'aux/new-request.css'),'.generic-new-request { color: rgb(80, 80, 80); }\n');
   fs.writeFileSync(path.join(app,'aux/request.css'),'.generic-request { color: rgb(20, 20, 20); }\n');
   for(const name of ['aux-a','aux-b'])fs.writeFileSync(path.join(app,'aux',`${name}.js`),`document.body.textContent = 'Generic ${name}';\n`);
   fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
