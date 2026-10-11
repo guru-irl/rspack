@@ -44,15 +44,27 @@ const execute=(arm,scenario,index)=>{
  fs.writeFileSync(path.join(app,'src/no-resolver.ts'),'export default {fetch:async()=>new Response("generic custom entry")};\n');
  fs.writeFileSync(path.join(app,'src/extra.css'),'.generic-extra { color: rgb(20, 20, 20); }\n');
  fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
- const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':'0'},encoding:'utf8',timeout:900000});
+ const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
+ if(run.status===0 && arm!=='stock' && arm!=='v2') {
+  const log=fs.readFileSync(path.join(result,'node-console.log'),'utf8');
+  const state=arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
+  assert.equal(log.split(`[tss-ssr-concurrency] ${state} gate=on`).length-1,scenario==='r2-restart'?2:1,'literal startup state per start');
+  if(arm==='invalid-mode')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=after_make'));
+  if(arm==='invalid-switch')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_CONCURRENT=true'));
+ }
  console.log(scenario,index,arm,run.status,(run.stdout+run.stderr).slice(-2500));
  return {result,status:run.status};
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
-if(mode==='r2-green') {
+if(mode==='r2-matrix') {
+ for(const arm of ['barrier','after-make','gate-only','overlap']) {
+  for(const scenario of ['red-recovery','red-aba','no-resolver']) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
+ }
+ for(const arm of ['invalid-mode','invalid-switch']) {const r=execute(arm,'cold',0);if(r.status!==0)failed=true;}
+} else if(mode==='r2-green') {
  for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes'],['barrier','red-recovery'],['barrier','red-aba'],['barrier','no-resolver']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 } else if(mode==='r2-red') {
  for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
@@ -71,7 +83,7 @@ if(mode==='r2-red'||mode==='r2-green') {} else if(mode==='supplement') {for(cons
 } else {
  const reps=mode==='measure'||mode==='final'?10:1;
  for(let i=0;i<reps;i++) {
-  const arms=i%2?['overlap','after-make','barrier','stock']:['stock','barrier','after-make','overlap'];
+  const arms=mode==='r2-matrix'?['stock','gate-only','barrier','after-make','overlap']:i%2?['overlap','after-make','barrier','stock']:['stock','barrier','after-make','overlap'];
   const results=arms.map(arm=>({...execute(arm,mode==='measure'||mode==='final'&&i>0?'warm':'correctness',i),arm}));
   if(results.some(r=>r.status!==0)) {failed=true;break;}
   if(mode!=='measure' && (mode!=='final'||i===0)) {
