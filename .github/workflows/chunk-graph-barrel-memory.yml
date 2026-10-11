@@ -1,0 +1,81 @@
+name: Chunk graph barrel memory attribution
+on:
+  push:
+    branches: ['bench/chunk-graph-barrel-memory']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  attribute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_CI_DEBUG: 0
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 24
+      - name: Environment
+        run: |
+          mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,memory,binaries}
+          echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
+          echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
+          git rev-parse HEAD > .spider/scratch/chunk-graph-barrel/memory/source.txt
+          cp crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs .spider/scratch/chunk-graph-barrel/candidate.rs
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-graph-barrel-ci
+          use-cache: true
+          save-if: true
+      - name: Counting allocator candidate
+        run: |
+          set -euo pipefail
+          python3 scripts/bench/chunk-graph-barrel/instrument-memory.py "$PWD"
+          cargo codegen
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/memory/build-fix.log
+          pnpm run build:js
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/fix.node
+      - name: Counting allocator baseline
+        run: |
+          set -euo pipefail
+          git show f2903b6482:crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs > crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/memory/build-main.log
+          grep 'Compiling rspack_core ' .spider/scratch/chunk-graph-barrel/memory/build-main.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/main.node
+      - name: Baseline and reuse 20-edit curves
+        run: |
+          set -euo pipefail
+          for split in 0 1; do
+            for variant in main fix; do
+              VARIANT="$variant" SPLIT="$split" NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/.spider/scratch/chunk-graph-barrel/binaries/$variant.node" FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/memory/growth-$split-$variant.json" node --expose-gc scripts/bench/chunk-graph-barrel/growth.mjs 2>&1 | tee ".spider/scratch/chunk-graph-barrel/memory/growth-$split-$variant.log"
+            done
+          done
+      - name: Build previous-compilation-release stack
+        run: |
+          set -euo pipefail
+          cp .spider/scratch/chunk-graph-barrel/candidate.rs crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
+          git diff f2903b6482 e5b0fa7714f97865e8b99e8b36bc255d6492d1c0 -- crates/rspack_core/src/artifacts/incremental_artifacts.rs crates/rspack_core/src/compiler/rebuild.rs > .spider/scratch/chunk-graph-barrel/drop-previous.patch
+          git apply .spider/scratch/chunk-graph-barrel/drop-previous.patch
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/memory/build-stack.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/stack.node
+      - name: Release-stack 20-edit curves
+        run: |
+          set -euo pipefail
+          for split in 0 1; do
+            VARIANT=stack SPLIT="$split" NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/.spider/scratch/chunk-graph-barrel/binaries/stack.node" FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/memory/growth-$split-stack.json" node --expose-gc scripts/bench/chunk-graph-barrel/growth.mjs 2>&1 | tee ".spider/scratch/chunk-graph-barrel/memory/growth-$split-stack.log"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: barrel-memory-attribution
+          path: .spider/scratch/chunk-graph-barrel/memory
+          if-no-files-found: error
