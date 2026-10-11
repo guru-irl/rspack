@@ -79,7 +79,7 @@ impl PassExt for BuildModuleGraphPhasePass {
       module.freeze_build_info();
     }
     cache.after_build_module_graph(compilation).await;
-    crate::new_cache::probe_graph::store(compilation);
+    crate::new_cache::probe_graph::prepare(compilation).await?;
     Ok(())
   }
 }

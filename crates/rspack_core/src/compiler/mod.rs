@@ -263,6 +263,7 @@ impl Compiler {
       }
     };
     self.store_cache_metadata();
+    crate::new_cache::probe_graph::queue(&mut self.compilation);
     result
   }
 

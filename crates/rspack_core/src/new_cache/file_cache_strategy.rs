@@ -24,7 +24,7 @@ const VALIDATOR_KEY: &str = "validator";
 struct PendingWrites {
   entries: FxDashMap<CacheKey, PendingWrite>,
   new_build_dependencies: Mutex<Option<InternedPathSet>>,
-  probe_graph: Mutex<Vec<(CacheKey, Vec<u8>)>>,
+  probe_graph: Mutex<Option<super::probe_graph::PendingGraph>>,
 }
 
 #[derive(Debug)]
@@ -41,7 +41,11 @@ impl PendingWrites {
   fn is_empty(&self) -> bool {
     self.entries.is_empty()
       && self.new_build_dependencies().is_none()
-      && self.probe_graph.lock().unwrap().is_empty()
+      && self
+        .probe_graph
+        .lock()
+        .expect("graph lock must not be poisoned")
+        .is_none()
   }
 }
 
@@ -241,13 +245,17 @@ impl FileCacheStrategy {
       .as_ref()?
       .database
       .get(DatabaseFamily::Cache, key)
-      .unwrap()
+      .ok()?
       .map(|value| value.to_vec())
   }
 
-  pub(crate) fn probe_graph_store(&self, entries: Vec<(CacheKey, Vec<u8>)>) {
+  pub(crate) fn probe_graph_store(&self, entries: super::probe_graph::PendingGraph) {
     if let Some(state) = self.read_state().as_ref() {
-      *state.pending_writes.probe_graph.lock().unwrap() = entries;
+      *state
+        .pending_writes
+        .probe_graph
+        .lock()
+        .expect("graph lock must not be poisoned") = Some(entries);
     }
   }
 
@@ -371,7 +379,12 @@ impl FileCacheStrategy {
         (
           std::mem::take(&mut state.pending_writes.entries),
           state.pending_writes.new_build_dependencies().take(),
-          std::mem::take(&mut *state.pending_writes.probe_graph.lock().unwrap()),
+          state
+            .pending_writes
+            .probe_graph
+            .lock()
+            .expect("graph lock must not be poisoned")
+            .take(),
         )
       };
 
@@ -404,7 +417,9 @@ impl FileCacheStrategy {
 
       let writes = writes.chain(
         probe_graph
+          .as_ref()
           .into_par_iter()
+          .flat_map(|graph| graph.writes())
           .map(|(key, value)| (DatabaseFamily::Cache, key, value)),
       );
 

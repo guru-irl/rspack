@@ -80,7 +80,7 @@ impl<'compilation> StatsContext<'compilation> {
     &self.0.module_graph_cache_artifact
   }
 
-  fn build_module_graph_artifact(&self) -> &'compilation StealCell<BuildModuleGraphArtifact> {
+  fn build_module_graph_artifact(&self) -> &'compilation crate::new_cache::probe_graph::GraphCell {
     &self.0.build_module_graph_artifact
   }
 

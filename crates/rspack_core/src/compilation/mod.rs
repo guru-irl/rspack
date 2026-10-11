@@ -314,7 +314,8 @@ pub struct Compilation {
 
   pub modified_files: InternedPathSet,
   pub removed_files: InternedPathSet,
-  pub build_module_graph_artifact: StealCell<BuildModuleGraphArtifact>,
+  pub build_module_graph_artifact: crate::new_cache::probe_graph::GraphCell,
+  pub(crate) probe_graph_snapshot: Option<crate::new_cache::Snapshot>,
   pub input_filesystem: Arc<dyn ReadableFileSystem>,
 
   pub intermediate_filesystem: Arc<dyn IntermediateFileSystem>,
@@ -427,6 +428,7 @@ impl Compilation {
       logging,
       cache,
       module_build_cache,
+      probe_graph_snapshot: None,
       resolver_cache,
       file_system_info,
       plugin_driver,
@@ -483,7 +485,7 @@ impl Compilation {
       module_executor,
       in_finish_make: AtomicBool::new(false),
 
-      build_module_graph_artifact: StealCell::new(BuildModuleGraphArtifact::new()),
+      build_module_graph_artifact: BuildModuleGraphArtifact::new().into(),
       modified_files,
       removed_files,
       input_filesystem,
