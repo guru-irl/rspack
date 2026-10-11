@@ -24,6 +24,7 @@ for download in sorted(root.glob('artifacts-*')):
         timeline = [json.loads(s) for s in (directory/'timeline.jsonl').read_text().splitlines()]
         metric = summary['metric']
         done = next(int(e['wall_ns']) for e in events if e['kind']=='build_done')
+        close = next((int(e['wall_ns']) for e in events if e['kind']=='close_start'), 2**63)
         summary['rss_windows_mib'] = {}
         summary['anon_windows_mib'] = {}
         summary['v8_windows_mib'] = {e['kind']+(':'+str(e.get('seconds')) if 'seconds' in e else ''): {k:v/2**20 for k,v in e['memory'].items()} for e in events if e['kind'] in ['build_done','idle_mark']}
@@ -50,6 +51,8 @@ for download in sorted(root.glob('artifacts-*')):
         summary['thread_exit_drops']=[]
         for transition in summary['thread_transitions']:
             t=transition['after_done_s']
+            if t >= (close-done)/1e9:
+                continue
             before=[s[metric] for s in timeline if t-0.7 <= (s['wall_ns']-done)/1e9 < t-0.2]
             after=[s[metric] for s in timeline if t+0.1 <= (s['wall_ns']-done)/1e9 <= t+0.6]
             if before and after:
