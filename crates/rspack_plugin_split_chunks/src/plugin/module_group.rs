@@ -822,6 +822,49 @@ fn matches_all_native_modules(group: &CacheGroup) -> bool {
   is_default_module_layer_filter(&group.layer) && matches!(group.test, CacheGroupTest::Enabled)
 }
 
+// Reuse the matching loop for both sequential and Rayon jobs.
+#[inline(never)]
+fn match_native_cache_group_chunk(
+  all_modules: &[ModuleIdentifier],
+  compilation: &Compilation,
+  (chunk_index, mut groups): (usize, Vec<(&CacheGroup, &mut [usize])>),
+) {
+  let module_graph = compilation.get_module_graph();
+  let modules = &all_modules[chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB
+    ..all_modules
+      .len()
+      .min((chunk_index + 1) * NATIVE_PRECOMPUTE_MODULES_PER_JOB)];
+  for (index, identifier) in modules.iter().enumerate() {
+    let module = module_graph
+      .module_by_identifier(identifier)
+      .expect("should have module")
+      .as_ref();
+    let mut name_for_condition = None;
+    for (group, words) in &mut groups {
+      if !is_default_module_layer_filter(&group.layer)
+        && !group
+          .layer
+          .test_native(module.get_layer().map(|layer| layer.as_str()))
+      {
+        continue;
+      }
+      let name = if matches!(
+        group.test,
+        CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
+      ) {
+        name_for_condition
+          .get_or_insert_with(|| module.name_for_condition())
+          .as_deref()
+      } else {
+        None
+      };
+      if test_native_cache_group(&group.test, name) {
+        words[index / usize::BITS as usize] |= 1 << (index % usize::BITS as usize);
+      }
+    }
+  }
+}
+
 impl SplitChunksPlugin {
   // #[tracing::instrument(skip_all)]
   pub(crate) fn find_best_module_group(
@@ -917,42 +960,7 @@ impl SplitChunksPlugin {
       return matches;
     }
 
-    let module_graph = compilation.get_module_graph();
-    let match_chunk = |(chunk_index, mut groups): (usize, Vec<(&CacheGroup, &mut [usize])>)| {
-      let modules = &all_modules[chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB
-        ..all_modules
-          .len()
-          .min((chunk_index + 1) * NATIVE_PRECOMPUTE_MODULES_PER_JOB)];
-      for (index, identifier) in modules.iter().enumerate() {
-        let module = module_graph
-          .module_by_identifier(identifier)
-          .expect("should have module")
-          .as_ref();
-        let mut name_for_condition = None;
-        for (group, words) in &mut groups {
-          if !is_default_module_layer_filter(&group.layer)
-            && !group
-              .layer
-              .test_native(module.get_layer().map(|layer| layer.as_str()))
-          {
-            continue;
-          }
-          let name = if matches!(
-            group.test,
-            CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
-          ) {
-            name_for_condition
-              .get_or_insert_with(|| module.name_for_condition())
-              .as_deref()
-          } else {
-            None
-          };
-          if test_native_cache_group(&group.test, name) {
-            words[index / usize::BITS as usize] |= 1 << (index % usize::BITS as usize);
-          }
-        }
-      }
-    };
+    let match_chunk = |job| match_native_cache_group_chunk(all_modules, compilation, job);
     if all_modules.len() < NATIVE_PRECOMPUTE_MODULES_PER_JOB {
       for job in jobs.into_iter().enumerate() {
         match_chunk(job);
