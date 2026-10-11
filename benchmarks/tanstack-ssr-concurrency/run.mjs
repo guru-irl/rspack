@@ -178,9 +178,14 @@ try {
     }
   }
   fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,steps:checks.length}));
+} catch(error) {
+  console.error(error); process.exitCode=1;
 } finally {
   clearInterval(timer);
   fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events,null,2));
   fs.writeFileSync(path.join(out,'builds.json'),JSON.stringify(builds,null,2));
-  if(server) await server.close();
+  if(server?.close) await server.close();
+  else if(server?.server?.close) await server.server.close();
 }
+
+process.exit(process.exitCode || 0);
