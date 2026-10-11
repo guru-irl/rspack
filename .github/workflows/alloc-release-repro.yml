@@ -13,7 +13,7 @@ on:
       package:
         type: string
         default: '2.2.8'
-        description: 'Exact public core version, or canary for current published canary'
+        description: 'Exact public version; versions containing -canary- use @rspack-canary/core by alias'
       launches:
         type: string
         default: '20'
@@ -63,9 +63,15 @@ jobs:
             VERSION="$(npm view @rspack/core dist-tags.canary --registry=https://registry.npmjs.org)"
           fi
           test -n "$VERSION"
-          npm view "@rspack/core@$VERSION" version gitHead dist --json --registry=https://registry.npmjs.org > ../results/core-provenance.json
-          npm view "@rspack/binding@$VERSION" version gitHead dist --json --registry=https://registry.npmjs.org > ../results/binding-provenance.json
-          npm install --save-exact --registry=https://registry.npmjs.org "@rspack/core@$VERSION"
+          SCOPE='@rspack'
+          SPEC="@rspack/core@$VERSION"
+          if [[ "$VERSION" == *-canary-* ]]; then
+            SCOPE='@rspack-canary'
+            SPEC="@rspack/core@npm:@rspack-canary/core@$VERSION"
+          fi
+          npm view "$SCOPE/core@$VERSION" version gitHead dist --json --registry=https://registry.npmjs.org > ../results/core-provenance.json
+          npm view "$SCOPE/binding@$VERSION" version gitHead dist --json --registry=https://registry.npmjs.org > ../results/binding-provenance.json
+          npm install --save-exact --registry=https://registry.npmjs.org "$SPEC"
           npm ls --all --json > ../results/npm-tree.json
           cp package-lock.json ../results/package-lock.json
           python -m pip install psutil==7.0.0
