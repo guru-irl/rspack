@@ -37,13 +37,15 @@ try {
   const buildEndUnixMs = Date.now();
   const mem = memory();
   const graph = stats.compilation.modules.size;
-  if (phase === 'warm' && (counts.build !== 0 || counts.valid !== graph)) throw new Error(`not a warm hit: ${JSON.stringify({ counts, graph })}`);
+  if (graph !== Number(process.env.MODULES) + 1 || (phase === 'warm' && counts.build !== 0)) throw new Error(`not a warm hit: ${JSON.stringify({ counts, graph })}`);
   const logs = stats.toJson({ all: false, logging: 'verbose', loggingDebug: [/./] }).logging;
   const hasher = crypto.createHash('sha256');
   for await (const chunk of fs.createReadStream(path.join(path.dirname(root), 'output/main.js'))) hasher.update(chunk);
   const hash = hasher.digest('hex');
   const flatten = entries => entries.flatMap(e => [e, ...flatten(e.children || [])]);
-  const makeEntries = Object.values(logs || {}).flatMap(log => flatten(log.entries || [])).filter(e => e.type === 'time' && String(e.message).startsWith('read make from persistent cache:'));
+  const entries = Object.values(logs || {}).flatMap(log => flatten(log.entries || []));
+  if (phase === 'warm' && !entries.some(e => e.message === 'make persistent cache recovery succeeded')) throw new Error('missing successful legacy make recovery log');
+  const makeEntries = entries.filter(e => e.type === 'time' && String(e.message).startsWith('read make from persistent cache:'));
   const makeMatch = makeEntries[0]?.message.match(/: ([\d.]+) ms/);
   const makeRestoreMs = makeMatch ? Number(makeMatch[1]) : null;
   if (phase === 'warm' && !Number.isFinite(makeRestoreMs)) throw new Error('missing make restore logger timing');
