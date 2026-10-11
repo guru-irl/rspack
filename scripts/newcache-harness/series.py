@@ -29,7 +29,7 @@ for sha in config['arms'].values():
     if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha): raise ValueError('Full source SHA required')
 records = []
 host_samples = []
-protocol=dict(post_done_gc=False,done_gc=False,completed_idle_gc=True,post_close_gc=True,actual_checkpoint_offsets=True,watch_post_done_source='external_timeline',post_done_ms=config.get('post_done_ms',[100,500]),idle_timeout_ms=config.get('idle_timeout_ms',3000),run_sha256=hashlib.sha256((HERE/'run.mjs').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest())
+protocol=dict(shared_seed=config.get('shared_seed',True),post_done_gc=False,done_gc=False,completed_idle_gc=True,post_close_gc=True,actual_checkpoint_offsets=True,watch_post_done_source='external_timeline',post_done_ms=config.get('post_done_ms',[100,500]),idle_timeout_ms=config.get('idle_timeout_ms',3000),run_sha256=hashlib.sha256((HERE/'run.mjs').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest())
 (results/'measurement-protocol.json').write_text(json.dumps(protocol,indent=2))
 
 def run(arm, phase, name):
@@ -43,6 +43,13 @@ def run(arm, phase, name):
     (results/'host-samples.json').write_text(json.dumps(host_samples))
     env = dict(os.environ, PROJECT=str(project), RSPACK_CORE=str(cores[arm]), SOURCE_SHA=config['arms'][arm], PARENT_SAMPLER='1', POST_DONE_MS=json.dumps(config.get('post_done_ms',[100,500])), IDLE_TIMEOUT_MS=str(config.get('idle_timeout_ms',3000)))
     return measure(['node','--expose-gc',str(HERE/'run.mjs'),phase,str(results/(name+'.json'))], results/(name+'.json'), env)
+
+def seed_hash(root):
+    rows=[]
+    for p in sorted(root.rglob('*')):
+        if p.is_file():
+            rows.append(dict(path=p.relative_to(root).as_posix(),bytes=p.stat().st_size,mtime_ns=p.stat().st_mtime_ns,sha256=hashlib.sha256(p.read_bytes()).hexdigest()))
+    return hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 def preread():
     # Explicit warm page-cache start for sources, packages and the restored cache.
@@ -68,27 +75,37 @@ def validate(result, reference):
 if mode != 'measure':
   subprocess.run(['node',str(HERE/'gen.mjs'),str(config['modules'])],env=dict(os.environ,PROJECT=str(project)),check=True)
   reference = None
-  for arm in ['A','B']:
+  for arm in (['A'] if config.get('shared_seed',True) else ['A','B']):
     if (project/'dist').exists():shutil.rmtree(project/'dist')
     if (project/'cache').exists(): shutil.rmtree(project/'cache')
     result = run(arm,'cold','seed-'+arm)
     if reference is None: reference=result['outputs']
     validate(result,reference)
     shutil.copytree(project/'cache',seeds/arm,copy_function=shutil.copy2)
-  (work/'seed-manifest.json').write_text(json.dumps(dict(config=config,outputs=reference)))
+  if config.get('shared_seed',True):
+    shutil.copytree(seeds/'A',seeds/'B',copy_function=shutil.copy2)
+  hashes={arm:seed_hash(seeds/arm) for arm in ['A','B']}
+  if config.get('shared_seed',True) and hashes['A']!=hashes['B']: raise RuntimeError('Shared seed copy differs')
+  seed_manifest=dict(config=config,outputs=reference,seed_hashes=hashes)
+  (work/'seed-manifest.json').write_text(json.dumps(seed_manifest,indent=2))
   if mode=='prepare':
-    print('Prepared and closed both independent seeds; no paired measurement has run.')
+    print('Prepared closed seeds; no paired measurement has run.')
     sys.exit(0)
 else:
   seed_manifest=json.loads((work/'seed-manifest.json').read_text())
   if seed_manifest['config'] != config: raise RuntimeError('Prepared seed configuration mismatch')
   reference=seed_manifest['outputs']
+  for arm in ['A','B']:
+    if seed_hash(seeds/arm)!=seed_manifest['seed_hashes'][arm]: raise RuntimeError('Closed seed changed')
+protocol.update(seed_hashes=seed_manifest['seed_hashes'])
+(results/'measurement-protocol.json').write_text(json.dumps(protocol,indent=2))
 leaf=project/'src/d0/m9.js'
 original=leaf.read_bytes(); source_stat=leaf.stat()
 phases=config.get('phases',['warm','watch'])
 for phase in phases:
-  for kind,n in [('AA',config['aa_pairs']),('AB',config['pairs'])]:
-    for pair in range(n):
+  for pair in range(max(config['aa_pairs'],config['pairs'])):
+    for kind,n in [('AA',config['aa_pairs']),('AB',config['pairs'])]:
+        if pair>=n: continue
         arms=['A','A'] if kind=='AA' else ['A','B']
         order=[0,1] if pair%2==0 else [1,0]
         observed={}
@@ -128,7 +145,7 @@ increases=[];time_increases=[]
 for phase in phases:
   for metric,value in summary[phase]['AB'].items():
     noise=max(0,max(abs(v) for v in summary[phase]['AA'][metric]['deltas']))
-    if value['worst']>noise:
+    if value['worst']>noise or value['median']>noise:
       row=dict(phase=phase,metric=metric,median=value['median'],worst=value['worst'],aa_max_abs=noise)
       (time_increases if metric.endswith('ms') else increases).append(row)
 summary.update(memory_increases=increases,time_increases=time_increases,protocol=protocol,config=config,platform=platform.platform(),node=subprocess.check_output(['node','--version'],text=True).strip())

@@ -7,7 +7,8 @@
   "pairs": 5,
   "aa_pairs": 5,
   "enabled": true,
-  "phases": ["warm"],
+  "phases": ["watch"],
   "post_done_ms": [100, 500],
-  "idle_timeout_ms": 3000
+  "idle_timeout_ms": 3000,
+  "shared_seed": true
 }

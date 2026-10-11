@@ -11,7 +11,7 @@ import time
 REPO = pathlib.Path.cwd()
 HERE = REPO / 'scripts/newcache-parity'
 RESULTS = REPO / 'results'
-WORK = REPO / '.spider/scratch/parity'
+WORK = REPO / '.bench-work/parity'
 WORK.mkdir(parents=True, exist_ok=True)
 RESULTS.mkdir(exist_ok=True)
 MODULES = int(os.environ['FIXTURE_MODULES'])
