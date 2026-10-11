@@ -1,0 +1,92 @@
+name: Chunk graph barrel twenty-edit pairs
+on:
+  push:
+    branches: ['bench/chunk-graph-barrel-paired']
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_CI_DEBUG: 0
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 24
+      - name: Environment
+        run: |
+          mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,paired,binaries}
+          echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
+          echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
+          echo "FIX_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "BASELINE_SHA=f2903b6482cb7a0fcdca912d23062bd94d3d5636" >> "$GITHUB_ENV"
+          cp crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs .spider/scratch/chunk-graph-barrel/candidate.rs
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-graph-barrel-ci
+          use-cache: true
+          save-if: true
+      - name: Matched baseline and candidate source bindings
+        run: |
+          set -euo pipefail
+          cargo codegen
+          pnpm run build:js
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/paired/build-fix.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/fix.node
+          git show "$BASELINE_SHA:crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs" > crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/paired/build-main.log
+          grep 'Compiling rspack_core ' .spider/scratch/chunk-graph-barrel/paired/build-main.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/main.node
+      - name: Twenty-edit baseline and reuse pairs
+        run: |
+          set -euo pipefail
+          for split in 0 1; do
+            for pair in 1 2 3 4 5; do
+              order='main fix'
+              if (( pair % 2 == 0 )); then order='fix main'; fi
+              for variant in $order; do
+                binary="$PWD/.spider/scratch/chunk-graph-barrel/binaries/$variant.node"
+                VARIANT="$variant" SPLIT="$split" NAPI_RS_NATIVE_LIBRARY_PATH="$binary" NATIVE_SHA="$(sha256sum "$binary" | cut -d' ' -f1)" FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/paired/$split-$pair-$variant.json" node --expose-gc scripts/bench/chunk-graph-barrel/measure.mjs
+              done
+            done
+          done
+          python3 scripts/bench/chunk-graph-barrel/summarize.py .spider/scratch/chunk-graph-barrel/paired
+      - name: Build previous-release and stacked reuse bindings
+        run: |
+          set -euo pipefail
+          git apply scripts/bench/chunk-graph-barrel/drop-previous.patch
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/paired/build-drop.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/drop.node
+          cp .spider/scratch/chunk-graph-barrel/candidate.rs crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/paired/build-stack.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/stack.node
+      - name: Twenty-edit reuse on previous-release pairs
+        run: |
+          set -euo pipefail
+          for split in 0 1; do
+            for pair in 1 2 3 4 5; do
+              order='drop stack'
+              if (( pair % 2 == 0 )); then order='stack drop'; fi
+              for variant in $order; do
+                binary="$PWD/.spider/scratch/chunk-graph-barrel/binaries/$variant.node"
+                VARIANT="$variant" SPLIT="$split" NAPI_RS_NATIVE_LIBRARY_PATH="$binary" NATIVE_SHA="$(sha256sum "$binary" | cut -d' ' -f1)" FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/paired/$split-$pair-$variant.json" node --expose-gc scripts/bench/chunk-graph-barrel/measure.mjs
+              done
+            done
+          done
+          BASE_VARIANT=drop FIX_VARIANT=stack python3 scripts/bench/chunk-graph-barrel/summarize.py .spider/scratch/chunk-graph-barrel/paired
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: barrel-twenty-edit-pairs
+          path: .spider/scratch/chunk-graph-barrel/paired
+          if-no-files-found: error

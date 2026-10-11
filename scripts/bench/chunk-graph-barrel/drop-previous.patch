@@ -1,0 +1,31 @@
+diff --git a/crates/rspack_core/src/artifacts/incremental_artifacts.rs b/crates/rspack_core/src/artifacts/incremental_artifacts.rs
+index e7e8c31c4c..b9d460ed8c 100644
+--- a/crates/rspack_core/src/artifacts/incremental_artifacts.rs
++++ b/crates/rspack_core/src/artifacts/incremental_artifacts.rs
+@@ -27,6 +27,10 @@ impl IncrementalArtifacts {
+     self.previous_compilation = Some(compilation);
+   }
+ 
++  pub(crate) fn release_previous_compilation(&mut self) {
++    self.previous_compilation = None;
++  }
++
+   pub(crate) fn recover(&mut self, passes: IncrementalPasses, compilation: &mut Compilation) {
+     if passes.contains(IncrementalPasses::BUILD_CHUNK_GRAPH)
+       && BuildChunkGraphArtifact::should_recover(&compilation.incremental)
+diff --git a/crates/rspack_core/src/compiler/rebuild.rs b/crates/rspack_core/src/compiler/rebuild.rs
+index ff832978fb..9ec19b965f 100644
+--- a/crates/rspack_core/src/compiler/rebuild.rs
++++ b/crates/rspack_core/src/compiler/rebuild.rs
+@@ -46,6 +46,11 @@ impl Compiler {
+       }
+     };
+     self.store_cache_metadata();
++    if result.is_ok() && self.compilation.get_errors().next().is_none() {
++      // Recovery is complete. Keep the chunk graph snapshot for the next rebuild,
++      // but release the previous compilation's unrecovered data between edits.
++      self.incremental_artifacts.release_previous_compilation();
++    }
+     result
+   }
+ 

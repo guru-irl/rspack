@@ -63,8 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           cp .spider/scratch/chunk-graph-barrel/candidate.rs crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
-          git diff f2903b6482 e5b0fa7714f97865e8b99e8b36bc255d6492d1c0 -- crates/rspack_core/src/artifacts/incremental_artifacts.rs crates/rspack_core/src/compiler/rebuild.rs > .spider/scratch/chunk-graph-barrel/drop-previous.patch
-          git apply .spider/scratch/chunk-graph-barrel/drop-previous.patch
+          git apply scripts/bench/chunk-graph-barrel/drop-previous.patch
           pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/memory/build-stack.log
           cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/stack.node
       - name: Release-stack 20-edit curves

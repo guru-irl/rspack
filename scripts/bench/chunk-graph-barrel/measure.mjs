@@ -32,6 +32,12 @@ const compiler = api.rspack({
   stats: { all: false, errors: true, warnings: true, logging: 'verbose', loggingDebug: [/rspack\./] },
   infrastructureLogging: { level: 'error' },
 });
+const memory = () => {
+  const status = fs.readFileSync('/proc/self/status', 'utf8');
+  const field = name => Number(status.match(new RegExp(`^${name}:\\s+(\\d+)`, 'm'))?.[1] || 0) * 1024;
+  return { rss: process.memoryUsage().rss, rssAnon: field('RssAnon'), peakRss: field('VmHWM'), heapUsed: process.memoryUsage().heapUsed };
+};
+const gc = async () => { await new Promise(a => setImmediate(a)); global.gc(); await new Promise(a => setImmediate(a)); global.gc(); };
 let start, label = 'cold', resolve, reject;
 const records = [];
 const next = () => new Promise((a, b) => { resolve = a; reject = b; });
@@ -39,7 +45,7 @@ compiler.hooks.watchRun.tap('Timing', () => { start = performance.now(); });
 let completion = next();
 const watch = compiler.watch({ aggregateTimeout: 20 }, (error, stats) => {
   const wallMs = performance.now() - start;
-  const rss = process.memoryUsage().rss;
+  const doneMemory = memory();
   if (error) return reject(error);
   try {
     if (stats.hasErrors() || stats.hasWarnings()) throw new Error(stats.toString({ all: false, errors: true, warnings: true }));
@@ -51,31 +57,35 @@ const watch = compiler.watch({ aggregateTimeout: 20 }, (error, stats) => {
       if (!disk.equals(source)) throw new Error(`Emitted bytes differ: ${asset.name}`);
       outputs[asset.name] = crypto.createHash('sha256').update(disk).digest('hex');
     }
-    records.push({ label, wallMs, rss, peakRss: process.resourceUsage().maxRSS * 1024, logging, outputs });
+    records.push({ label, wallMs, ...doneMemory, logging, outputs });
     resolve();
   } catch (e) { reject(e); }
 });
 let steadyEndRss;
 try {
   await completion;
-  for (const revert of [false, true]) {
-    label = revert ? 'revert' : 'edit';
+  await gc();
+  records.at(-1).postGc = memory();
+  for (let i = 1; i <= 20; i++) {
+    label = `${i}-${i % 2 ? 'edit' : 'revert'}`;
     completion = next();
-    fs.writeFileSync(edited, revert ? original : modified);
+    fs.writeFileSync(edited, i % 2 ? modified : original);
     await completion;
+    await gc();
+    records.at(-1).postGc = memory();
   }
-  global.gc();
   steadyEndRss = process.memoryUsage().rss;
 } finally {
   await new Promise((a, b) => watch.close(e => e ? b(e) : a()));
   await new Promise((a, b) => compiler.close(e => e ? b(e) : a()));
   fs.writeFileSync(edited, original);
 }
-global.gc();
-const endRss = process.memoryUsage().rss;
+await gc();
+const end = memory();
+const endRss = end.rss;
 const peakRss = process.resourceUsage().maxRSS * 1024;
 fs.mkdirSync(path.dirname(result), { recursive: true });
-fs.writeFileSync(result, JSON.stringify({ variant, split, records, steadyEndRss, endRss, peakRss,
+fs.writeFileSync(result, JSON.stringify({ variant, split, records, steadyEndRss, endRss, peakRss, end,
   environment: { node: process.version, apiVersion: api.rspackVersion, cpu: os.cpus()[0].model, cpus: os.cpus().length,
     memory: os.totalmem(), image: process.env.ImageVersion, platform: process.platform, arch: process.arch,
     baseline: process.env.BASELINE_SHA, fix: process.env.FIX_SHA, nativeSHA: process.env.NATIVE_SHA } }));
