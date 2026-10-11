@@ -1,0 +1,84 @@
+name: Allocator Release Reproduction
+run-name: Allocator release ${{ inputs.os || 'ubuntu-24.04' }} ${{ inputs.package || '2.2.8' }} ${{ inputs.arm || 'baseline' }} ${{ inputs.launches || '2' }} launches
+on:
+  push:
+    branches: [bench/alloc-release-repro]
+    paths: [.github/workflows/alloc-release-repro.yml, scripts/alloc-release-repro/**]
+  workflow_dispatch:
+    inputs:
+      os:
+        type: choice
+        options: [ubuntu-24.04, macos-15, windows-latest]
+        default: ubuntu-24.04
+      package:
+        type: string
+        default: '2.2.8'
+        description: 'Exact public core version, or canary for current published canary'
+      launches:
+        type: string
+        default: '20'
+      lines:
+        type: string
+        default: '24'
+      arm:
+        type: choice
+        options: [baseline, purge-zero, no-reclaim-on-free, stats]
+        default: baseline
+permissions:
+  contents: read
+jobs:
+  measure:
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ${{ inputs.os || 'ubuntu-24.04' }}
+    timeout-minutes: 180
+    env:
+      MODULE_COUNT: '45000'
+      MODULE_LINES: ${{ inputs.lines || '24' }}
+      PACKAGE_SPEC: ${{ inputs.package || '2.2.8' }}
+      LAUNCHES: ${{ inputs.launches || '2' }}
+      ARM: ${{ inputs.arm || 'baseline' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install public published package and record provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/alloc-release/package .spider/scratch/alloc-release/results
+          cd .spider/scratch/alloc-release/package
+          echo '{"private":true,"name":"public-allocator-repro","version":"1.0.0"}' > package.json
+          VERSION="$PACKAGE_SPEC"
+          if [ "$VERSION" = canary ]; then
+            VERSION="$(npm view @rspack/core dist-tags.canary --registry=https://registry.npmjs.org)"
+          fi
+          test -n "$VERSION"
+          npm view "@rspack/core@$VERSION" version gitHead dist --json --registry=https://registry.npmjs.org > ../results/core-provenance.json
+          npm view "@rspack/binding@$VERSION" version gitHead dist --json --registry=https://registry.npmjs.org > ../results/binding-provenance.json
+          npm install --save-exact --registry=https://registry.npmjs.org "@rspack/core@$VERSION"
+          npm ls --all --json > ../results/npm-tree.json
+          cp package-lock.json ../results/package-lock.json
+          python -m pip install psutil==7.0.0
+      - name: Generate and measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/alloc-release-repro/generate.cjs .spider/scratch/alloc-release/fixture
+          cp .spider/scratch/alloc-release/fixture/fixture.json .spider/scratch/alloc-release/results/
+          python scripts/alloc-release-repro/measure.py \
+            --package .spider/scratch/alloc-release/package \
+            --fixture .spider/scratch/alloc-release/fixture \
+            --results .spider/scratch/alloc-release/results \
+            --launches "$LAUNCHES" --arm "$ARM"
+      - name: Upload raw timelines and provenance, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alloc-release-${{ runner.os }}-${{ inputs.package || '2.2.8' }}-${{ inputs.arm || 'baseline' }}-${{ github.run_id }}
+          path: .spider/scratch/alloc-release/results
+          retention-days: 30
