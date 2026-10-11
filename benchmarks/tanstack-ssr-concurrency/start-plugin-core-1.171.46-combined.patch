@@ -64,7 +64,7 @@
 +						});
 +					});
 +					compiler.hooks.done.tap("TanStackStartResolverWriteCheck", () => {
-+						if (lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) setImmediate(() => compiler.watching?.invalidate());
++						if (lastBuiltResolverRevision >= 0 && lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) setImmediate(() => compiler.watching?.invalidate());
 +					});
  					compiler.hooks.finishMake.tapPromise({
  						name: "TanStackStartServerFnResolverRebuild",
@@ -96,7 +96,7 @@
 +								});
 +							});
 +							compiler.hooks.done.tap("TanStackStartResolverWriteCheck", () => {
-+								if (lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) setImmediate(() => compiler.watching?.invalidate());
++								if (lastBuiltResolverRevision >= 0 && lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) setImmediate(() => compiler.watching?.invalidate());
 +							});
  							compiler.hooks.finishMake.tapPromise({
  								name: "TanStackStartRscServerFnResolverRebuild",
