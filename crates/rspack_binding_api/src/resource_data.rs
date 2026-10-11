@@ -1,6 +1,4 @@
-use std::{
-  sync::{Arc, Weak},
-};
+use std::sync::{Arc, Weak};
 
 use napi::{
   Env, JsValue,
@@ -58,7 +56,6 @@ impl ReadonlyResourceData {
 pub struct ReadonlyResourceDataWrapper {
   i: Arc<rspack_core::ResourceData>,
 }
-
 
 impl ToNapiValue for ReadonlyResourceDataWrapper {
   unsafe fn to_napi_value(

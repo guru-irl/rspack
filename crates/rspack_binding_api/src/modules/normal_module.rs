@@ -1,6 +1,9 @@
 use napi::{
   CallContext, Either, JsObject, JsString, NapiRaw,
-  bindgen_prelude::{FnArgs, FromNapiValue, FromNapiMutRef, Function, JavaScriptClassExt, JsObjectValue, Object, ToNapiValue},
+  bindgen_prelude::{
+    FnArgs, FromNapiMutRef, FromNapiValue, Function, JavaScriptClassExt, JsObjectValue, Object,
+    ToNapiValue,
+  },
 };
 use rspack_collections::Identifiable;
 use rspack_core::{ResourceData, ResourceParsedData, parse_resource};
@@ -45,12 +48,17 @@ impl NormalModule {
         });
         // The eager loader snapshot contains only two varying strings. Transfer
         // them together; the installer recreates the same seven own data fields.
-        let loaders = module.loaders().iter().map(|loader| {
-          let identifier = loader.identifier().as_str();
-          let (loader_type, request) = identifier.split_once('|').unwrap_or(("", identifier));
-          (request, loader_type)
-        }).collect::<Vec<_>>();
-        let loaders = serde_json::to_string(&loaders).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        let loaders = module
+          .loaders()
+          .iter()
+          .map(|loader| {
+            let identifier = loader.identifier().as_str();
+            let (loader_type, request) = identifier.split_once('|').unwrap_or(("", identifier));
+            (request, loader_type)
+          })
+          .collect::<Vec<_>>();
+        let loaders = serde_json::to_string(&loaders)
+          .map_err(|error| napi::Error::from_reason(error.to_string()))?;
         let loaders = env.create_string(&loaders)?;
 
         Ok((
@@ -73,27 +81,60 @@ impl NormalModule {
     let derived = Self::shared_properties(env)?;
     let base_descriptors: Object = base.get_named_property("descriptors")?;
     let derived_descriptors: Object = derived.get_named_property("descriptors")?;
-    let install: Function<FnArgs<(Object, napi::JsString, napi::JsString, napi::JsString, napi::JsString, Object, napi::JsString, napi::JsString, Object, Object, Object, napi::JsString, napi::Unknown)>, ()> =
-      match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
-        Some(_) => derived.get_named_property("install")?,
-        None => {
-          let install: Function<napi::Unknown, ()> = env.run_script(include_str!("normal_module_install.js"))?;
-          let mut derived = derived;
-          derived.set_named_property("install", install)?;
-          derived.get_named_property("install")?
-        }
-      };
+    let install: Function<
+      FnArgs<(
+        Object,
+        napi::JsString,
+        napi::JsString,
+        napi::JsString,
+        napi::JsString,
+        Object,
+        napi::JsString,
+        napi::JsString,
+        Object,
+        Object,
+        Object,
+        napi::JsString,
+        napi::Unknown,
+      )>,
+      (),
+    > = match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
+      Some(_) => derived.get_named_property("install")?,
+      None => {
+        let install: Function<napi::Unknown, ()> =
+          env.run_script(include_str!("normal_module_install.js"))?;
+        let mut derived = derived;
+        derived.set_named_property("install", install)?;
+        derived.get_named_property("install")?
+      }
+    };
     let instance = self.into_instance(env)?;
     MODULE_IDENTIFIER_SYMBOL.with(|symbol| {
       #[allow(clippy::unwrap_used)]
       let symbol = unsafe {
-        napi::Unknown::from_napi_value(env.raw(), ToNapiValue::to_napi_value(env.raw(), symbol.get().unwrap())?)?
+        napi::Unknown::from_napi_value(
+          env.raw(),
+          ToNapiValue::to_napi_value(env.raw(), symbol.get().unwrap())?,
+        )?
       };
-      install.call((
-        instance.as_object(env), resource, request, user_request, raw_request,
-        resource_resolve_data, loaders, module_type, derived_descriptors,
-        base_descriptors, Object::new(env)?, identifier, symbol,
-      ).into())
+      install.call(
+        (
+          instance.as_object(env),
+          resource,
+          request,
+          user_request,
+          raw_request,
+          resource_resolve_data,
+          loaders,
+          module_type,
+          derived_descriptors,
+          base_descriptors,
+          Object::new(env)?,
+          identifier,
+          symbol,
+        )
+          .into(),
+      )
     })?;
     Ok(instance)
   }

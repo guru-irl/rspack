@@ -206,30 +206,29 @@ fn module_build_info_setter(ctx: CallContext) -> napi::Result<()> {
 
 pub(crate) fn module_shared_properties(env: &Env) -> napi::Result<Object<'_>> {
   get_shared_properties::<Module>(env, || {
-      Ok(vec![
-        Property::new()
-          .with_utf8_name("context")?
-          .with_getter(module_context_getter),
-        Property::new()
-          .with_utf8_name("layer")?
-          .with_getter(module_layer_getter),
-        Property::new()
-          .with_utf8_name("useSourceMap")?
-          .with_getter(module_use_source_map_getter),
-        Property::new()
-          .with_utf8_name("useSimpleSourceMap")?
-          .with_getter(module_use_simple_source_map_getter),
-        Property::new()
-          .with_utf8_name("factoryMeta")?
-          .with_getter(module_factory_meta_getter)
-          .with_setter(module_factory_meta_setter),
-        Property::new()
-          .with_utf8_name("buildInfo")?
-          .with_getter(module_build_info_getter)
-          .with_setter(module_build_info_setter),
-      ])
+    Ok(vec![
+      Property::new()
+        .with_utf8_name("context")?
+        .with_getter(module_context_getter),
+      Property::new()
+        .with_utf8_name("layer")?
+        .with_getter(module_layer_getter),
+      Property::new()
+        .with_utf8_name("useSourceMap")?
+        .with_getter(module_use_source_map_getter),
+      Property::new()
+        .with_utf8_name("useSimpleSourceMap")?
+        .with_getter(module_use_simple_source_map_getter),
+      Property::new()
+        .with_utf8_name("factoryMeta")?
+        .with_getter(module_factory_meta_getter)
+        .with_setter(module_factory_meta_setter),
+      Property::new()
+        .with_utf8_name("buildInfo")?
+        .with_getter(module_build_info_getter)
+        .with_setter(module_build_info_setter),
+    ])
   })
-
 }
 
 pub(crate) fn define_module_properties(
