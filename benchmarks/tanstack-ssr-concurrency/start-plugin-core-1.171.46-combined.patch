@@ -66,15 +66,6 @@
  					});
  				} });
  			});
-@@ -247,7 +285,7 @@
- 								name: "TanStackStartRscServerFnResolverRebuild",
- 								stage: -10
- 							}, async (compilation) => {
--								const resolverContent = virtualModuleState.generateCurrentResolverContent(true);
-+								const resolverRevision = virtualModuleState.getResolverWriteRevision(serverFnProviderEnv);
- 								virtualModuleState.tryUpdateServerFnResolver(resolverContent);
- 								await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
- 							});
 @@ -272,7 +310,60 @@
  					devServerRef = server;
  				});
@@ -152,15 +143,6 @@
  			});
  			if (api.context.action === "build") api.onAfterBuild(async () => {
  				const { startConfig } = getConfig();
-@@ -345,7 +443,7 @@
- 			});
- 		}));
- 	}
--	return rebuilds.length === 0 ? Promise.resolve() : Promise.all(rebuilds).then(() => void 0);
-+	return rebuilds.length === 0 ? Promise.resolve(false) : Promise.all(rebuilds).then(() => true);
- }
- /**
- * Return the realpath of every packages/<name>/dist directory in the
 --- a/dist/esm/rsbuild/virtual-modules.js
 +++ b/dist/esm/rsbuild/virtual-modules.js
 @@ -138,6 +138,7 @@
@@ -171,15 +153,22 @@
  	const hasSeparateProviderEnvironment = !opts.rscEnabled && opts.providerEnvName !== RSBUILD_ENVIRONMENT_NAMES.server;
  	const hasSerializationAdapters = Boolean(opts.serializationAdapters?.length);
  	function isProviderEnvironment(environmentName) {
-@@ -175,6 +176,7 @@
- 			return false;
- 		}
- 		vmPlugin.writeModule(filePath, content);
-+		if (isDev && !opts.rscEnabled && filePath === paths.serverFnResolver) resolverWriteRevisionByEnvironment[environmentName] = (resolverWriteRevisionByEnvironment[environmentName] ?? 0) + 1;
- 		return true;
- 	}
- 	function flushPendingWrites(environmentName) {
-@@ -255,6 +257,9 @@
+@@ -229,6 +230,14 @@
+ 		const initialContent = getInitialContent(envName);
+ 		const VMP = utils.rspack.experiments.VirtualModulesPlugin;
+ 		const vmPlugin = new VMP(initialContent);
++		if (!opts.rscEnabled) {
++			const writeModule = vmPlugin.writeModule.bind(vmPlugin);
++			vmPlugin.writeModule = (filePath, content) => {
++				const result = writeModule(filePath, content);
++				if (isDev && filePath === paths.serverFnResolver) resolverWriteRevisionByEnvironment[envName] = (resolverWriteRevisionByEnvironment[envName] ?? 0) + 1;
++				return result;
++			};
++		}
+ 		vmPlugins[envName] = vmPlugin;
+ 		readyVmPlugins[envName] = false;
+ 		config.plugins.push(vmPlugin);
+@@ -255,6 +264,9 @@
  	});
  	return {
  		serverFnResolverPath: paths.serverFnResolver,
@@ -189,13 +178,3 @@
  		manifestPath: paths.manifest,
  		vmPlugins,
  		generateCurrentResolverContent(forProvider) {
-@@ -292,8 +297,7 @@
- 			if (hasSeparateProviderEnvironment) updateEnvironment(opts.providerEnvName);
- 		},
- 		tryUpdateServerFnResolver(content) {
--			lastResolverContentByEnvironment[RSBUILD_ENVIRONMENT_NAMES.server] = content;
--			tryWriteModule(RSBUILD_ENVIRONMENT_NAMES.server, paths.serverFnResolver, content);
-+			writeResolverContent(RSBUILD_ENVIRONMENT_NAMES.server, content);
- 		},
- 		getVirtualPath(moduleId) {
- 			return virtualPath(root, moduleId);

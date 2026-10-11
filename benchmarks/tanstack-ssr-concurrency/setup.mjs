@@ -34,7 +34,7 @@ const execute=(arm,scenario,index)=>{
   const apply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',patchFile],{cwd:pkg,encoding:'utf8'});
   fs.writeFileSync(path.join(result,'patch-apply.log'),apply.stdout+apply.stderr); assert.equal(apply.status,0,'pristine dist patch applies');assert.ok(!/offset|fuzz|FAILED/i.test(apply.stdout+apply.stderr),'clean apply without offsets or fuzz');
  }
- const expected=arm==='stock'?{ 'plugin.js':'c892ae8404c1e30a2f409fcf1890713453fd465b9a515a5d5a8e685160d1e63b','virtual-modules.js':'8b1aca7c277767ae7a84cb63057b34d4e2dc1b7b90e150a2bb9cf47a4c3bc8a6' }:{ 'plugin.js':'56bd14547f2699be2254e2e5b3fd87b056fe03f44bb51394addfb1b1bf66ea70','virtual-modules.js':'34f09ce17dd6cfef606c8a30f3b651df92f45fc4dcb278251fefee5727690ddb' };
+ const expected=arm==='stock'?{ 'plugin.js':'c892ae8404c1e30a2f409fcf1890713453fd465b9a515a5d5a8e685160d1e63b','virtual-modules.js':'8b1aca7c277767ae7a84cb63057b34d4e2dc1b7b90e150a2bb9cf47a4c3bc8a6' }:{ 'plugin.js':'7facb464609413c2878889abc0dd413cc8a1fe1655a8a620b768ac8d0852146f','virtual-modules.js':'186d9992310fd77ebd06b91419c2de95029e67919d2ab29e1ff069da0e3984d0' };
  for(const file of ['plugin.js','virtual-modules.js']) {
   if(arm!=='v2')assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,file))).digest('hex'),expected[file],`${file}: pristine/patched output byte-for-byte hash`);
   const checked=spawnSync('node',['--check',path.join(dist,file)],{encoding:'utf8'});
