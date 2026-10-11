@@ -33,7 +33,11 @@ const probe = { name: 'watch-observer', setup(api) {
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
         active.add(environment.name); event(environment.name, 'watchRun');
       });
+      compiler.hooks.make.tap({name:'WatchMakeObserver',stage:-10000},()=>event(environment.name,'make'));
+      compiler.hooks.finishMake.tap({name:'WatchMakeObserver',stage:10000},()=>event(environment.name,'finishMake'));
       compiler.hooks.thisCompilation.tap('WatchObserver', compilation => {
+        compilation.hooks.seal.tap('WatchSealObserver',()=>event(environment.name,'seal'));
+        compilation.hooks.afterSeal.tap('WatchSealObserver',()=>event(environment.name,'afterSeal'));
         const record = { step, name: environment.name, rebuilt: [], built: [], errors: [], modules: {}, assets: [] };
         current.set(environment.name, record);
         const original = compilation.rebuildModule.bind(compilation);
@@ -164,7 +168,13 @@ try {
   await sample(base,'Public leaf baseline');
   const cold={ ssrReadyMs: readyTime-started, firstSsrDoneMs:events.find(e=>e.name==='ssr'&&e.kind==='done').t-started, finalReadyMs: events.filter(e=>e.kind==='done').at(-1).t-started, peakRss:peak, arm };
   fs.writeFileSync(path.join(out,'cold.json'),JSON.stringify(cold,null,2));
-  if (scenario==='cold') {}
+  if (scenario==='red-after-make') {
+    const e=events.filter(e=>e.step==='initial');
+    const clientFinish=e.find(x=>x.name==='client'&&x.kind==='finishMake').t;
+    const clientDone=e.find(x=>x.name==='client'&&x.kind==='done').t;
+    const ssrMake=e.find(x=>x.name==='ssr'&&x.kind==='make').t;
+    assert.ok(ssrMake>=clientFinish && ssrMake<clientDone,'after-make starts SSR make between client finishMake and done');
+  } else if (scenario==='cold') {}
   else if (scenario==='red-recovery') {
     step='resolver-recovery'; peak=process.memoryUsage().rss; lastEvent=now();
     globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("stale resolver") }\n');
