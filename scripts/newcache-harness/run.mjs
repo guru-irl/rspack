@@ -7,6 +7,8 @@ import readline from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 const require = createRequire(import.meta.url);
 const [phase, output] = process.argv.slice(2);
+const seedOnly = phase === 'cold';
+let modules = null;
 const root = path.resolve(process.env.PROJECT);
 const { rspack } = await import(
   pathToFileURL(path.resolve(process.env.RSPACK_CORE)).href
@@ -40,6 +42,7 @@ process.on('exit', () => {
   if (!complete) process.exitCode = 2;
 });
 const checkpoint = () => {
+  if (seedOnly) return {};
   const cpu = process.cpuUsage(cpuStart);
   return {
     wall_ms: performance.now() - start,
@@ -47,6 +50,7 @@ const checkpoint = () => {
   };
 };
 function memory() {
+  if (seedOnly) return {};
   if (native) return native.sample();
   if (process.platform === 'win32') return {}; // Parent samples exact kernel counters at the marker.
   return Object.fromEntries(
@@ -65,8 +69,8 @@ async function anchor(name, gc = false) {
   }
   const value = { name, ...checkpoint(), memory: memory() };
   anchors.push(value);
-  console.log(JSON.stringify({ marker: name, ...value }));
-  if (process.env.PARENT_SAMPLER === '1')
+  if (!seedOnly) console.log(JSON.stringify({ marker: name, ...value }));
+  if (!seedOnly && process.env.PARENT_SAMPLER === '1')
     await new Promise((resolve) => {
       ack = resolve;
     });
@@ -137,6 +141,7 @@ const config = {
         c.hooks.done.tapPromise('sanity', async (stats) => {
           if (stats.hasErrors())
             throw new Error(stats.toString({ all: false, errors: true }));
+          if (seedOnly) modules = stats.compilation.modules.size;
           done = await anchor('done');
         });
       },
@@ -164,6 +169,7 @@ if (
   throw new Error('Cache failure');
 const result = {
   phase,
+  modules,
   source: process.env.SOURCE_SHA,
   pid: process.pid,
   anchors,

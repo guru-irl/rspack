@@ -18,8 +18,12 @@ results = Path(os.environ['HARNESS_RESULTS']).resolve()
 results.mkdir(parents=True, exist_ok=True)
 project = work/'project'
 seeds = work/'seeds'
-if seeds.exists(): raise RuntimeError('Use a fresh work directory for independent seeds')
-seeds.mkdir(parents=True)
+prepare = '--prepare' in sys.argv
+if prepare:
+    if seeds.exists(): raise RuntimeError('Use a fresh work directory for independent seeds')
+    seeds.mkdir(parents=True)
+elif not seeds.exists():
+    raise RuntimeError('Prepare closed cold seeds before acquiring the measurement lock')
 cores = {arm:Path(os.environ['CORE_'+arm]).resolve() for arm in ['A','B']}
 for sha in config['arms'].values():
     if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha): raise ValueError('Full source SHA required')
@@ -36,6 +40,12 @@ def run(arm, phase, name):
     host_samples.append(info)
     (results/'host-samples.json').write_text(json.dumps(host_samples))
     env = dict(os.environ, PROJECT=str(project), RSPACK_CORE=str(cores[arm]), SOURCE_SHA=config['arms'][arm], PARENT_SAMPLER='1')
+    if phase == 'cold':
+        env['PARENT_SAMPLER']='0'
+        out=results/(name+'.json')
+        with out.with_suffix('.log').open('w') as log:
+            subprocess.run(['node','--expose-gc',str(HERE/'run.mjs'),phase,str(out)],env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=240)
+        return json.loads(out.read_text())
     return measure(['node','--expose-gc',str(HERE/'run.mjs'),phase,str(results/(name+'.json'))], results/(name+'.json'), env)
 
 def preread():
@@ -53,15 +63,21 @@ def validate(result, reference):
         expected = ['RssAnon','VmHWM'] if sys.platform.startswith('linux') else ['phys_footprint','peak_phys_footprint'] if sys.platform=='darwin' else ['private_bytes','peak_commit','working_set','peak_working_set']
         if any(k not in a['memory'] for k in expected): raise RuntimeError('Missing memory counter')
 
-subprocess.run(['node',str(HERE/'gen.mjs'),str(config['modules'])],env=dict(os.environ,PROJECT=str(project)),check=True)
-reference = None
-for arm in ['A','B']:
-    if (project/'dist').exists():shutil.rmtree(project/'dist')
-    if (project/'cache').exists(): shutil.rmtree(project/'cache')
-    result = run(arm,'cold','seed-'+arm)
-    if reference is None: reference=result['outputs']
-    validate(result,reference)
-    shutil.copytree(project/'cache',seeds/arm,copy_function=shutil.copy2)
+if prepare:
+    subprocess.run(['node',str(HERE/'gen.mjs'),str(config['modules'])],env=dict(os.environ,PROJECT=str(project)),check=True)
+    reference = None
+    for arm in ['A','B']:
+        if (project/'dist').exists():shutil.rmtree(project/'dist')
+        if (project/'cache').exists():shutil.rmtree(project/'cache')
+        result = run(arm,'cold','seed-'+arm)
+        if reference is None: reference=result['outputs']
+        if result['outputs'] != reference:raise RuntimeError('Cold byte-identical output parity failed')
+        if result['modules'] != config['modules'] + config['modules']//5 + 61:raise RuntimeError('Unexpected compiled module count')
+        shutil.copytree(project/'cache',seeds/arm,copy_function=shutil.copy2)
+    (work/'reference.json').write_text(json.dumps(reference))
+    print('Cold seeds prepared and closed; no timing/memory samples taken')
+    sys.exit(0)
+reference=json.loads((work/'reference.json').read_text())
 
 for kind,n in [('AA',config['aa_pairs']),('AB',config['pairs'])]:
     for pair in range(n):

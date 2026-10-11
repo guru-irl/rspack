@@ -45,6 +45,9 @@ for arm,sha in config['arms'].items():
  if env.get('CARGO_TARGET_DIR'): targets.append(Path(env['CARGO_TARGET_DIR']))
  for target in targets:
   if target.exists(): shutil.rmtree(target)
+ if os.environ.get('SHARED_MAIN_RECORD') and arm=='A' and sha=='f2903b6482cb7a0fcdca912d23062bd94d3d5636':
+  record=Path(os.environ['SHARED_MAIN_RECORD']);record.parent.mkdir(parents=True,exist_ok=True)
+  record.write_text('runtime_path='+str(source)+'\nsource_sha='+sha+'\nidle_patch_sha256='+provenance['patch_sha256']+'\nbinding_sha256='+provenance['arms'][arm]['native_sha256']+'\ncore_path='+str(source/'packages/rspack/dist/index.js')+'\n')
  (results/'provenance.json').write_text(json.dumps(provenance,indent=2))
 (root/'cores.json').write_text(json.dumps(cores))
 if sys.platform=='darwin':

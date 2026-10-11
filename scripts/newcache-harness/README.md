@@ -6,7 +6,7 @@ Both release bindings are built within the measuring job, before any pairs. The 
 
 ## Run
 
-Use Node 22.18.0, the repository pnpm version and pinned Rust toolchain. Set `HARNESS_WORK` to an absolute, disposable directory, and `HARNESS_RESULTS` to an absolute metrics directory. Set `RUST_TARGET` to the native target. Run `python scripts/newcache-harness/launch.py scripts/newcache-harness/config.json` from the harness checkout. On Windows use native Windows paths for these environment variables. Linux builds and measurement must be coordinated separately with the machine's exclusive build/measurement controls: run `build.py` under the build lock, then `series.py` under the measurement lock with `CORE_A` and `CORE_B` from `cores.json`.
+Use Node 22.18.0, the repository pnpm version and pinned Rust toolchain. Set `HARNESS_WORK` to an absolute, disposable directory, and `HARNESS_RESULTS` to an absolute metrics directory. Set `RUST_TARGET` to the native target. Run `python scripts/newcache-harness/launch.py scripts/newcache-harness/config.json` from the harness checkout. On Windows use native Windows paths for these environment variables. Linux builds and measurement must be coordinated separately with the machine's exclusive build/measurement controls: run `build.py` under the build lock, then `series.py --prepare` under the build lock to create untimed fixtures/closed seeds, followed by `series.py` under the measurement lock with `CORE_A` and `CORE_B` from `cores.json`.
 
 The generator is copied from `scripts/newcache-parity/gen.mjs`. Only its output path and Windows-compatible file-URL decoding change. Source and generator hashes, binding sizes/hashes, tools, host and exact arms are saved in `provenance.json`.
 
