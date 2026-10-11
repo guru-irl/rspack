@@ -22,7 +22,8 @@ python3 benchmarks/spin-memory-gate/analyze.py \
 Four excluded warmups precede ten OFF/SPIN pairs and ten OFF/OFF pairs.
 The treatment/control block order and each pair's launch order alternate.
 Each launch creates a new Node process, performs a cold watch build and six
-leaf edit/revert builds, pausing one second between edits. OFF removes both spin
+leaf edit/revert builds, pausing one second between edits. File events use a 200 ms coalescing window;
+bundle output directories are explicitly ignored to avoid self-invalidation. OFF removes both spin
 variables before startup; SPIN sets rounds=2048 and mode=yield before startup.
 Pool sizes use the runner defaults and remain unchanged across arms.
 

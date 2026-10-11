@@ -65,6 +65,7 @@ let pending;
 let unexpected;
 try {
   const { rspack } = await import(pathToFileURL(path.resolve(coreArg, 'dist/index.js')).href);
+  const invalidations = [];
   compiler = rspack({
     name: 'wake-memory', context: src, mode: 'development', devtool: false, cache: false,
     entry: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`entry${i}`, `./entry${i}.js`])),
@@ -72,6 +73,9 @@ try {
     optimization: { minimize: false, concatenateModules: false, inlineExports: false, usedExports: false,
       splitChunks: { chunks: 'all', minSize: 20000, maxInitialRequests: Infinity,
         maxAsyncRequests: Infinity, cacheGroups: groupsFor({ test: 0, name: 0, chunks: 0 }) } },
+  });
+  compiler.hooks.invalid.tap('MemoryGateDiagnostics', (file, time) => {
+    invalidations.push({ file, time, elapsedMs: performance.now() - wallStart });
   });
   let baseline;
   const nextBuild = phase => new Promise((resolve, reject) => {
@@ -91,10 +95,10 @@ try {
       ...doneMemory, cacheGroupsMs: cacheGroupsMs(stats) });
   };
   const first = nextBuild('cold');
-  watching = compiler.watch({ aggregateTimeout: 0 }, (error, stats) => {
+  watching = compiler.watch({ aggregateTimeout: 200, ignored: /[\\/](?:dist|node_modules|\.git)[\\/]/ }, (error, stats) => {
     const waiter = pending;
     pending = undefined;
-    if (!waiter) { unexpected = error?.stack || 'Unexpected compilation'; return; }
+    if (!waiter) { unexpected = error?.stack || `Unexpected compilation: ${JSON.stringify(invalidations.slice(-10))}; modified=${JSON.stringify([...(compiler.modifiedFiles || [])])}`; return; }
     if (error) waiter.reject(error);
     else if (!stats) waiter.reject(new Error('Missing stats'));
     else waiter.resolve(stats);

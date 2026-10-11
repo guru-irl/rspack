@@ -3,12 +3,18 @@ run-name: Spin memory gate (${{ github.sha }})
 
 on:
   workflow_dispatch:
+    inputs:
+      binding_run_id:
+        description: Reuse identical production binding from an earlier build run
+        type: string
+        default: ''
   # Register the branch-only workflow; push jobs are skipped.
   push:
     branches: [bench/spin-memory-gate]
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: spin-memory-gate-${{ github.ref }}
@@ -16,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.repository == 'guru-irl/rspack' && github.event_name == 'workflow_dispatch'
+    if: github.repository == 'guru-irl/rspack' && github.event_name == 'workflow_dispatch' && inputs.binding_run_id == ''
     name: Release binding (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -68,7 +74,7 @@ jobs:
           retention-days: 7
 
   measure:
-    if: github.repository == 'guru-irl/rspack' && github.event_name == 'workflow_dispatch'
+    if: always() && github.repository == 'guru-irl/rspack' && github.event_name == 'workflow_dispatch' && (needs.build.result == 'success' || needs.build.result == 'skipped')
     needs: build
     name: Memory pairs (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -93,6 +99,8 @@ jobs:
         with:
           name: spin-memory-binding-${{ matrix.os }}
           path: crates/node_binding
+          run-id: ${{ inputs.binding_run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - run: pnpm --filter @rspack/core build
       - name: Measure 10 alternating treatment and 10 control pairs
         run: node benchmarks/spin-memory-gate/run.mjs .spider/scratch/spin-memory-gate/results
