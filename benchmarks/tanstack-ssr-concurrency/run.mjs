@@ -57,6 +57,7 @@ const probe = { name: 'watch-observer', setup(api) {
       compiler.hooks.done.tap({ name: 'WatchObserver', stage: 10000 }, stats => {
         const record = current.get(environment.name);
         record.ms = stats.endTime - stats.startTime;
+        record.hash=stats.hash;
         record.errors = stats.toJson({ all: false, errors: true }).errors;
         record.generated = normalize(globalThis.__watchVirtualState?.generateCurrentResolverContent(true) ?? '');
         builds.push(record); active.delete(environment.name); event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
@@ -184,9 +185,10 @@ try {
   } else {
     const edits=scenario==='warm'?10:scenario==='red-overlap'?1:2;
     for(let i=1;i<=edits;i++) await edit(`leaf-${i}`,'src/Leaf.tsx',i%2?baselineLeaf.replace('baseline','changed'):baselineLeaf,base,i%2?'Public leaf changed':'Public leaf baseline');
-    if(scenario==='correctness') {
+    if(scenario==='correctness' || scenario==='aa-route') {
       const route=`import { createFileRoute } from '@tanstack/react-router';\nimport * as functions from '../functions';\nimport { Page } from '../Page';\nexport const Route = createFileRoute('/extra')({ loader:async()=>Object.fromEntries(await Promise.all(Object.entries(functions).sort(([a],[b])=>a.localeCompare(b)).map(async([name,fn])=>[name,await fn()]))), component: () => <Page title="Extra route" /> });\n`;
       await edit('lazy-route','src/routes/extra.tsx',route,base,undefined,[],undefined,true);
+      if(scenario!=='aa-route') {
       await edit('css-import','src/Leaf.tsx',`import './extra.css';\n${baselineLeaf}`,base,undefined,[],undefined,true);
       for(const kind of ['add','rename','remove','body']) {
         for(const rapid of [false,true]) {
@@ -204,6 +206,7 @@ try {
       step='revert'; lastEvent=now(); peak=process.memoryUsage().rss;
       fs.unlinkSync('src/routes/extra.tsx'); fs.writeFileSync('src/Leaf.tsx',baselineLeaf);
       await waitIdle(2); await sample(base,'Public leaf baseline');
+      }
     }
   }
   fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,steps:checks.length}));
