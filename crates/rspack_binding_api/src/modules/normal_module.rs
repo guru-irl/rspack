@@ -45,7 +45,7 @@ impl NormalModule {
         // The eager loader snapshot contains only two varying strings. Transfer
         // them together; the installer recreates the same seven own data fields.
         let loaders = module.loaders().iter().map(|loader| {
-          let identifier = loader.identifier();
+          let identifier = loader.identifier().as_str();
           let (loader_type, request) = identifier.split_once('|').unwrap_or(("", identifier));
           (request, loader_type)
         }).collect::<Vec<_>>();
@@ -95,14 +95,6 @@ impl NormalModule {
       ).into())
     })?;
     Ok(instance)
-  }
-
-  fn define_shared_properties(env: &napi::Env, object: Object<'_>) -> napi::Result<()> {
-    let shared = Self::shared_properties(env)?;
-    let define: Function<FnArgs<(Object, Object)>, Object> = shared.get_named_property("defineProperties")?;
-    let descriptors: Object = shared.get_named_property("descriptors")?;
-    define.call((object, descriptors).into())?;
-    Ok(())
   }
 
   fn shared_properties(env: &napi::Env) -> napi::Result<Object<'_>> {
@@ -201,4 +193,4 @@ impl NormalModule {
   }
 }
 
-impl_module_methods!(NormalModule, NormalModule::define_shared_properties);
+impl_module_methods!(@methods NormalModule);

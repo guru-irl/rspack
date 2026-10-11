@@ -31,7 +31,7 @@ use crate::{
   define_symbols,
   dependency::DependencyWrapper,
   modules::{ConcatenatedModule, ContextModule, ExternalModule, NormalModule},
-  shared_properties::{define_shared_properties, get_shared_properties},
+  shared_properties::get_shared_properties,
   source::{JsSourceFromJs, JsSourceToJs},
 };
 

@@ -1,12 +1,6 @@
 #[macro_export]
 macro_rules! impl_module_methods {
   ($module:ident $(, $define_shared_properties:path)?) => {
-    impl $crate::module::DerivedModule for $module {
-      fn as_module(&mut self) -> &mut $crate::module::Module {
-        &mut self.module
-      }
-    }
-
     impl $module {
       fn new_inherited<'a>(
         self,
@@ -32,6 +26,15 @@ macro_rules! impl_module_methods {
         )?;
 
         Ok(instance)
+      }
+    }
+
+    $crate::impl_module_methods!(@methods $module);
+  };
+  (@methods $module:ident) => {
+    impl $crate::module::DerivedModule for $module {
+      fn as_module(&mut self) -> &mut $crate::module::Module {
+        &mut self.module
       }
     }
 
