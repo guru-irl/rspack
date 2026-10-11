@@ -20,7 +20,7 @@ jobs:
           node-version: '24'
           registry-url: https://registry.npmjs.org
       - name: Reproduce published stable and main canary
-        run: node benchmarks/tanstack-topology/setup.mjs
+        run: node benchmarks/tanstack-topology/gate-setup.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
