@@ -218,7 +218,7 @@ if (phase === 'watch') {
 } else {
   await new Promise((res, rej) => compiler.run((e) => (e ? rej(e) : res())));
 }
-if (phase !== 'cold') await postDone();
+if (phase === 'warm') await postDone();
 outputsByRound.push(manifest());
 await waitIdle();
 await anchor('END', true);
@@ -229,6 +229,7 @@ if (watching) {
   nextRound();
   editStart = performance.now();
   editCpu = process.cpuUsage();
+  console.log(JSON.stringify({ marker_event: 'edit_start', ...checkpoint() }));
   fs.writeFileSync(leaf, original + '\n// public synthetic edit\n');
   await pending;
   outputsByRound.push(manifest());

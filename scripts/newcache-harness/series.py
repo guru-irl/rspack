@@ -29,7 +29,7 @@ for sha in config['arms'].values():
     if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha): raise ValueError('Full source SHA required')
 records = []
 host_samples = []
-protocol=dict(post_done_gc=False,done_gc=False,completed_idle_gc=True,post_close_gc=True,actual_checkpoint_offsets=True,post_done_ms=config.get('post_done_ms',[100,500]),idle_timeout_ms=config.get('idle_timeout_ms',3000),run_sha256=hashlib.sha256((HERE/'run.mjs').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest())
+protocol=dict(post_done_gc=False,done_gc=False,completed_idle_gc=True,post_close_gc=True,actual_checkpoint_offsets=True,watch_post_done_source='external_timeline',post_done_ms=config.get('post_done_ms',[100,500]),idle_timeout_ms=config.get('idle_timeout_ms',3000),run_sha256=hashlib.sha256((HERE/'run.mjs').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest())
 (results/'measurement-protocol.json').write_text(json.dumps(protocol,indent=2))
 
 def run(arm, phase, name):
@@ -120,8 +120,9 @@ for phase in phases:
         for field in at(rows[0]['baseline'])['memory']:
             add(name+'.'+field,[at(r['candidate'])['memory'][field]-at(r['baseline'])['memory'][field] for r in rows])
     add('close_ms',[r['candidate']['close_ms']-r['baseline']['close_ms'] for r in rows])
-    for field in rows[0]['baseline'].get('sampled_peak',{}):
-        add('sampled_peak.'+field,[r['candidate']['sampled_peak'][field]-r['baseline']['sampled_peak'][field] for r in rows])
+    for peak in ['sampled_peak','rebuild_sampled_peak']:
+      for field in rows[0]['baseline'].get(peak,{}):
+        add(peak+'.'+field,[r['candidate'][peak][field]-r['baseline'][peak][field] for r in rows])
     summary[phase][kind]=metrics
 increases=[];time_increases=[]
 for phase in phases:
