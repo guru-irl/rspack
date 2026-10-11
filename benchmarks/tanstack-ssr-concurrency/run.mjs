@@ -11,6 +11,9 @@ const scenario = process.env.SCENARIO || 'correctness';
 const compilerNames=process.env.COMPILER_COUNT==='4'?['client','ssr','aux-a','aux-b']:['client','ssr'];
 const userEdges=process.env.USER_EDGES || '';
 const measuring=scenario.startsWith('warm-')||scenario==='cold-measure';
+const requestWindowEnabled=scenario==='r3-request'||scenario==='correctness';
+let windowRequest;
+let windowEvidence;
 fs.mkdirSync(out, { recursive: true });
 const now = () => performance.now();
 const pause = ms => new Promise(r => setTimeout(r, ms));
@@ -35,9 +38,14 @@ const probe = { name: 'watch-observer', setup(api) {
   api.modifyRspackConfig((config, { environment }) => {
     config.devtool = false;
     if(scenario==='r2-topology'&&environment.name==='ssr')config.dependencies=['client'];
+    if(requestWindowEnabled && environment.name==='client') {
+      const entry=config.entry.index;
+      config.entry.index=typeof entry==='string'||Array.isArray(entry)?{import:[...[entry].flat(),'./aux/request.css']}:{...entry,import:[...[entry.import].flat(),'./aux/request.css']};
+    }
     if(scenario==='no-resolver' && environment.name==='ssr') {config.entry={index:{import:['./src/no-resolver.ts']}};}
     config.plugins.push({ apply(compiler) {
       compilers.set(environment.name,compiler);
+      compiler.hooks.invalid.tap('WatchInvalidObserver',()=>event(environment.name,'invalid'));
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
         active.add(environment.name); event(environment.name, 'watchRun');
       });
@@ -54,6 +62,14 @@ const probe = { name: 'watch-observer', setup(api) {
       compiler.hooks.finishMake.tap({name:'WatchMakeObserver',stage:10000},()=>event(environment.name,'finishMake'));
       compiler.hooks.thisCompilation.tap('WatchObserver', compilation => {
         compilation.hooks.seal.tap('WatchSealObserver',()=>event(environment.name,'seal'));
+        if(requestWindowEnabled && environment.name==='client') compilation.hooks.afterSeal.tapPromise({name:'RequestWindow',stage:-10000},async()=>{
+          if(step!=='request-window'||windowRequest)return;
+          windowEvidence={started:now(),invalidSeen:events.some(e=>e.step===step&&e.name==='client'&&e.kind==='invalid')};
+          windowRequest=(async()=>{const r=await fetch('http://localhost:3100/',{signal:AbortSignal.timeout(15000)});const html=await r.text();windowEvidence.status=r.status;windowEvidence.latencyMs=now()-windowEvidence.started;windowEvidence.css=[...html.matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"/g)].map(m=>m[1]).sort();fs.writeFileSync(path.join(out,'request-window.html'),html);})();
+          // Only the client is held. Stock's graph and v3's request gate wait;
+          // v2's independent SSR bundle is otherwise immediately ready.
+          await pause(750);
+        });
         compilation.hooks.afterSeal.tap('WatchSealObserver',()=>event(environment.name,'afterSeal'));
         const record = { step, name: environment.name, rebuilt: [], built: [], errors: [], modules: {}, assets: [] };
         current.set(environment.name, record);
@@ -174,11 +190,25 @@ const edit = async (name, file, content, expected, leaf='Public leaf baseline', 
 };
 let server;
 let readyTime;
+const checkRequestWindow=async()=>{
+  const previous=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
+  assert.ok(previous.length,'client-only CSS entry exists');
+  step='request-window';lastEvent=now();
+  fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\n');
+  await waitIdle(1);assert.ok(windowRequest,'request issued during client compilation');await windowRequest;
+  const next=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
+  Object.assign(windowEvidence,{previousCSS:previous,newCSS:next,ssrPasses:builds.filter(b=>b.step===step&&b.name==='ssr').length});
+  fs.writeFileSync(path.join(out,'request-window.json'),JSON.stringify(windowEvidence,null,2));
+  assert.ok(windowEvidence.invalidSeen,'request follows client invalid');
+  assert.notDeepEqual(next,previous,'client-only CSS edit changes asset hash');
+  assert.equal(windowEvidence.status,200,'window request succeeds');
+  assert.deepEqual(windowEvidence.css,next,'window HTML references NEW CSS asset');
+};
 let readiness;
 let closeRequested=false;
 const started=now();
 try {
-  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
+  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, output:requestWindowEnabled?{filename:{css:'[name].[contenthash:8].css'}}:undefined, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   server=await rsbuild.startDevServer();
   if(['r2-close','r2-restart'].includes(scenario)) {
     const deadline=now()+10000;
@@ -240,6 +270,8 @@ try {
     fs.writeFileSync('src/functions.ts',baselineFns+"\nexport const delta=createServerFn({method:'GET'}).handler(async()=> 'delta-public');\n");
     await waitIdle(2);checkResolver(false);
     await saveEntry('resolver-readd-import',imported,true);checkResolver(true,true);
+  } else if (scenario==='r3-request') {
+    await checkRequestWindow();
   } else if (scenario==='red-after-make') {
     const e=events.filter(e=>e.step==='initial');
     const clientFinish=e.find(x=>x.name==='client'&&x.kind==='finishMake').t;
@@ -313,6 +345,7 @@ try {
       await edit('lazy-route','src/routes/extra.tsx',route,base,undefined,[],undefined,true);
       if(scenario!=='aa-route') {
       await edit('css-import','src/Leaf.tsx',`import './extra.css';\n${baselineLeaf}`,base,undefined,[],undefined,true);
+      await checkRequestWindow();
       for(const kind of ['add','rename','remove','body']) {
         for(const rapid of [false,true]) {
           const suffix=rapid?'rapid':'single';

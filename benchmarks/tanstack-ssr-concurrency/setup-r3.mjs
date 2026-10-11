@@ -73,6 +73,7 @@ const execute=(arm,scenario,index)=>{
  fs.writeFileSync(path.join(app,'src/no-resolver.ts'),'export default {fetch:async()=>new Response("generic custom entry")};\n');
  fs.writeFileSync(path.join(app,'src/extra.css'),'.generic-extra { color: rgb(20, 20, 20); }\n');
  fs.mkdirSync(path.join(app,'aux'),{recursive:true});
+  fs.writeFileSync(path.join(app,'aux/request.css'),'.generic-request { color: rgb(20, 20, 20); }\n');
   for(const name of ['aux-a','aux-b'])fs.writeFileSync(path.join(app,'aux',`${name}.js`),`document.body.textContent = 'Generic ${name}';\n`);
   fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
@@ -103,6 +104,11 @@ const parity=(results,label)=>{
  fs.writeFileSync(path.join(work,`${label}-parity.json`),JSON.stringify({passed:true,steps:22,arms:results.map(r=>r.arm)}));
 };
 const checked=(arm,scenario,index)=>{const r=execute(arm,scenario,index);assert.equal(r.status,0,`${arm} ${scenario}: correctness stop gate`);return {...r,arm};};
+if(mode==='r3-request-red') {
+ process.env.COMPILER_COUNT='2';
+ checked('stock','r3-request','stock');
+ checked('barrier','r3-request','red');process.exit(0);
+}
 if(mode==='r3-red') {
  process.env.COMPILER_COUNT='4';
  const stock=checked('stock','correctness','fixture');
