@@ -14,6 +14,8 @@ const now = () => performance.now();
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 const resolver = id => id.includes('_tanstack-start-server-fn-resolver.js');
+const deletionRequests=[];
+const pendingDeletionRequests=[];
 let step = 'initial';
 let lastEvent = now();
 let peak = process.memoryUsage().rss;
@@ -74,6 +76,14 @@ const probe = { name: 'watch-observer', setup(api) {
         record.errors = measuring ? (stats.hasErrors()?['compilation failed']:[]) : stats.toJson({ all: false, errors: true }).errors;
         record.generated = normalize(globalThis.__watchVirtualState?.generateCurrentResolverContent(true) ?? '');
         builds.push(record); active.delete(environment.name); event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
+        if(scenario==='r2b-delete' && step.startsWith('delete-') && record.errors.length) {
+          const request={step,triggerCompiler:environment.name,started:now(),triggerErrors:record.errors.map(e=>e.message)};
+          pendingDeletionRequests.push((async()=>{
+            try {const response=await fetch('http://localhost:3100/',{signal:AbortSignal.timeout(10000)});const html=await response.text();Object.assign(request,{status:response.status,lastGoodContent:html.includes('Public leaf baseline')&&html.includes('alpha-public'),errorPage:/module not found|internal server error|can't resolve/i.test(html),htmlSha256:hash(html)});}
+            catch(e){request.error=String(e);}
+            request.ended=now();deletionRequests.push(request);
+          })());
+        }
       });
       compiler.hooks.failed.tap('WatchObserver', error => { event(environment.name, 'failed', { error: String(error) }); });
     } });

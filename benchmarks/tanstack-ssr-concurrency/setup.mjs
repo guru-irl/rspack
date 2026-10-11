@@ -87,6 +87,7 @@ const execute=(arm,scenario,index)=>{
  return {result,status:run.status};
 };
 const mode=process.env.MODE || 'red';
+if(mode==='r2b-delete'){for(const arm of ['stock','barrier','after-make','overlap'])assert.equal(execute(arm,'r2b-delete',0).status,0);process.exit(0);}
 let failed=false;
 if(mode==='r2-measure') {
  const orders=[];
