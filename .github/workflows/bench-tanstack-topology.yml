@@ -1,0 +1,29 @@
+name: Bench TanStack topology
+on:
+  push:
+    branches: ['bench/tanstack-topology']
+    paths:
+      [
+        '.github/workflows/bench-tanstack-topology.yml',
+        'benchmarks/tanstack-topology/**',
+      ]
+permissions:
+  contents: read
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Reproduce published stable and main canary
+        run: node benchmarks/tanstack-topology/setup.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tanstack-topology-${{ github.run_id }}
+          path: .spider/scratch/tanstack-topology/results
+          retention-days: 14
