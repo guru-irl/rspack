@@ -2,6 +2,9 @@ name: New Cache Idle Release
 on:
   push:
     branches: [bench/newcache-b1-measure]
+concurrency:
+  group: new-cache-idle-release-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

@@ -13,13 +13,17 @@ from sample import measure
 
 HERE = Path(__file__).resolve().parent
 config = json.loads(Path(sys.argv[1]).read_text())
+mode = sys.argv[2] if len(sys.argv)>2 else 'all'
+if mode not in ['all','prepare','measure']: raise ValueError('Expected all, prepare or measure')
 work = Path(os.environ['HARNESS_WORK']).resolve()
 results = Path(os.environ['HARNESS_RESULTS']).resolve()
 results.mkdir(parents=True, exist_ok=True)
 project = work/'project'
 seeds = work/'seeds'
-if seeds.exists(): raise RuntimeError('Use a fresh work directory for independent seeds')
-seeds.mkdir(parents=True)
+if mode != 'measure':
+    if seeds.exists(): raise RuntimeError('Use a fresh work directory for independent seeds')
+    seeds.mkdir(parents=True)
+elif not (work/'seed-manifest.json').exists(): raise RuntimeError('Prepare closed seeds before requesting the measurement lock')
 cores = {arm:Path(os.environ['CORE_'+arm]).resolve() for arm in ['A','B']}
 for sha in config['arms'].values():
     if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha): raise ValueError('Full source SHA required')
@@ -59,16 +63,24 @@ def validate(result, reference):
         expected = ['RssAnon','VmHWM'] if sys.platform.startswith('linux') else ['phys_footprint','peak_phys_footprint'] if sys.platform=='darwin' else ['private_bytes','peak_commit','working_set','peak_working_set']
         if any(k not in a['memory'] for k in expected): raise RuntimeError('Missing memory counter')
 
-subprocess.run(['node',str(HERE/'gen.mjs'),str(config['modules'])],env=dict(os.environ,PROJECT=str(project)),check=True)
-reference = None
-for arm in ['A','B']:
+if mode != 'measure':
+  subprocess.run(['node',str(HERE/'gen.mjs'),str(config['modules'])],env=dict(os.environ,PROJECT=str(project)),check=True)
+  reference = None
+  for arm in ['A','B']:
     if (project/'dist').exists():shutil.rmtree(project/'dist')
     if (project/'cache').exists(): shutil.rmtree(project/'cache')
     result = run(arm,'cold','seed-'+arm)
     if reference is None: reference=result['outputs']
     validate(result,reference)
     shutil.copytree(project/'cache',seeds/arm,copy_function=shutil.copy2)
-
+  (work/'seed-manifest.json').write_text(json.dumps(dict(config=config,outputs=reference)))
+  if mode=='prepare':
+    print('Prepared and closed both independent seeds; no paired measurement has run.')
+    sys.exit(0)
+else:
+  seed_manifest=json.loads((work/'seed-manifest.json').read_text())
+  if seed_manifest['config'] != config: raise RuntimeError('Prepared seed configuration mismatch')
+  reference=seed_manifest['outputs']
 leaf=project/'src/d0/m9.js'
 original=leaf.read_bytes(); source_stat=leaf.stat()
 phases=config.get('phases',['warm','watch'])
