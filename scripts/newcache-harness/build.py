@@ -28,6 +28,8 @@ for arm,sha in config['arms'].items():
  tmp=root/('tmp-'+arm);tmp.mkdir(exist_ok=True)
  env=dict(os.environ,TMPDIR=str(tmp),TMP=str(tmp),TEMP=str(tmp),CARGO_INCREMENTAL='0',CARGO_TARGET_DIR=str(source/'target'))
  provenance['tools']['rustc_'+arm]=subprocess.check_output(['rustc','--version'],cwd=source,text=True).strip()
+ subprocess.run(['rustup','component','add','rust-src'],cwd=source,env=env,check=True)
+ subprocess.run(['cargo','codegen'],cwd=source,env=env,check=True)
  # Build on the measuring host. No runtime packaging or artifact transfer.
  for name,command in [('install',['pnpm','install','--frozen-lockfile']),('release',['pnpm','run','build:cli:release'])]:
   if sys.platform=='win32':command=['cmd','/c']+command
