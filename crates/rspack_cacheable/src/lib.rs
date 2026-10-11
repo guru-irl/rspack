@@ -43,7 +43,10 @@ pub fn to_bytes<T, C: CacheableContext>(_value: &T, _ctx: &C) -> Result<Vec<u8>>
 }
 
 #[cfg(feature = "noop")]
-pub fn to_aligned_bytes<T, C: CacheableContext>(_value: &T, _ctx: &C) -> Result<rkyv::util::AlignedVec> {
+pub fn to_aligned_bytes<T, C: CacheableContext>(
+  _value: &T,
+  _ctx: &C,
+) -> Result<rkyv::util::AlignedVec> {
   let _ = serialize::to_aligned_bytes::<u8, C>;
   panic!("Cannot use to_aligned_bytes when noop feature is enabled")
 }
