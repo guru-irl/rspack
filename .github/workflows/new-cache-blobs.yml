@@ -39,7 +39,7 @@ jobs:
         run: |
           mkdir -p ../out
           set +e
-          cargo test --release commit_deletes_superseded_blob -- --test-threads=1 > ../out/red.log 2>&1
+          cargo test --release --locked commit_deletes_superseded_blob -- --test-threads=1 > ../out/red.log 2>&1
           rc=$?
           set -e
           tail -40 ../out/red.log
@@ -47,7 +47,7 @@ jobs:
           grep -q 'Commit must retire the old blob' ../out/red.log
       - name: Run all patched crate tests
         working-directory: ${{ runner.temp }}/new-cache-blobs/patched-crate
-        run: cargo test --release -- --test-threads=1 2>&1 | tee ../out/green.log
+        run: cargo test --release --locked -- --test-threads=1 2>&1 | tee ../out/green.log
       - name: Build paired synthetic harnesses
         working-directory: ${{ runner.temp }}/new-cache-blobs
         run: |

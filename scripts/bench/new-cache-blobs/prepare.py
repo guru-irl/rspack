@@ -43,6 +43,7 @@ for source in (vendor / "src").rglob("*.rs"):
 print("Patched sources match published 0.1.1 plus retained patch byte for byte")
 shutil.copytree(published, WORK / "baseline-crate")
 shutil.copytree(vendor, WORK / "patched-crate")
+shutil.copy2(published / "Cargo.lock", WORK / "patched-crate/Cargo.lock")
 # Only the new regression is copied into the baseline crate. Production stays pristine.
 tests = (vendor / "src/tests.rs").read_text()
 start = tests.index("#[test]\nfn commit_deletes_superseded_blob()")
