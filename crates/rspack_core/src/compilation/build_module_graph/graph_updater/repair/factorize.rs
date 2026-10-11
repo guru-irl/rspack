@@ -24,6 +24,8 @@ pub struct FactorizeTask {
   pub dependencies: Vec<DependencyRef>,
   pub resolve_options: Option<Arc<Resolve>>,
   pub from_unlazy: bool,
+  pub(crate) counters:
+    Option<Arc<crate::compilation::build_module_graph::module_build_cache::RouteCounters>>,
 }
 
 #[async_trait::async_trait]
@@ -32,6 +34,11 @@ impl Task<TaskContext> for FactorizeTask {
     TaskType::Background
   }
   async fn background_run(mut self: Box<Self>) -> TaskResult<TaskContext> {
+    if let Some(counters) = &self.counters {
+      counters
+        .factorize
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     // Error and result are not mutually exclusive in webpack module factorization.
     // Rspack puts results that need to be shared in both error and ok in [ModuleFactoryCreateData].
     let mut create_data = ModuleFactoryCreateData::new(

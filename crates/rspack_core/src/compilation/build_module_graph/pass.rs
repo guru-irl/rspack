@@ -69,6 +69,11 @@ impl PassExt for BuildModuleGraphPhasePass {
         )
         .await?;
     }
+    if let Some(cache) = &compilation.module_build_cache {
+      cache
+        .counters
+        .print(&compilation.build_module_graph_artifact);
+    }
     for (_, module) in compilation.get_module_graph().modules() {
       module.freeze_build_info();
     }

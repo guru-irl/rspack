@@ -125,12 +125,17 @@ impl BackgroundJob {
     }
   }
 
-  async fn process_idle_tasks(&mut self, check_idle_ended: impl FnMut() -> bool) {
+  async fn process_idle_tasks(&mut self, mut check_idle_ended: impl FnMut() -> bool) {
     let start = Instant::now();
     self
       .strategy
-      .after_all_stored(MAX_IDLE_COMPACTION_PASSES, check_idle_ended)
+      .after_all_stored(MAX_IDLE_COMPACTION_PASSES, &mut check_idle_ended)
       .await;
+    self.logger.log(if check_idle_ended() {
+      "Benchmark idle cache interrupted"
+    } else {
+      "Benchmark idle cache complete"
+    });
     let time_spent_in_store = start.elapsed();
     self.avg_time_spent_in_store = Some(
       self

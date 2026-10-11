@@ -58,6 +58,12 @@ impl Task<TaskContext> for BuildTask {
       })]);
     }
 
+    if let Some(cache) = &module_build_cache {
+      cache
+        .counters
+        .builds
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let build_start_time = module_build_cache.as_ref().map(|_| current_time());
 
     plugin_driver

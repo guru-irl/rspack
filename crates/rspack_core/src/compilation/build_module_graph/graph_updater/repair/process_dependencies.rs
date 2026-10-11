@@ -108,6 +108,10 @@ impl Task<TaskContext> for ProcessDependenciesTask {
         dependencies,
         resolve_options: module.get_resolve_options(),
         from_unlazy,
+        counters: context
+          .module_build_cache
+          .as_ref()
+          .map(|c| c.counters.clone()),
       }));
     }
     Ok(res)
