@@ -55,6 +55,7 @@ const watch = compiler.watch({ aggregateTimeout: 20 }, async (error, stats) => {
     const rebuilt = text.includes('rebuild chunk graph');
     // Baseline must reject the body edit. The fix must reuse it.
     const expectedRebuild = current[3] || process.env.VARIANT === 'main';
+    if (rebuilt !== expectedRebuild) console.error(text);
     assert.equal(rebuilt, expectedRebuild, `${current[0]} rebuild decision`);
     for (const key of Object.keys(require.cache)) if (key.startsWith(path.join(root, 'dist'))) delete require.cache[key];
     delete globalThis.syntheticEffect;
