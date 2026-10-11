@@ -1,0 +1,72 @@
+name: Blocking threads Linux cold-disk study
+
+on:
+  push:
+    branches: [bench/blocking-threads]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blocking-threads-study
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate public generator and measurement scripts
+        run: |
+          set -euo pipefail
+          node --check .github/scripts/blocking-threads/gen.mjs
+          node --check .github/scripts/blocking-threads/run.mjs
+          bash -n .github/scripts/blocking-threads/device.sh
+          python3 -m py_compile .github/scripts/blocking-threads/*.py
+      - name: Install released Rspack and generate public fixture
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/deps .spider/scratch/temp results slow-mount
+          printf '{"private":true}\n' > .spider/scratch/deps/package.json
+          npm install --prefix .spider/scratch/deps --registry=https://registry.npmjs.org --save-exact @rspack/core@2.2.8
+          npm ls --prefix .spider/scratch/deps --all > results/npm-tree.txt
+          cp .spider/scratch/deps/package-lock.json results/released-package-lock.json
+          git rev-parse HEAD > results/measurement-sha.txt
+          node .github/scripts/blocking-threads/gen.mjs fixture
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('fixture')
+          modules = list((p / 'src').rglob('*.js'))
+          assert len(modules) == 20000
+          assert all(1024 <= f.stat().st_size <= 3072 for f in modules)
+          assert len(list((p / 'node_modules').glob('*/package.json'))) == 300
+          PY
+      - name: Prepare prior-study dm-delay stack
+        run: bash .github/scripts/blocking-threads/device.sh setup
+      - name: Measure all Linux cells sequentially
+        run: |
+          set -euo pipefail
+          export TMPDIR="$GITHUB_WORKSPACE/.spider/scratch/temp"
+          python3 .github/scripts/blocking-threads/measure.py
+      - name: Final device record and cleanup
+        if: always()
+        run: bash .github/scripts/blocking-threads/device.sh cleanup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blocking-threads-ubuntu-24.04
+          path: results/
+          retention-days: 14
