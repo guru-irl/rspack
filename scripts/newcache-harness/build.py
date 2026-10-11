@@ -14,7 +14,7 @@ results=Path(os.environ['HARNESS_RESULTS']).resolve();results.mkdir(parents=True
 root.mkdir(parents=True,exist_ok=True)
 repo=Path.cwd()
 # Resolve from the source worktrees so their pinned Rust toolchain is recorded.
-provenance=dict(harness_sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),patch_sha256=hashlib.sha256((HERE/'idle-completion.patch').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest(),platform=platform.platform(),arms={},tools={})
+provenance=dict(harness_sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),patch_sha256=hashlib.sha256((HERE/'idle-completion.patch').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest(),platform=platform.platform(),arms={},tools={},profile='release',features=['plugin','info-level'],allocator='repository default',cargo_build_jobs=os.environ.get('CARGO_BUILD_JOBS'),rust_target=os.environ.get('RUST_TARGET'),cargo_incremental='0')
 for tool,args in [('node',['--version']),('pnpm',['--version'])]:
  provenance['tools'][tool]=subprocess.check_output((['cmd','/c'] if sys.platform=='win32' and tool=='pnpm' else [])+[tool]+args,text=True).strip()
 cores={}
@@ -29,10 +29,9 @@ for arm,sha in config['arms'].items():
  env=dict(os.environ,TMPDIR=str(tmp),TMP=str(tmp),TEMP=str(tmp),CARGO_INCREMENTAL='0',CARGO_TARGET_DIR=str(source/'target'))
  provenance['tools']['rustc_'+arm]=subprocess.check_output(['rustc','--version'],cwd=source,text=True).strip()
  subprocess.run(['rustup','component','add','rust-src'],cwd=source,env=env,check=True)
- subprocess.run(['cargo','codegen'],cwd=source,env=env,check=True)
  # Build on the measuring host. No runtime packaging or artifact transfer.
- for name,command in [('install',['pnpm','install','--frozen-lockfile']),('release',['pnpm','run','build:cli:release'])]:
-  if sys.platform=='win32':command=['cmd','/c']+command
+ for name,command in [('install',['pnpm','install','--frozen-lockfile']),('codegen',['cargo','codegen']),('release',['pnpm','run','build:cli:release'])]:
+  if sys.platform=='win32' and command[0]=='pnpm':command=['cmd','/c']+command
   with (results/f'build-{arm}-{name}.log').open('w') as log:
    subprocess.run(command,cwd=source,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
  subprocess.run(['node','--input-type=module','-e',f'import({json.dumps((source / "packages/rspack/dist/index.js").as_uri())}).then(m=>console.log(m.rspack.version))'],cwd=source,check=True)
