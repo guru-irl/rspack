@@ -4,7 +4,7 @@ import sys
 def replace(path, old, new):
     p = Path(path); text = p.read_text(); assert old in text, (path, old); p.write_text(text.replace(old, new, 1))
 
-if sys.argv[1] == 'buffer':
+if sys.argv[1] in ('buffer', 'buffer-owned'):
     replace('crates/rspack_binding_api/src/compilation/mod.rs', '  #[napi(getter)]\n  pub fn modules(&self)', '''  #[napi]
   pub fn get_asset_buffer(&self, name: String) -> Result<Option<Buffer>> {
     let compilation = self.as_ref()?;
@@ -25,6 +25,11 @@ if sys.argv[1] == 'buffer':
                 if (content === undefined) throw new Error(`Asset ${filename} not found`);
               }
               return content;''')
+    if sys.argv[1] == 'buffer-owned':
+        replace('crates/rspack_binding_api/src/compilation/mod.rs', 'pub fn get_asset_buffer(&self, name: String) -> Result<Option<Buffer>>', 'pub fn get_asset_buffer(&self, env: &Env, name: String) -> Result<Option<Buffer>>')
+        replace('crates/rspack_binding_api/src/compilation/mod.rs', '''Ok(compilation.assets().get(&name).and_then(|asset| asset.source.as_ref())
+      .map(|source| Buffer::from(source.buffer().into_owned())))''', '''compilation.assets().get(&name).and_then(|asset| asset.source.as_ref())
+      .map(|source| BufferSlice::copy_from(env, source.buffer()).and_then(|slice| slice.into_buffer(env))).transpose()''')
 elif sys.argv[1] == 'json':
     # Temporary rayon dependency uses existing workspace version; no new cache fields.
     replace('crates/rspack_sources/Cargo.toml', '[dependencies]', '[dependencies]\nrayon = { workspace = true }')
@@ -89,7 +94,8 @@ elif sys.argv[1] == 'json':
       eprintln!("STUDY_METRIC parallel_json_count_us {} fill_us {} total_us {}", count_us, fill_us, start.elapsed().as_micros());
     }
     // All slices were filled by the canonical UTF-8 JSON serializer.
-    String::from_utf8(output).unwrap()
+    #[allow(unsafe_code)]
+    unsafe { String::from_utf8_unchecked(output) }
   }
 
   fn study_serial_json(&self) -> String {''')
