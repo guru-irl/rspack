@@ -16,10 +16,6 @@ const deps={ '@rsbuild/core':process.env.RSBUILD_VERSION||'2.2.12','@rsbuild/plu
 fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({name:'public-watch-fixture',private:true,type:'module',dependencies:deps,overrides:{'@rspack/core':'2.2.8','@tanstack/start-plugin-core':'1.171.46','@tanstack/start-server-core':'1.169.40'}},null,2));
 const install=spawnSync('npm',['install','--registry=https://registry.npmjs.org','--no-audit','--no-fund'],{cwd:app,encoding:'utf8',timeout:600000});
 fs.writeFileSync(path.join(work,'install.log'),install.stdout+install.stderr); assert.equal(install.status,0,'public npm install');
-const rsbuildDist=fs.readFileSync(path.join(app,'node_modules/@rsbuild/core/dist/m.js'),'utf8').split('\n');
-const locations=[];
-for(let i=0;i<rsbuildDist.length;i++)if(['createAssetsMiddleware =','ready: (callback)','loadBundle: async (entryName)','context.hooks.onBeforeStartDevServer.callBatch',"logger.debug('create dev server done')"].some(marker=>rsbuildDist[i].includes(marker)))locations.push({line:i+1,excerpt:rsbuildDist.slice(Math.max(0,i-2),i+18).join('\n')});
-fs.writeFileSync(path.join(work,'r3-rsbuild-request-path.json'),JSON.stringify({version:deps['@rsbuild/core'],file:'dist/m.js',locations},null,2));
 const pkg=path.join(app,'node_modules/@tanstack/start-plugin-core');
 const dist=path.join(pkg,'dist/esm/rsbuild');
 const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js','normalized-client-build.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
@@ -176,7 +172,9 @@ if(mode==='r3-production') {production();process.exit(0);}
 if(mode==='r3-custom-green') {
  for(const count of ['2','4']) {process.env.COMPILER_COUNT=count;for(const arm of ['stock','v2','barrier','after-make','overlap']) {
   const r=execute(arm,'r3-custom-request',count);
-  if(!['stock','v2'].includes(arm))assert.equal(r.status,0,'v3 custom request window');
+  const evidence=JSON.parse(fs.readFileSync(path.join(r.result,'request-window.json')));
+  if(arm==='v2') {assert.equal(r.status,1,'v2 custom request window remains RED');assert.ok(evidence.expectedCSS.some(url=>!evidence.css.includes(url)),'v2 omits a stock route-needed new CSS asset');}
+  else if(arm!=='stock')assert.equal(r.status,0,'v3 custom request window');
  }} process.exit(0);
 }
 if(mode==='r3-measure') {
@@ -202,5 +200,5 @@ for(const edge of ['direct','transitive']) {
  assert.deepEqual(counts(edged),counts(baseline),`${edge}: gate-only pass counts`);
  fs.writeFileSync(path.join(work,`user-${edge}-counts.json`),JSON.stringify({passed:true,reference:counts(baseline),edge:counts(edged)},null,2));
 }
-for(const count of ['2','4']){process.env.COMPILER_COUNT=count;for(const arm of ['barrier','after-make','overlap'])checked(arm,'r3-custom-request',count);}
+for(const count of ['2','4']){process.env.COMPILER_COUNT=count;execute('stock','r3-custom-request',count);for(const arm of ['barrier','after-make','overlap'])checked(arm,'r3-custom-request',count);}
 fs.writeFileSync(path.join(work,'r3-success.json'),JSON.stringify({passed:true}));
