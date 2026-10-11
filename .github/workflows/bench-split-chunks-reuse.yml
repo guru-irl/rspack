@@ -1,0 +1,42 @@
+name: Bench SplitChunks reuse opportunity
+on:
+  push:
+    branches: ['bench/split-chunks-reuse']
+    paths:
+      - '.github/workflows/bench-split-chunks-reuse.yml'
+      - 'benchmarks/split-chunks-reuse/**'
+permissions:
+  contents: read
+jobs:
+  published:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.15.1'
+          registry-url: https://registry.npmjs.org
+      - name: Install stock published 2.2.8 in isolated fixture
+        working-directory: benchmarks/split-chunks-reuse
+        run: npm install --ignore-scripts --registry=https://registry.npmjs.org
+      - name: Record runner and execute real watch edits
+        working-directory: benchmarks/split-chunks-reuse
+        env:
+          SAMPLES: '7'
+          FIXTURE_ROOT: '${{ github.workspace }}/.spider/scratch/split-chunks-reuse/run'
+          NODE_OPTIONS: '--max-old-space-size=8192'
+        run: |
+          mkdir -p "$FIXTURE_ROOT/results"
+          uname -a > "$FIXTURE_ROOT/results/host.txt"
+          lscpu >> "$FIXTURE_ROOT/results/host.txt"
+          free -b >> "$FIXTURE_ROOT/results/host.txt"
+          npm ls --all > "$FIXTURE_ROOT/results/npm-tree.txt"
+          cp package-lock.json "$FIXTURE_ROOT/results/package-lock.json"
+          /usr/bin/time -v node fixture.mjs > "$FIXTURE_ROOT/results/stdout.log" 2> "$FIXTURE_ROOT/results/stderr.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: split-chunks-reuse-${{ github.run_id }}
+          path: .spider/scratch/split-chunks-reuse/run/results
+          retention-days: 14
