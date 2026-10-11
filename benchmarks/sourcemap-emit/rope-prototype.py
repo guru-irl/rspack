@@ -2,8 +2,22 @@ from pathlib import Path
 
 def replace(path, old, new):
     p=Path(path); text=p.read_text(); assert old in text,(path,old); p.write_text(text.replace(old,new,1))
-replace('crates/rspack_sources/src/helpers.rs', '''  let result = get_generated_source_info(source);
-  if result.generated_line == 1 && result.generated_column == 0 {''', '''  stream_chunks_of_source_map_lines_final_with_info(get_generated_source_info(source), source_map, on_chunk, on_source)
+replace('crates/rspack_sources/src/helpers.rs', '''fn stream_chunks_of_source_map_lines_final<'chunk, 'source>(
+  source: TextSpan<'chunk>,
+  source_map: &'source SourceMapFields<'_>,
+  on_chunk: OnChunk,
+  on_source: OnSource<'_, 'source>,
+  _on_name: OnName,
+) -> GeneratedInfo {
+  let result = get_generated_source_info(source);
+  if result.generated_line == 1 && result.generated_column == 0 {''', '''fn stream_chunks_of_source_map_lines_final<'chunk, 'source>(
+  source: TextSpan<'chunk>,
+  source_map: &'source SourceMapFields<'_>,
+  on_chunk: OnChunk,
+  on_source: OnSource<'_, 'source>,
+  _on_name: OnName,
+) -> GeneratedInfo {
+  stream_chunks_of_source_map_lines_final_with_info(get_generated_source_info(source), source_map, on_chunk, on_source)
 }
 
 pub(crate) fn stream_chunks_of_source_map_lines_final_with_info<'source>(
