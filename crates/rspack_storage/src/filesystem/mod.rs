@@ -136,9 +136,9 @@ impl Storage for FileSystemStorage {
 
   async fn load(&self, scope: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let started = std::time::Instant::now();
-    eprintln!("STORAGE_START {scope}");
+    eprintln!("STORAGE_START {scope} {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos());
     let data = self.db.load(scope).await?;
-    eprintln!("STORAGE_END {scope} {}", started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!("STORAGE_END {scope} {} {}", started.elapsed().as_secs_f64() * 1000.0, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos());
     Ok(data)
   }
 
