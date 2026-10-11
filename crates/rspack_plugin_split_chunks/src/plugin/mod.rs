@@ -133,6 +133,7 @@ impl SplitChunksPlugin {
     all_modules.sort_unstable_by_key(|module| (module.precomputed_hash(), *module));
 
     let module_sizes = get_module_sizes(all_modules.par_iter().copied(), compilation);
+    let module_names = module_group::ModuleNames::new(all_modules.len(), &self.cache_groups);
     let mut module_chunks = Self::get_module_chunks(&all_modules, compilation);
     let module_indices = all_modules
       .iter()
@@ -219,7 +220,7 @@ impl SplitChunksPlugin {
       .map(|(_, groups, precompute)| precompute.then_some(groups.as_slice()))
       .collect::<Vec<_>>();
     let native_matches = if stages.iter().any(Option::is_some) {
-      self.prepare_native_cache_group_matches(&all_modules, &stages, compilation)
+      self.prepare_native_cache_group_matches(&all_modules, &module_names, &stages, compilation)
     } else {
       stages.iter().map(|_| None).collect()
     };
@@ -289,6 +290,7 @@ impl SplitChunksPlugin {
             dedup_depth: self.dedup_depth,
             settings: non_used_exports_intersection_settings,
             module_sizes: &module_sizes,
+            module_names: &module_names,
             compilation,
           },
         );
@@ -308,6 +310,7 @@ impl SplitChunksPlugin {
             dedup_depth: self.dedup_depth,
             settings: used_exports_intersection_settings,
             module_sizes: &module_sizes,
+            module_names: &module_names,
             compilation,
           },
         );
@@ -317,6 +320,7 @@ impl SplitChunksPlugin {
         .prepare_module_group_map(
           &combinator,
           &all_modules,
+          &module_names,
           &cache_groups,
           native_matches,
           compilation,
@@ -590,6 +594,7 @@ impl SplitChunksPlugin {
       }
     }
     logger.time_end(start);
+    drop(module_names);
 
     let start = logger.time("ensure max size fit");
     self

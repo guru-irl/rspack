@@ -4,7 +4,7 @@ use std::{
   hash::{Hash, Hasher},
   ops::Deref,
   sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
   },
 };
@@ -38,6 +38,33 @@ use crate::{
     cache_group::CacheGroup, cache_group_test::CacheGroupTest, chunk_name::ChunkNameGetter,
   },
 };
+
+// Invocation-local, indexed by the existing sorted module order. Cache absent
+// names too, and only allocate names for modules reached by native tests.
+pub(super) struct ModuleNames {
+  names: Vec<OnceLock<Option<Box<str>>>>,
+}
+
+impl ModuleNames {
+  pub(super) fn new(module_count: usize, cache_groups: &[CacheGroup]) -> Self {
+    let needs_names = cache_groups.iter().any(|group| {
+      matches!(group.test, CacheGroupTest::String(_) | CacheGroupTest::RegExp(_))
+    });
+    Self {
+      names: if needs_names {
+        (0..module_count).map(|_| OnceLock::new()).collect()
+      } else {
+        Vec::new()
+      },
+    }
+  }
+
+  fn get<'a>(&'a self, module_index: usize, module: &dyn Module) -> Option<&'a str> {
+    self.names[module_index]
+      .get_or_init(|| module.name_for_condition())
+      .as_deref()
+  }
+}
 
 type ChunksKey = u64;
 
@@ -137,6 +164,7 @@ pub(super) struct IntersectionPreparation<'a> {
   pub dedup_depth: u32,
   pub settings: Option<(usize, Vec<&'a CacheGroup>)>,
   pub module_sizes: &'a ModuleSizes,
+  pub module_names: &'a ModuleNames,
   pub compilation: &'a Compilation,
 }
 
@@ -168,7 +196,7 @@ impl IntersectionPreparation<'_> {
       .unwrap_or(0)
   }
 
-  fn module_size_bound(&self, module: &ModuleIdentifier) -> u64 {
+  fn module_size_bound(&self, module_index: usize, module: &ModuleIdentifier) -> u64 {
     let Some((_, groups)) = &self.settings else {
       return u64::MAX;
     };
@@ -179,12 +207,14 @@ impl IntersectionPreparation<'_> {
     // Native string/regexp tests are exact and independent of enumeration.
     // Callback tests remain possible matches, so no callback is called twice.
     if !groups.iter().any(|group| match &group.test {
-      CacheGroupTest::String(test) => item
-        .name_for_condition()
+      CacheGroupTest::String(test) => self
+        .module_names
+        .get(module_index, item.as_ref())
         .is_some_and(|name| name.starts_with(test)),
-      CacheGroupTest::RegExp(test) => item
-        .name_for_condition()
-        .is_some_and(|name| test.test(&name)),
+      CacheGroupTest::RegExp(test) => self
+        .module_names
+        .get(module_index, item.as_ref())
+        .is_some_and(|name| test.test(name)),
       CacheGroupTest::Fn(_) | CacheGroupTest::Enabled => true,
     }) {
       return 0;
@@ -723,7 +753,8 @@ impl Combinator {
       .filter_map(|(module_index, chunk_key)| chunk_key.map(|chunk_key| (module_index, chunk_key)))
     {
       if intersection_min_chunks.is_some() {
-        let size = intersection_preparation.module_size_bound(&all_modules[module_index]);
+        let size =
+          intersection_preparation.module_size_bound(module_index, &all_modules[module_index]);
         let total = chunk_set_size_bounds.entry(chunk_key).or_default();
         *total = total.saturating_add(size);
       }
@@ -798,7 +829,8 @@ impl Combinator {
       for chunks in used_exports_chunks {
         let chunk_key = chunks.key;
         if intersection_min_chunks.is_some() {
-          let size = intersection_preparation.module_size_bound(&all_modules[module_index]);
+          let size =
+            intersection_preparation.module_size_bound(module_index, &all_modules[module_index]);
           let total = chunk_set_size_bounds.entry(chunk_key).or_default();
           *total = total.saturating_add(size);
         }
@@ -873,6 +905,7 @@ impl SplitChunksPlugin {
   pub(crate) fn prepare_native_cache_group_matches(
     &self,
     all_modules: &[ModuleIdentifier],
+    module_names: &ModuleNames,
     stages: &[Option<&[IndexedCacheGroup<'_>]>],
     compilation: &Compilation,
   ) -> Vec<Option<Vec<NativeCacheGroupMatches>>> {
@@ -928,7 +961,6 @@ impl SplitChunksPlugin {
           .module_by_identifier(identifier)
           .expect("should have module")
           .as_ref();
-        let mut name_for_condition = None;
         for (group, words) in &mut groups {
           if !is_default_module_layer_filter(&group.layer)
             && !group
@@ -941,9 +973,7 @@ impl SplitChunksPlugin {
             group.test,
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
           ) {
-            name_for_condition
-              .get_or_insert_with(|| module.name_for_condition())
-              .as_deref()
+            module_names.get(chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB + index, module)
           } else {
             None
           };
@@ -978,6 +1008,7 @@ impl SplitChunksPlugin {
     &self,
     combinator: &Combinator,
     all_modules: &[ModuleIdentifier],
+    module_names: &ModuleNames,
     cache_groups: &[IndexedCacheGroup<'_>],
     native_matches: Option<Vec<NativeCacheGroupMatches>>,
     compilation: &Compilation,
@@ -1084,11 +1115,11 @@ impl SplitChunksPlugin {
             cache_group.test,
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
           ) {
-            module.name_for_condition()
+            module_names.get(module_index, module)
           } else {
             None
           };
-          test_native_cache_group(&cache_group.test, name.as_deref())
+          test_native_cache_group(&cache_group.test, name)
         };
         if !is_match || belong_to_chunks.len() < cache_group.min_chunks as usize {
           continue;
