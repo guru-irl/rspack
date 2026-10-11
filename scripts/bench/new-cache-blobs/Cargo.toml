@@ -1,11 +1,11 @@
 [package]
-name = "blob-repro"
-version = "0.0.0"
 edition = "2024"
+name    = "blob-repro"
 publish = false
+version = "0.0.0"
 
 [workspace]
 
 [dependencies]
-anyhow = "1"
+anyhow            = "1"
 turbo-persistence = { package = "rspack-turbo-persistence", version = "=0.1.1", default-features = false }
