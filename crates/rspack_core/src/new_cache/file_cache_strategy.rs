@@ -312,7 +312,9 @@ impl FileCacheStrategy {
         .then(|| pending.entry.value().clone());
     }
 
+    let lookup_start = super::probe_graph::timer_start();
     let result = state.database.get(DatabaseFamily::Cache, key);
+    super::probe_graph::timer_add(0, lookup_start);
     let entry = match result {
       Ok(entry) => entry,
       Err(e) => {
@@ -322,7 +324,12 @@ impl FileCacheStrategy {
       }
     };
     let entry = entry?;
-    match decoder(&entry, etag, &self.codec) {
+    super::probe_graph::count_add(4, entry.len());
+    super::probe_graph::count_add(6, 1);
+    let decode_start = super::probe_graph::timer_start();
+    let decoded = decoder(&entry, etag, &self.codec);
+    super::probe_graph::timer_add(1, decode_start);
+    match decoded {
       Ok(decoded) => decoded,
       Err(e) => {
         self
@@ -415,21 +422,26 @@ impl FileCacheStrategy {
           )
         }));
 
-      let writes = writes.chain(
-        probe_graph
-          .as_ref()
-          .into_par_iter()
-          .flat_map(|graph| graph.writes())
-          .map(|(key, value)| (DatabaseFamily::Cache, key, value)),
-      );
-
       let writes_len = {
         let state = self.read_state();
         let Some(state) = state.as_ref() else {
           return Ok(());
         };
-        state.database.write_batch(writes)?
+        let mut count = state.database.write_batch(writes)?;
+        if let Some(graph) = probe_graph.as_ref() {
+          count += graph.write_bounded(|writes| {
+            state.database.write_batch(
+              writes
+                .into_par_iter()
+                .map(|(key, value)| (DatabaseFamily::Cache, key, value)),
+            )
+          })?;
+        }
+        count
       };
+      if probe_graph.is_some() {
+        super::probe_graph::store_metrics();
+      }
       self.logger.time_end(start);
 
       self

@@ -80,6 +80,41 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+  pub(crate) fn probe_graph_validation_shards(self) -> Vec<Self> {
+    let mut shards = (0..16)
+      .map(|_| Self {
+        start_time: self.start_time,
+        ..Self::default()
+      })
+      .collect::<Vec<_>>();
+    macro_rules! split_map {
+      ($field:ident) => {
+        if let Some(entries) = self.$field {
+          for (index, (path, value)) in entries.into_iter().enumerate() {
+            shards[index % 16]
+              .$field
+              .get_or_insert_default()
+              .insert(path, value);
+          }
+        }
+      };
+    }
+    split_map!(file_timestamps);
+    split_map!(file_hashes);
+    split_map!(file_timestamp_hashes);
+    split_map!(context_timestamps);
+    split_map!(context_hashes);
+    split_map!(context_timestamp_hashes);
+    split_map!(missing_existence);
+    split_map!(managed_item_info);
+    // These sets only describe configured exemptions, they require no checks.
+    shards[0].managed_files = self.managed_files;
+    shards[0].managed_contexts = self.managed_contexts;
+    shards[0].managed_missing = self.managed_missing;
+    shards[0].children = self.children;
+    shards
+  }
+
   /// See webpack's snapshot merge implementation:
   /// https://github.com/webpack/webpack/blob/ce97d583e1cd8f3e47b70737de72e91b567a8497/lib/FileSystemInfo.js#L3081-L3166
   pub(super) fn merge(&mut self, other: Self) {
