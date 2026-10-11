@@ -46,7 +46,7 @@ use crate::{
 
 // Invocation-local, indexed by the existing sorted module order. Cache absent
 // names too, and only allocate names for modules reached by native tests.
-pub(super) struct ModuleNames {
+pub(crate) struct ModuleNames {
   names: Vec<OnceLock<Option<Box<str>>>>,
 }
 
