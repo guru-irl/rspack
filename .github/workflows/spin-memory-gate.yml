@@ -1,0 +1,108 @@
+name: Spin memory gate
+run-name: Spin memory gate (${{ github.sha }})
+
+on:
+  workflow_dispatch:
+  # Register the branch-only workflow; push jobs are skipped.
+  push:
+    branches: [bench/spin-memory-gate]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spin-memory-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'guru-irl/rspack' && github.event_name == 'workflow_dispatch'
+    name: Release binding (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '22'
+      - run: pnpm --filter @rspack/binding install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: spin-memory-release-${{ matrix.target }}
+          save-if: true
+          use-cache: true
+      - name: Free Linux disk space
+        if: runner.os == 'Linux'
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo codegen
+      - run: echo 'trim-paths = true' >> .cargo/config.toml
+      - name: Release build (plugin, info-level)
+        run: |
+          unset DISABLE_PLUGIN RSPACK_RAYON_SPIN_ROUNDS RSPACK_RAYON_SPIN_MODE
+          pnpm run build:binding:release
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spin-memory-binding-${{ matrix.os }}
+          path: crates/node_binding/*.node
+          if-no-files-found: error
+          retention-days: 7
+
+  measure:
+    if: github.repository == 'guru-irl/rspack' && github.event_name == 'workflow_dispatch'
+    needs: build
+    name: Memory pairs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '22'
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: spin-memory-binding-${{ matrix.os }}
+          path: crates/node_binding
+      - run: pnpm --filter @rspack/core build
+      - name: Measure 10 alternating treatment and 10 control pairs
+        run: node benchmarks/spin-memory-gate/run.mjs .spider/scratch/spin-memory-gate/results
+      - name: Upload measurements (including failure diagnostics)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spin-memory-results-${{ matrix.os }}
+          path: |
+            .spider/scratch/spin-memory-gate/results/*.json
+            .spider/scratch/spin-memory-gate/results/*.log
+          if-no-files-found: warn
+          retention-days: 7
