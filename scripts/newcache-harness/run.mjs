@@ -92,7 +92,7 @@ async function anchor(name, gc = false) {
   };
   if (name === 'rebuild_done') {
     const cpu = process.cpuUsage(editCpu);
-    value.rebuild_ms = performance.now() - editStart;
+    value.rebuild_ms = start + value.wall_ms - editStart;
     value.rebuild_cpu_ms = (cpu.user + cpu.system) / 1000;
   }
   anchors.push(value);
