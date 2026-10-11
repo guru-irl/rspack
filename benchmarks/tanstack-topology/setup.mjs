@@ -16,7 +16,7 @@ const canaryResponse = await fetch('https://registry.npmjs.org/@rspack-canary%2f
 const canaryMetadata = canaryResponse.ok ? await canaryResponse.json() : null;
 fs.writeFileSync(path.join(out, 'main-canary.json'), JSON.stringify(canaryMetadata ? { tags: canaryMetadata['dist-tags'], published: canaryMetadata.time[canaryMetadata['dist-tags'].latest] } : { unavailable: canaryResponse.status }, null, 2));
 const canary = canaryMetadata?.['dist-tags'].latest;
-if (canary) versions.push(canary);
+if (canary && !process.env.DIAGNOSTIC_ONLY) versions.push(canary);
 fs.writeFileSync(
   path.join(out, 'selected-versions.json'),
   JSON.stringify(versions),
@@ -98,7 +98,7 @@ for (const version of versions) {
   const wrapperPath = path.join(dir, 'node_modules/@tanstack/start-server-core/dist/esm/getServerFnById.js');
   const originalPlugin = fs.readFileSync(pluginPath, 'utf8');
   const originalWrapper = fs.readFileSync(wrapperPath, 'utf8');
-  for (const variant of ['baseline', 'content-gated-resolver', 'retain-wrapper']) {
+  for (const variant of (process.env.DIAGNOSTIC_ONLY ? ['baseline'] : ['baseline', 'content-gated-resolver', 'retain-wrapper'])) {
     fs.writeFileSync(pluginPath, originalPlugin);
     fs.writeFileSync(wrapperPath, originalWrapper);
     fs.cpSync(path.join(root, 'benchmarks/tanstack-topology/src'), path.join(dir, 'src'), { recursive: true });
