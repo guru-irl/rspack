@@ -1,3 +1,4 @@
+import { instrumentCSS } from './instrument-css.mjs';
 import fs from 'node:fs';
 import { captureIdentity, functionInventory } from './check-identity.mjs';
 import { requestGate } from './check-request-gate.mjs';
@@ -90,7 +91,8 @@ const execute=(arm,scenario,index)=>{
   fs.writeFileSync(path.join(app,'aux/new-request.css'),'.generic-new-request { color: rgb(80, 80, 80); }\n');
   fs.writeFileSync(path.join(app,'aux/request.css'),'.generic-request { color: rgb(20, 20, 20); }\n');
   for(const name of ['aux-a','aux-b'])fs.writeFileSync(path.join(app,'aux',`${name}.js`),`document.body.textContent = 'Generic ${name}';\n`);
-  fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
+  if(process.env.MODE==='r3-css-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentCSS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
+  else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  if(scenario==='production') {
   fs.copyFileSync(path.join(fixture,'run-production.mjs'),path.join(app,'run-production.mjs'));
   const run=spawnSync('node',['run-production.mjs'],{cwd:app,env:{...process.env,NODE_ENV:'production',RESULT_DIR:result},encoding:'utf8',timeout:600000});
@@ -114,6 +116,16 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE;
 if(mode==='r3-checks')process.exit(0);
+if(mode==='r3-css-diagnosis') {
+ process.env.COMPILER_COUNT='4';
+ const results=[];
+ for(const [arm,index] of [['stock','aa-1'],['stock','aa-2'],['gate-only','diagnosis'],['barrier','diagnosis'],['after-make','diagnosis'],['overlap','diagnosis']]) {
+  const r=execute(arm,'correctness',index);assert.equal(r.status,0,`${arm}: CSS diagnostic sequence completed`);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).length,22,'diagnostic checkpoint count');
+  results.push({arm,index,result:path.basename(r.result)});
+ }
+ fs.writeFileSync(path.join(work,'css-diagnosis-runs.json'),JSON.stringify({diagnosticOnly:true,results},null,2));process.exit(0);
+}
 const parity=(results,label)=>{
  const visible=r=>JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(({step,responses,calls,removedCalls})=>({step,responses,calls,removedCalls}));
  const reference=results[0];assert.equal(visible(reference).length,22,'full checkpoint count');
