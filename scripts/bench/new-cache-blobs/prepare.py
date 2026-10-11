@@ -36,8 +36,8 @@ check = WORK / "patch-check"
 shutil.copytree(published, check)
 subprocess.run(["git", "init", "--quiet", str(check)], check=True)
 patch = vendor / "patches/delete-superseded-blobs.patch"
-subprocess.run(["git", "-C", str(check), "apply", "--check", str(patch)], check=True)
-subprocess.run(["git", "-C", str(check), "apply", str(patch)], check=True)
+subprocess.run(["git", "-c", "core.autocrlf=false", "-C", str(check), "apply", "--check", str(patch)], check=True)
+subprocess.run(["git", "-c", "core.autocrlf=false", "-C", str(check), "apply", str(patch)], check=True)
 for source in (vendor / "src").rglob("*.rs"):
     assert source.read_bytes() == (check / source.relative_to(vendor)).read_bytes(), source
 print("Patched sources match published 0.1.1 plus retained patch byte for byte")
