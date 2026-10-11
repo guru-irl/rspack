@@ -7,7 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { rspack } from '@rspack/core';
 
 const require = createRequire(import.meta.url);
-const root = path.resolve(process.env.FIXTURE_ROOT || '.spider/scratch/split-chunks-reuse/run');
+const root = fs.realpathSync(path.resolve(process.env.FIXTURE_ROOT));
 const out = path.join(root, 'results');
 const src = path.join(root, 'src');
 fs.mkdirSync(out, { recursive: true });
@@ -64,7 +64,7 @@ function measured(name, fn) {
     }
   };
 }
-const resourceMatches = (m, g) => Boolean(m.resource?.includes(`/g${String(g).padStart(3, '0')}/`));
+const resourceMatches = (m, g) => Boolean(m.resource?.replaceAll('\\', '/').includes(`/g${String(g).padStart(3, '0')}/`));
 const tests = Array.from({ length: 4 }, (_, g) => measured(`test-membership-${g}`, (m, { chunkGraph }) => {
   let count = 0;
   for (const chunk of chunkGraph.getModuleChunksIterable(m)) if (chunk.name?.startsWith(familyName(g))) count++;
@@ -78,7 +78,7 @@ const nameSize = measured('name-size-band', m => `size-band-${Math.floor(m.size(
 const cacheGroups = { default: false, defaultVendors: false };
 for (let g = 0; g < groupCount; g++) {
   const group = {
-    test: g < 6 ? tests[g] : new RegExp(`/g${String(g).padStart(3, '0')}/`),
+    test: g < 6 ? tests[g] : new RegExp(String.raw`[\\/]g${String(g).padStart(3, '0')}[\\/]`),
     priority: g < 6 ? priorityCount - 1 : g % priorityCount,
     ...(g < enforceCount ? { enforce: true } : {}),
     ...(g < minSizeCount ? { minSize: g < nonzeroMinSizeCount ? 256 : 0 } : {}),
@@ -91,7 +91,7 @@ for (let g = 0; g < groupCount; g++) {
   if (policy !== 'js') {
     // Equivalent only for this generated population: every g4 payload is >80
     // bytes, version is immutable, all consumer names start with family-.
-    if (g === 4 || g === 5) group.test = new RegExp(`/g${String(g).padStart(3, '0')}/`);
+    if (g === 4 || g === 5) group.test = new RegExp(String.raw`[\\/]g${String(g).padStart(3, '0')}[\\/]`);
     if (g === 6) group.chunks = /^family-/;
     // g7's three consumers are not all family-a. g8 spans three known size
     // bands: preserve the candidates using disjoint resource regex groups.
@@ -100,7 +100,7 @@ for (let g = 0; g < groupCount; g++) {
       for (let band = 0; band < 3; band++) {
         const ids = Array.from({length: payloadCount}, (_, i) => i)
           .filter(i => i % groupCount === 8 && Math.floor(fs.statSync(path.join(src, payloadPath(i))).size / 128) === band);
-        if (ids.length) cacheGroups[`group8-band${band}`] = { ...group, test: new RegExp(`/g008/m(?:${ids.join('|')})\\.js$`), name: `size-band-${band}` };
+        if (ids.length) cacheGroups[`group8-band${band}`] = { ...group, test: new RegExp(String.raw`[\\/]g008[\\/]m(?:${ids.join('|')})\.js$`), name: `size-band-${band}` };
       }
       continue;
     }
@@ -172,7 +172,21 @@ await new Promise((resolve, reject) => {
       const reconstructed = Object.keys(timers).some(key => key.endsWith('/rebuild chunk graph'));
       if (build === 0 && !reconstructed) throw new Error('Initial build did not establish chunk graph timer coverage');
       if (build > 0 && reconstructed) throw new Error(`Topology reconstruction on edit ${build}`);
-      records.push({ build, kind: build === 0 ? 'initial' : build <= warmups ? 'warmup' : 'edit', editedBytes: Buffer.byteLength(fs.readFileSync(editedFile)), originalBytes: Buffer.byteLength(original), compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
+      const digest = crypto.createHash('sha256');
+      for (const filename of fs.readdirSync(path.join(root, 'dist')).sort()) {
+        const asset = path.join(root, 'dist', filename);
+        if (fs.statSync(asset).isFile()) digest.update(filename).update(fs.readFileSync(asset));
+      }
+      const outputDigest = digest.digest('hex');
+      const tailRssSamples = [];
+      if (!global.gc) throw new Error('Run with --expose-gc');
+      for (let tail = 0; tail < 3; tail++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        global.gc();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        tailRssSamples.push(process.memoryUsage().rss);
+      }
+      records.push({ build, outputDigest, tailRssSamples, kind: build === 0 ? 'initial' : build <= warmups ? 'warmup' : 'edit', editedBytes: Buffer.byteLength(fs.readFileSync(editedFile)), originalBytes: Buffer.byteLength(original), compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
       fs.writeFileSync(path.join(out, 'builds.json'), JSON.stringify(records, null, 2));
       console.log(JSON.stringify({ build, compilerMs: records.at(-1).compilerMs, processCacheGroupsMs: splitTimer, chunks: records.at(-1).chunks, modules: records.at(-1).modules, selectors: counters, rss: records.at(-1).memory.rss }));
       if (build >= sampleCount) {
