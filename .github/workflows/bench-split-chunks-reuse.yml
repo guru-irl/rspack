@@ -23,15 +23,15 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arm: main-a1
-            ref: 0e3bacd882
+            ref: 0e3bacd8821d10985c5d2c1ac91dcb93b4937118
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arm: batch
-            ref: 8b5ea6ac2e
+            ref: 8b5ea6ac2eb404148499f243226fc631ed16d6a9
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arm: batch-a1
-            ref: ac35d23f63
+            ref: ac35d23f632f3e315ffd658ee459fac016e63c72
           - os: macos-15
             target: aarch64-apple-darwin
             arm: main
@@ -39,7 +39,7 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
             arm: main-a1
-            ref: 0e3bacd882
+            ref: 0e3bacd8821d10985c5d2c1ac91dcb93b4937118
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             arm: main
@@ -47,7 +47,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             arm: main-a1
-            ref: 0e3bacd882
+            ref: 0e3bacd8821d10985c5d2c1ac91dcb93b4937118
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
