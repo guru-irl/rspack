@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure]
+        options: [red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final]
         default: red
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Run public watch fixture
         env:
-          MODE: ${{ inputs.mode || 'no-resolver' }}
+          MODE: ${{ inputs.mode || 'final' }}
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"

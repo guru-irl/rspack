@@ -48,6 +48,9 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
+if(mode==='final') {
+ for(const [arm,scenario] of [['barrier','no-resolver'],['barrier','red-overlap'],['barrier','red-recovery'],['barrier','red-aba'],['after-make','red-after-make']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
+}
 if(mode==='no-resolver') {const r=execute('barrier','no-resolver',0);failed=r.status!==0;
 } else if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0;
 } else if(mode==='aa-route') {for(let i=0;i<2;i++){const r=execute('stock','aa-route',i);if(r.status!==0)failed=true;}
@@ -57,12 +60,12 @@ if(mode==='no-resolver') {const r=execute('barrier','no-resolver',0);failed=r.st
 } else if(mode==='red') {
  for(const [arm,scenario] of [['stock','red-overlap'],['v2','red-recovery']]) { const r=execute(arm,scenario,0); if(r.status!==0) failed=true; }
 } else {
- const reps=mode==='measure'?10:1;
+ const reps=mode==='measure'||mode==='final'?10:1;
  for(let i=0;i<reps;i++) {
   const arms=i%2?['overlap','after-make','barrier','stock']:['stock','barrier','after-make','overlap'];
-  const results=arms.map(arm=>({...execute(arm,mode==='measure'?'warm':'correctness',i),arm}));
+  const results=arms.map(arm=>({...execute(arm,mode==='measure'||mode==='final'&&i>0?'warm':'correctness',i),arm}));
   if(results.some(r=>r.status!==0)) {failed=true;break;}
-  if(mode!=='measure') {
+  if(mode!=='measure' && (mode!=='final'||i===0)) {
    const visible=r=>JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(({step,responses,calls,removedCalls})=>({step,responses,calls,removedCalls}));
    const stock=results.find(r=>r.arm==='stock');
    for(const r of results.filter(r=>r.arm!=='stock')) {
