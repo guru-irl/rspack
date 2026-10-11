@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { structural, execution } from './check-rsc.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -16,6 +17,15 @@ const pkg=path.join(app,'node_modules/@tanstack/start-plugin-core');
 const dist=path.join(pkg,'dist/esm/rsbuild');
 const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
 fs.copyFileSync(path.join(app,'package-lock.json'),path.join(work,'package-lock.json'));
+const structuralApply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',path.join(fixture,'start-plugin-core-1.171.46-combined.patch')],{cwd:pkg,encoding:'utf8'});
+fs.writeFileSync(path.join(work,'r2b-clean-apply.log'),structuralApply.stdout+structuralApply.stderr);
+assert.equal(structuralApply.status,0);assert.ok(!/offset|fuzz|FAILED/i.test(structuralApply.stdout+structuralApply.stderr));
+const candidate=Object.fromEntries(['plugin.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
+const structure=structural(originals,candidate);
+fs.writeFileSync(path.join(work,'r2b-structural.json'),JSON.stringify(structure,null,2));
+assert.ok(structure.passed,'RSC byte equality before syntax, execution, or watch validation');
+fs.writeFileSync(path.join(work,'r2b-execution.json'),JSON.stringify(await execution(originals,candidate,pkg,work),null,2));
+if(process.env.MODE==='r2b-red') process.exit(0);
 const execute=(arm,scenario,index)=>{
  const result=path.join(work,`${scenario}-${index}-${arm}`); fs.mkdirSync(result,{recursive:true});
  for(const [f,text] of Object.entries(originals)) fs.writeFileSync(path.join(dist,f),text);
