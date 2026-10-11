@@ -67,6 +67,9 @@ class NativeWatcherShim extends EventEmitter {
   }
 }
 
+// Private capability shared only with Watching; not part of WatchFileSystem.
+const needsFullWatchDependencies = Symbol('needsFullWatchDependencies');
+
 export default class NativeWatchFileSystem implements WatchFileSystem {
   #inner: binding.NativeWatcher | undefined;
   #isFirstWatch = true;
@@ -81,6 +84,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
 
   constructor(inputFileSystem: InputFileSystem) {
     this.#inputFileSystem = inputFileSystem;
+  }
+
+  get [needsFullWatchDependencies](): boolean {
+    return this.#isFirstWatch;
   }
 
   // Backward-compatible accessor: lets plugins that reach for the underlying
@@ -150,6 +157,9 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       this.#inner?.triggerEvent(kind, path),
     );
     this.#watcher = watcher;
+    let paused = false;
+    let closed = false;
+    let undelayedReported = false;
 
     nativeWatcher.watch(
       this.formatWatchDependencies(files),
@@ -157,22 +167,16 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       this.formatWatchDependencies(missing),
       BigInt(startTime),
       (err: Error | null, result) => {
+        if (closed) return;
         if (err) {
           callback(err, new Map(), new Map(), new Set(), new Set());
           return;
         }
+        paused = true;
         nativeWatcher.pause();
         const changedFiles = result.changedFiles;
         const removedFiles = result.removedFiles;
-        if (this.#inputFileSystem?.purge) {
-          const fs = this.#inputFileSystem;
-          for (const item of changedFiles) {
-            fs.purge?.(item);
-          }
-          for (const item of removedFiles) {
-            fs.purge?.(item);
-          }
-        }
+        this.#purge(changedFiles, removedFiles);
         // TODO: add fileTimeInfoEntries and contextTimeInfoEntries
         const changes = new Set(changedFiles);
         const removals = new Set(removedFiles);
@@ -184,17 +188,26 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
         // path, where the forwarded `aggregated` runs before its rebuild callback.
         this.#events.emit('aggregated', changes, removals);
         watcher.emit('aggregated', changes, removals);
+        if (!undelayedReported && changedFiles.length) {
+          undelayedReported = true;
+          callbackUndelayed?.(changedFiles[0], Date.now());
+        }
         callback(err, new Map(), new Map(), changes, removals);
       },
       (event) => {
+        if (paused || closed) return;
         if (event.kind === 'change') {
           // The native watcher reports paths without an mtime, so events are
           // stamped with their arrival time.
           const mtime = Date.now();
-          callbackUndelayed(event.path, mtime);
+          if (!undelayedReported) {
+            undelayedReported = true;
+            callbackUndelayed?.(event.path, mtime);
+          }
           this.#events.emit('change', event.path, mtime);
           watcher.emit('change', event.path, mtime);
         } else {
+          callbackUndelayed?.(event.path, Date.now());
           this.#events.emit('remove', event.path);
           watcher.emit('remove', event.path);
         }
@@ -205,6 +218,8 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
 
     return {
       close: () => {
+        paused = true;
+        closed = true;
         // Detach immediately: a closed native watcher rejects further watch()
         // calls, so a later compiler.watch() must get a fresh instance with a
         // full (non-incremental) registration.
@@ -218,20 +233,32 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       },
 
       pause: () => {
+        paused = true;
         nativeWatcher.pause();
       },
 
-      getInfo() {
-        // This is a placeholder implementation.
-        // TODO: The actual implementation should return the current state of the watcher.
+      getInfo: () => {
+        const { changedFiles, removedFiles } = nativeWatcher.takeAggregated();
+        this.#purge(changedFiles, removedFiles);
         return {
-          changes: new Set(),
-          removals: new Set(),
+          changes: new Set(changedFiles),
+          removals: new Set(removedFiles),
           fileTimeInfoEntries: new Map(),
           contextTimeInfoEntries: new Map(),
         };
       },
     };
+  }
+
+  #purge(changes: Iterable<string>, removals: Iterable<string>): void {
+    if (this.#inputFileSystem?.purge) {
+      for (const item of changes) {
+        this.#inputFileSystem.purge(item);
+      }
+      for (const item of removals) {
+        this.#inputFileSystem.purge(item);
+      }
+    }
   }
 
   getNativeWatcher(options: Watchpack.WatchOptions): binding.NativeWatcher {
@@ -349,4 +376,19 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       ];
     }
   }
+}
+
+// Capture the built-in implementation so replacing even the prototype's watch
+// method opts out. Wrappers may inspect/retain full membership, not just deltas.
+const nativeWatch = NativeWatchFileSystem.prototype.watch;
+
+// Assumes the internal formatWatchDependencies method preserves delta semantics.
+export function requiresFullWatchDependencies(
+  watchFileSystem: WatchFileSystem | null,
+): boolean {
+  return (
+    !(watchFileSystem instanceof NativeWatchFileSystem) ||
+    watchFileSystem.watch !== nativeWatch ||
+    watchFileSystem[needsFullWatchDependencies]
+  );
 }
