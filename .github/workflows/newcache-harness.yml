@@ -2,6 +2,9 @@ name: New Cache Sanity
 on:
   push:
     branches: [bench/newcache-harness]
+concurrency:
+  group: newcache-sanity-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

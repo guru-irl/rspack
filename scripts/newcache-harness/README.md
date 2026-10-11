@@ -1,6 +1,6 @@
 # New-cache sanity harness
 
-This fork-only harness compares two public source revisions on one host. Change `config.json` with full source SHAs, fixture size, interleaved pair count and A/A count, then enable it. A push to `bench/newcache-harness` runs macOS and Windows. Linux uses the same scripts locally. Do not copy these scripts onto a production branch.
+This fork-only harness compares two public source revisions on one host. Change `config.json` with full source SHAs, fixture size, interleaved pair count and A/A count, then enable it. A push to `bench/newcache-harness` runs macOS and Windows. Concurrency is grouped by branch; a newer push cancels its superseded run without affecting other bench branches. Linux uses the same scripts locally. Do not copy these scripts onto a production branch.
 
 Both release bindings are built within the measuring job, before any pairs. The job never packages or transfers a runtime. Uploads are restricted to JSON, CSV and logs. Build targets are removed after each arm to leave room for the next source build; source worktrees and runtime files remain on the measuring host.
 
