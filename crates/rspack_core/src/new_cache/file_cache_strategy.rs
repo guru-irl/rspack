@@ -302,6 +302,13 @@ impl FileCacheStrategy {
     }
   }
 
+  pub(super) fn clear_block_caches(&self) {
+    let state = self.read_state();
+    if let Some(state) = state.as_ref() {
+      state.database.clear_block_caches();
+    }
+  }
+
   pub(super) async fn after_all_stored(
     &self,
     max_compaction_passes: usize,

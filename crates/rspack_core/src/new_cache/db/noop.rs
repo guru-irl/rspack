@@ -32,6 +32,8 @@ impl NoopDatabase {
     Ok(writes.count())
   }
 
+  pub fn clear_block_caches(&self) {}
+
   pub fn compact(&self) -> Result<()> {
     Ok(())
   }

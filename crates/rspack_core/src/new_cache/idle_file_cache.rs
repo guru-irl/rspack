@@ -97,6 +97,8 @@ impl BackgroundJob {
           .mul_f64(0.9)
           .saturating_add(build_time);
         if self.idle_epoch.load(Ordering::Acquire) == epoch {
+          // Release decompressed blocks between builds without waiting for persistence.
+          self.strategy.clear_block_caches();
           let is_initial_store = self.avg_time_spent_in_store.is_none();
           let is_large_change = self.time_spent_in_build
             > self

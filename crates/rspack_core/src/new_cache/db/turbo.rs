@@ -242,6 +242,10 @@ impl TurboDatabase {
     Ok(writes_len)
   }
 
+  pub fn clear_block_caches(&self) {
+    self.inner.clear_block_caches();
+  }
+
   pub fn compact(&self) -> Result<()> {
     if self.readonly || self.inner.is_empty() {
       return Ok(());
