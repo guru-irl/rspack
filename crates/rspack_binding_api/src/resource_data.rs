@@ -72,18 +72,33 @@ impl ToNapiValue for ReadonlyResourceDataWrapper {
       i: Arc::downgrade(&resource_data),
     };
     let instance = template.into_instance(&env_wrapper)?;
-    let mut object = instance.as_object(&env_wrapper);
+    let object = instance.as_object(&env_wrapper);
 
-    object.set_named_property("resource", resource_data.resource())?;
-    if let Some(path) = resource_data.path() {
-      object.set_named_property("path", path.as_str())?;
+    // Stack descriptors avoid allocating names and a reusable heap buffer while
+    // retaining own data properties even when the class prototype is extended.
+    let mut properties: [napi::sys::napi_property_descriptor; 4] = unsafe { std::mem::zeroed() };
+    let mut count = 0;
+    for (name, value) in [
+      (c"resource", Some(resource_data.resource())),
+      (c"path", resource_data.path().map(|path| path.as_str())),
+      (c"query", resource_data.query()),
+      (c"fragment", resource_data.fragment()),
+    ] {
+      if let Some(value) = value {
+        properties[count] = napi::sys::napi_property_descriptor {
+          utf8name: name.as_ptr(),
+          value: unsafe { ToNapiValue::to_napi_value(env, value)? },
+          attributes: napi::sys::PropertyAttributes::writable
+            | napi::sys::PropertyAttributes::enumerable
+            | napi::sys::PropertyAttributes::configurable,
+          ..properties[count]
+        };
+        count += 1;
+      }
     }
-    if let Some(query) = resource_data.query() {
-      object.set_named_property("query", query)?;
-    }
-    if let Some(fragment) = resource_data.fragment() {
-      object.set_named_property("fragment", fragment)?;
-    }
+    napi::check_status!(unsafe {
+      napi::sys::napi_define_properties(env, object.raw(), count, properties.as_ptr())
+    })?;
 
     Ok(object.raw())
   }
