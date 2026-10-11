@@ -4,6 +4,10 @@ on:
   push:
     branches: [bench/newcache-blob-checks]
 
+concurrency:
+  group: new-cache-blobs-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -15,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-latest]
+        os: [macos-15, windows-latest]
     defaults:
       run:
         shell: bash
