@@ -25,8 +25,8 @@ static GLOBAL: sftrace_setup::SftraceAllocator<std::alloc::System> =
 static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
   tracy_client::ProfiledAllocator::new(std::alloc::System, 10); // adjust callstack_depth if needed with performance cost
 
-/// Return already-freed pages through a process-wide purge at a rebuild boundary.
-/// May decommit pages other threads would reuse; a no-op without mimalloc.
+/// Collect already-freed pages and expired process-wide arena purges.
+/// A no-op unless mimalloc is the global allocator.
 pub fn collect() {
   #[cfg(all(
     not(any(miri, target_family = "wasm", feature = "system-allocator")),
@@ -36,6 +36,6 @@ pub fn collect() {
     // Sftrace wraps MiMalloc; Tracy alone wraps System.
     // SAFETY: mi_collect has no preconditions. It collects only the calling
     // thread's heap plus arena purges, not every worker's thread-local heap.
-    unsafe { libmimalloc_sys::mi_collect(true) };
+    unsafe { libmimalloc_sys::mi_collect(false) };
   }
 }
