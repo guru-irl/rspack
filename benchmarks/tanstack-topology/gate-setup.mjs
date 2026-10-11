@@ -9,6 +9,7 @@ const versions = ['2.2.8', '2.2.9-canary-f2903b64-20261010173351'];
 const pluginVersion = '1.171.46';
 const patchFile = path.join(root, `benchmarks/tanstack-topology/start-plugin-core-${pluginVersion}-gate-resolver-rebuild.patch`);
 let failed = false;
+const childOnly = process.env.CHILD_ONLY === '1';
 for (const version of versions) {
   const dir = path.join(root, '.spider/scratch/tanstack-topology/apps', version);
   const result = path.join(out, version);
@@ -63,14 +64,16 @@ function Home() {
     instrumented = instrumented.slice(0, update) + `globalThis.__publicResolverProbe ??= [];\n\t\t\t\t\t\tglobalThis.__publicResolverProbe.push({ name: utils.environment.name, content: virtualModuleState.generateCurrentResolverContent(utils.environment.name === serverFnProviderEnv) });\n\t\t\t\t\t\t` + instrumented.slice(update);
     fs.writeFileSync(pluginPath, instrumented);
     fs.copyFileSync(pluginPath, path.join(variantOut, 'observed-plugin.js'));
-    fs.copyFileSync(path.join(root, 'benchmarks/tanstack-topology/gate-run.mjs'), path.join(dir, 'gate-run.mjs'));
-    const run = spawnSync('/usr/bin/time', ['-v', '-o', path.join(variantOut, 'process-time.txt'), 'node', 'gate-run.mjs'], { cwd: dir, env: { ...process.env, NODE_ENV: 'development', RESULT_DIR: variantOut, VARIANT: variant }, encoding: 'utf8', timeout: 480000 });
+    if (childOnly) fs.writeFileSync(path.join(dir, 'src/late-functions.ts'), "import { createServerFn } from '@tanstack/react-start';\nexport const late = createServerFn({ method: 'GET' }).handler(async () => 'late-public');\n");
+    const runner = childOnly ? 'child-run.mjs' : 'gate-run.mjs';
+    fs.copyFileSync(path.join(root, 'benchmarks/tanstack-topology', runner), path.join(dir, runner));
+    const run = spawnSync('/usr/bin/time', ['-v', '-o', path.join(variantOut, 'process-time.txt'), 'node', runner], { cwd: dir, env: { ...process.env, NODE_ENV: childOnly ? 'production' : 'development', RESULT_DIR: variantOut, VARIANT: variant }, encoding: 'utf8', timeout: 480000 });
     fs.writeFileSync(path.join(variantOut, 'console.log'), run.stdout + run.stderr);
     fs.writeFileSync(path.join(variantOut, 'exit.json'), JSON.stringify({ status: run.status, signal: run.signal, error: run.error?.message }));
     console.log(version, variant, run.status, (run.stdout + run.stderr).slice(-4000));
     if (run.status !== 0) failed = true;
   }
-  if (fs.existsSync(patchFile) && !failed) {
+  if (!childOnly && fs.existsSync(patchFile) && !failed) {
     const before = JSON.parse(fs.readFileSync(path.join(result, 'ungated/checks.json')));
     const after = JSON.parse(fs.readFileSync(path.join(result, 'gated/checks.json')));
     const visible = (checks) => checks.map(({ step, ssr, calls, removed }) => ({ step, ssr, calls, removed }));

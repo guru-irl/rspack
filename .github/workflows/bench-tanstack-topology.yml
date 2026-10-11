@@ -11,6 +11,7 @@ permissions:
   contents: read
 jobs:
   reproduce:
+    if: github.repository == 'guru-irl/rspack'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -20,7 +21,7 @@ jobs:
           node-version: '24'
           registry-url: https://registry.npmjs.org
       - name: Reproduce published stable and main canary
-        run: node benchmarks/tanstack-topology/gate-setup.mjs
+        run: CHILD_ONLY=1 node benchmarks/tanstack-topology/gate-setup.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
