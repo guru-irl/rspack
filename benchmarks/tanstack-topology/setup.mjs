@@ -95,6 +95,15 @@ for (const version of versions) {
     }
   };
   walk(path.join(dir, 'node_modules/@tanstack/start-plugin-core'));
+  if (!process.env.DIAGNOSTIC_ONLY) {
+    fs.copyFileSync(path.join(root, 'benchmarks/tanstack-topology/watch-probe.mjs'), path.join(dir, 'watch-probe.mjs'));
+    const probeOut = path.join(result, 'watch-probe');
+    fs.mkdirSync(probeOut, { recursive: true });
+    const probe = spawnSync('node', ['watch-probe.mjs'], { cwd: dir, env: { ...process.env, RESULT_DIR: probeOut }, encoding: 'utf8', timeout: 180000 });
+    fs.writeFileSync(path.join(probeOut, 'console.log'), probe.stdout + probe.stderr);
+    fs.writeFileSync(path.join(probeOut, 'exit.json'), JSON.stringify({ status: probe.status, signal: probe.signal }));
+    console.log(version, 'watch-probe', probe.status, (probe.stdout + probe.stderr).slice(-2000));
+  }
   const pluginPath = path.join(dir, 'node_modules/@tanstack/start-plugin-core/dist/esm/rsbuild/plugin.js');
   const wrapperPath = path.join(dir, 'node_modules/@tanstack/start-server-core/dist/esm/getServerFnById.js');
   const originalPlugin = fs.readFileSync(pluginPath, 'utf8');

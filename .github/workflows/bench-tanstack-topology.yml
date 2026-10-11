@@ -12,31 +12,14 @@ permissions:
 jobs:
   reproduce:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: web-infra-dev/rspack
-          ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636
-          path: .spider/scratch/tanstack-topology/canary-source
-      - name: Instrument exact canary predicate and build consumed binding
-        run: |
-          mkdir -p .spider/scratch/tanstack-topology/results
-          ROOT="$PWD"
-          cd .spider/scratch/tanstack-topology/canary-source
-          python3 "$ROOT/benchmarks/tanstack-topology/instrument.py"
-          rustup show active-toolchain
-          CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_INCREMENTAL=false CARGO_BUILD_JOBS=2 cargo build -p rspack_node --features plugin > "$ROOT/.spider/scratch/tanstack-topology/results/native-build.log" 2>&1
-          cp target/debug/librspack_node.so "$ROOT/.spider/scratch/tanstack-topology/diagnostic.node"
-      - name: Confirm exact predicate on source checkout
-        env:
-          NAPI_RS_NATIVE_LIBRARY_PATH: ${{ github.workspace }}/.spider/scratch/tanstack-topology/diagnostic.node
-          DIAGNOSTIC_ONLY: '1'
+      - name: Reproduce published stable and main canary
         run: node benchmarks/tanstack-topology/setup.mjs
       - uses: actions/upload-artifact@v4
         if: always()
