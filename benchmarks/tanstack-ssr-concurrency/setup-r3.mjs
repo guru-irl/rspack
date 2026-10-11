@@ -16,6 +16,10 @@ const deps={ '@rsbuild/core':process.env.RSBUILD_VERSION||'2.2.12','@rsbuild/plu
 fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({name:'public-watch-fixture',private:true,type:'module',dependencies:deps,overrides:{'@rspack/core':'2.2.8','@tanstack/start-plugin-core':'1.171.46','@tanstack/start-server-core':'1.169.40'}},null,2));
 const install=spawnSync('npm',['install','--registry=https://registry.npmjs.org','--no-audit','--no-fund'],{cwd:app,encoding:'utf8',timeout:600000});
 fs.writeFileSync(path.join(work,'install.log'),install.stdout+install.stderr); assert.equal(install.status,0,'public npm install');
+const rsbuildDist=fs.readFileSync(path.join(app,'node_modules/@rsbuild/core/dist/m.js'),'utf8').split('\n');
+const locations=[];
+for(let i=0;i<rsbuildDist.length;i++)if(['createAssetsMiddleware =','ready: (callback)','loadBundle: async (entryName)','context.hooks.onBeforeStartDevServer.callBatch',"logger.debug('create dev server done')"].some(marker=>rsbuildDist[i].includes(marker)))locations.push({line:i+1,excerpt:rsbuildDist.slice(Math.max(0,i-2),i+18).join('\n')});
+fs.writeFileSync(path.join(work,'r3-rsbuild-request-path.json'),JSON.stringify({version:deps['@rsbuild/core'],file:'dist/m.js',locations},null,2));
 const pkg=path.join(app,'node_modules/@tanstack/start-plugin-core');
 const dist=path.join(pkg,'dist/esm/rsbuild');
 const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js','normalized-client-build.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
@@ -99,7 +103,7 @@ const execute=(arm,scenario,index)=>{
   assert.ok(!/\[tss-ssr-concurrency\]/.test(run.stdout+run.stderr),'no production concurrency logs');
   return {result,status:run.status};
  }
- const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
+ const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,STOCK_REQUEST_EXPECTATION:path.join(work,`stock-request-${process.env.COMPILER_COUNT||'2'}-${scenario}.json`),TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  if(run.status===0 && arm!=='stock' && arm!=='v2') {
@@ -135,7 +139,7 @@ if(mode==='r3-custom-red') {
   const r=execute(arm,'r3-custom-request',arm);
   const evidence=JSON.parse(fs.readFileSync(path.join(r.result,'request-window.json')));
   outcomes.push({arm,exitStatus:r.status,...evidence});
-  if(arm==='v2') {assert.equal(r.status,1,'v2 request window must be RED');assert.notDeepEqual(evidence.css,evidence.newCSS,'v2 omits the new CSS asset');}
+  if(arm==='v2') {assert.equal(r.status,1,'v2 request window must be RED');assert.ok(evidence.expectedCSS.some(url=>!evidence.css.includes(url)),'v2 omits a stock route-needed new CSS asset');}
  }
  fs.writeFileSync(path.join(work,'r3-custom-red.json'),JSON.stringify({passed:true,outcomes},null,2));process.exit(0);
 }

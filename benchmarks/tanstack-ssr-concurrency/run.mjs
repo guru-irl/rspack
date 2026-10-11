@@ -219,13 +219,32 @@ const checkRequestWindow=async()=>{
   else fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\n');
   await waitIdle(1);assert.ok(windowRequest,'request issued during client compilation');await windowRequest;
   const next=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
-  Object.assign(windowEvidence,{previousCSS:previous,newCSS:next,ssrPasses:builds.filter(b=>b.step===step&&b.name==='ssr').length});
+  const expectationFile=process.env.STOCK_REQUEST_EXPECTATION;
+  if(arm==='stock') {
+    const manifest=globalThis.__TSS_DEV_START_MANIFEST__;
+    assert.ok(manifest?.routes?.__root__ && manifest.routes['/'],'stock manifest contains requested route and root');
+    const css=new Set();
+    const collect=value=>{
+      if(typeof value==='string' && /\.css(?:[?#]|$)/.test(value))css.add(value);
+      else if(Array.isArray(value))value.forEach(collect);
+      else if(value && typeof value==='object')Object.values(value).forEach(collect);
+    };
+    // Only the requested route and its ancestor are needed by this page.
+    for(const id of ['__root__','/'])collect(manifest.routes[id]);
+    const expectedCSS=[...css].sort();
+    assert.ok(expectedCSS.length,'stock route manifest has CSS for the edited client entry');
+    fs.writeFileSync(expectationFile,JSON.stringify({route:'/',manifest,expectedCSS},null,2));
+  }
+  const {expectedCSS}=JSON.parse(fs.readFileSync(expectationFile));
+  Object.assign(windowEvidence,{previousCSS:previous,newCSS:next,expectedCSS,ssrPasses:builds.filter(b=>b.step===step&&b.name==='ssr').length});
   fs.writeFileSync(path.join(out,'request-window.json'),JSON.stringify(windowEvidence,null,2));
   assert.ok(windowEvidence.invalidSeen,'request follows client invalid');
   if(customWindow)assert.ok(next.some(url=>!previous.includes(url)),'client-only edit emits a NEW CSS asset');
   else assert.notDeepEqual(next,previous,'client-only CSS edit changes asset hash');
   assert.equal(windowEvidence.status,200,'window request succeeds');
-  assert.deepEqual(windowEvidence.css,next,'window HTML references NEW CSS asset');
+  assert.ok(expectedCSS.some(url=>!previous.includes(url)),'stock route manifest requires the NEW CSS asset');
+  assert.ok(expectedCSS.every(url=>windowEvidence.css.includes(url)),'window HTML references NEW CSS asset required by stock route manifest');
+  assert.ok(windowEvidence.css.every(url=>next.includes(url)),'window HTML has no stale or replaced CSS link');
 };
 let readiness;
 let closeRequested=false;
