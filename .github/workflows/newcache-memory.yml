@@ -17,6 +17,14 @@ on:
         description: Reuse identical f2903b6482 main bindings from another completed build
         default: ''
         type: string
+      hosts:
+        description: JSON runner labels for phase-only retries
+        default: '["ubuntu-24.04","macos-15"]'
+        type: string
+      phases:
+        description: JSON phases for phase-only retries
+        default: '["warm","drop","edit","watch","readonly"]'
+        type: string
       diagnostic:
         description: Build stats-only diagnostics, never acceptance samples
         default: false
@@ -32,12 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         arm: [main, p2-64, p2-128]
-        host: [ubuntu-24.04, macos-15]
-        include:
-          - host: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - host: macos-15
-            target: aarch64-apple-darwin
+        host: ${{ fromJSON(inputs.hosts || '["ubuntu-24.04","macos-15"]') }}
     runs-on: ${{ matrix.host }}
     env:
       CARGO_INCREMENTAL: '0'
@@ -63,7 +66,7 @@ jobs:
         shell: bash
         env:
           ARM: ${{ matrix.arm }}
-          RUST_TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.host == 'ubuntu-24.04' && 'x86_64-unknown-linux-gnu' || 'aarch64-apple-darwin' }}
         run: |
           set -euo pipefail
           mkdir -p .spider/scratch/tmp bundle
@@ -109,9 +112,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        host: [ubuntu-24.04, macos-15]
+        host: ${{ fromJSON(inputs.hosts || '["ubuntu-24.04","macos-15"]') }}
         candidate: [p2-64, p2-128]
-        phase: [warm, drop, edit, watch, readonly]
+        phase: ${{ fromJSON(inputs.phases || '["warm","drop","edit","watch","readonly"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
