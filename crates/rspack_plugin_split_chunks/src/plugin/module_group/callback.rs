@@ -295,12 +295,16 @@ impl<'a> Phase<'a> {
       matched.extend(candidates.iter().copied().filter(|index| {
         let item = self.module(*index);
         let matched = match &group.test {
-          CacheGroupTest::String(test) => item
-            .name_for_condition()
+          CacheGroupTest::String(test) => self
+            .stage
+            .module_names
+            .get(*index as usize, item)
             .is_some_and(|name| name.starts_with(test)),
-          CacheGroupTest::RegExp(test) => item
-            .name_for_condition()
-            .is_some_and(|name| test.test(&name)),
+          CacheGroupTest::RegExp(test) => self
+            .stage
+            .module_names
+            .get(*index as usize, item)
+            .is_some_and(|name| test.test(name)),
           CacheGroupTest::Enabled => true,
           CacheGroupTest::Fn(_) => unreachable!("scalar callback handled separately"),
         };

@@ -1246,6 +1246,7 @@ impl SplitChunksPlugin {
           plugin: self,
           combinator,
           all_modules,
+          module_names,
           compilation,
           module_chunks,
           module_group_map: &module_group_map,
