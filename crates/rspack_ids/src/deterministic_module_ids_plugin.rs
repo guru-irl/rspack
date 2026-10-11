@@ -1,8 +1,8 @@
 use derive_more::Debug;
 use rayon::prelude::*;
 use rspack_core::{
-  ChunkGraph, Compilation, CompilationModuleIds, ModuleId, ModuleIdsArtifact, Plugin,
-  incremental::IncrementalPasses,
+  ChunkGraph, Compilation, CompilationModuleIds, DeterministicModuleIdsInputs, ModuleId,
+  ModuleIdsArtifact, Plugin, incremental::IncrementalPasses,
 };
 use rspack_error::{Diagnostic, Result, error};
 use rspack_hook::{plugin, plugin_hook};
@@ -68,8 +68,89 @@ async fn module_ids(
   preserved_module_ids: &ModuleIdsArtifact,
   diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<()> {
+  let hooks = &compilation.plugin_driver.compilation_hooks;
+  // Replaying multiple allocators has pass-disable/clear interactions. Unknown
+  // taps, callable filters and current hook-assigned IDs stay on that path.
+  let can_reuse = self.test.is_none()
+    && preserved_module_ids.is_empty()
+    && hooks.module_ids.tap_stages().len() == 1
+    && !hooks.module_ids.has_interceptors()
+    && compilation
+      .incremental
+      .passes_enabled(IncrementalPasses::MODULE_IDS);
+  let inputs = can_reuse.then(|| {
+    let context = self
+      .context
+      .as_deref()
+      .unwrap_or(compilation.options.context.as_ref());
+    // Use this compilation's reservations, never recovered IDs, to determine
+    // the full allocation domain, including candidates already assigned last time.
+    let (used_ids, modules) =
+      get_used_module_ids_and_modules_with_artifact(compilation, preserved_module_ids, None);
+    let mg = compilation.get_module_graph();
+    let mut candidates = modules
+      .into_par_iter()
+      .map(|identifier| {
+        let module = mg
+          .module_by_identifier(&identifier)
+          .expect("should have module");
+        (
+          identifier,
+          get_full_module_name(module, context),
+          mg.get_pre_order_index(&identifier),
+        )
+      })
+      .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|(a, _, a_index), (b, _, b_index)| {
+      compare_by_pre_order_index_or_id(*a_index, a, *b_index, b)
+    });
+    let ranges = [10usize
+      .checked_pow(self.max_length as u32)
+      .unwrap_or(usize::MAX)];
+    let range = get_deterministic_id_range(
+      candidates.len(),
+      &ranges,
+      if self.fixed_length { 0 } else { 10 },
+      used_ids.len(),
+    );
+    let mut reserved_ids = used_ids.into_iter().map(ModuleId::from).collect::<Vec<_>>();
+    reserved_ids.sort_unstable();
+    DeterministicModuleIdsInputs {
+      candidates,
+      reserved_ids,
+      context: context.to_owned(),
+      range,
+      max_length: self.max_length,
+      salt: self.salt,
+      fixed_length: self.fixed_length,
+      fail_on_conflict: self.fail_on_conflict,
+    }
+  });
+  {
+    let mut previous = compilation
+      .module_ids_diff_artifact
+      .deterministic_inputs
+      .lock()
+      .expect("Mutex poisoned: deterministic module ID inputs");
+    if let Some(inputs) = &inputs
+      && compilation
+        .incremental
+        .mutations_readable(IncrementalPasses::MODULE_IDS)
+      && previous.as_ref() == Some(inputs)
+      && module_ids.len() == inputs.candidates.len()
+      && inputs
+        .candidates
+        .iter()
+        .all(|(identifier, _, _)| module_ids.contains_key(identifier))
+    {
+      return Ok(());
+    }
+    // A failed allocation must not leave an input proof paired with its IDs.
+    *previous = None;
+  }
+
   if let Some(diagnostic) = compilation.incremental.disable_passes(
-    IncrementalPasses::MODULE_IDS | IncrementalPasses::MODULES_HASHES,
+    IncrementalPasses::MODULE_IDS,
     "DeterministicModuleIdsPlugin (optimization.moduleIds = \"deterministic\")",
     "it requires calculating the id of all the modules, which is a global effect",
   ) {
@@ -79,61 +160,86 @@ async fn module_ids(
     module_ids.retain(|module, _| preserved_module_ids.contains_key(module));
   }
 
-  // Use the sync path when no async test filter is provided (the common case),
-  // avoiding unnecessary async overhead on the hot path.
-  let (used_ids, modules) = if self.test.is_some() {
-    get_used_module_ids_and_modules_with_async_filter(compilation, module_ids, self.test.as_ref())
-      .await?
-  } else {
-    get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None)
-  };
-
-  let mut module_ids_map = std::mem::take(module_ids);
-  let context = self
-    .context
-    .as_deref()
-    .unwrap_or(compilation.options.context.as_ref());
   let mut conflicts = 0;
-
-  let module_graph = compilation.get_module_graph();
-  let modules = modules
-    .into_iter()
-    .filter_map(|identifier| {
-      module_graph
-        .module_by_identifier(&identifier)
-        .map(|module| {
-          (
-            identifier,
-            module,
-            module_graph.get_pre_order_index(&identifier),
-          )
-        })
-    })
-    .collect::<Vec<_>>();
-  let used_ids_len = used_ids.len();
   let ranges = [10usize
     .checked_pow(self.max_length as u32)
     .unwrap_or(usize::MAX)];
   let expand_factor = if self.fixed_length { 0 } else { 10 };
-  let range = get_deterministic_id_range(modules.len(), &ranges, expand_factor, used_ids_len);
 
-  let modules_with_hashes = modules
-    .into_par_iter()
-    .map(|(identifier, module, pre_order_index)| {
-      let full_name = get_full_module_name(module, context);
-      (
-        identifier,
-        pre_order_index,
-        get_number_hash_state(&full_name, range),
+  let (mut used_module_ids, modules_with_hashes) = if let Some(inputs) = &inputs {
+    // The captured candidate count and reservations define the hashing range.
+    // Replay this exact domain instead of scanning the module graph again.
+    debug_assert_eq!(
+      inputs.range,
+      get_deterministic_id_range(
+        inputs.candidates.len(),
+        &ranges,
+        expand_factor,
+        inputs.reserved_ids.len(),
       )
-    })
-    .collect::<Vec<_>>();
-
-  let mut used_module_ids = FxHashSet::with_capacity_and_hasher(
-    used_ids_len + modules_with_hashes.len(),
-    Default::default(),
-  );
-  used_module_ids.extend(used_ids.into_iter().map(ModuleId::from));
+    );
+    let mut used_module_ids = FxHashSet::with_capacity_and_hasher(
+      inputs.reserved_ids.len() + inputs.candidates.len(),
+      Default::default(),
+    );
+    used_module_ids.extend(inputs.reserved_ids.iter().cloned());
+    let modules_with_hashes = inputs
+      .candidates
+      .par_iter()
+      .map(|(identifier, full_name, pre_order_index)| {
+        (
+          *identifier,
+          *pre_order_index,
+          get_number_hash_state(full_name, inputs.range),
+        )
+      })
+      .collect::<Vec<_>>();
+    (used_module_ids, modules_with_hashes)
+  } else {
+    // Callable filters and other unprovable inputs retain the original replay.
+    let (used_ids, modules) = if self.test.is_some() {
+      get_used_module_ids_and_modules_with_async_filter(compilation, module_ids, self.test.as_ref())
+        .await?
+    } else {
+      get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None)
+    };
+    let context = self
+      .context
+      .as_deref()
+      .unwrap_or(compilation.options.context.as_ref());
+    let module_graph = compilation.get_module_graph();
+    let modules = modules
+      .into_iter()
+      .filter_map(|identifier| {
+        module_graph
+          .module_by_identifier(&identifier)
+          .map(|module| {
+            (
+              identifier,
+              module,
+              module_graph.get_pre_order_index(&identifier),
+            )
+          })
+      })
+      .collect::<Vec<_>>();
+    let range = get_deterministic_id_range(modules.len(), &ranges, expand_factor, used_ids.len());
+    let mut used_module_ids =
+      FxHashSet::with_capacity_and_hasher(used_ids.len() + modules.len(), Default::default());
+    used_module_ids.extend(used_ids.into_iter().map(ModuleId::from));
+    let modules_with_hashes = modules
+      .into_par_iter()
+      .map(|(identifier, module, pre_order_index)| {
+        let full_name = get_full_module_name(module, context);
+        (
+          identifier,
+          pre_order_index,
+          get_number_hash_state(&full_name, range),
+        )
+      })
+      .collect::<Vec<_>>();
+    (used_module_ids, modules_with_hashes)
+  };
+  let mut module_ids_map = std::mem::take(module_ids);
   module_ids_map.reserve(modules_with_hashes.len());
 
   assign_deterministic_ids_with_hash(
@@ -164,6 +270,13 @@ async fn module_ids(
       "Assigning deterministic module ids has lead to {conflicts} conflict{}.\nIncrease the 'maxLength' to increase the id space and make conflicts less likely (recommended when there are many conflicts or application is expected to grow), or add an 'salt' number to try another hash starting value in the same id space (recommended when there is only a single conflict).",
       if conflicts > 1 { "s" } else { "" }
     ));
+  }
+  if let Some(inputs) = inputs {
+    *compilation
+      .module_ids_diff_artifact
+      .deterministic_inputs
+      .lock()
+      .expect("Mutex poisoned: deterministic module ID inputs") = Some(inputs);
   }
   Ok(())
 }
