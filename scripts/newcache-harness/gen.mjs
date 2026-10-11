@@ -94,7 +94,7 @@ w(
 
 const file = (i) => `src/d${Math.floor(i / PER_DIR)}/m${i}`;
 const rel = (from, to) => {
-  let r = path.relative(path.dirname(from), to);
+  let r = path.relative(path.dirname(from), to).replaceAll('\\', '/');
   if (!r.startsWith('.')) r = './' + r;
   return r;
 };
