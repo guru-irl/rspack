@@ -61,10 +61,6 @@ jobs:
           cp .spider/scratch/sc-size/unstripped.node .spider/scratch/sc-size/rspack.linux-x64-gnu.node
           strip .spider/scratch/sc-size/rspack.linux-x64-gnu.node
           stat -c '%s' .spider/scratch/sc-size/rspack.linux-x64-gnu.node > .spider/scratch/sc-size/size.txt
-      - name: Rust format and focused lint
-        run: |
-          cargo fmt --all --check
-          cargo clippy -p rspack_plugin_split_chunks -p rspack_binding_api --all-targets --all-features -- -D warnings
       - name: CI-profile bloat and LLVM instantiations
         run: |
           out="$PWD/.spider/scratch/sc-size"
@@ -77,6 +73,15 @@ jobs:
           for crate in rspack_plugin_split_chunks rspack_binding_api; do
             cargo llvm-lines --profile ci -p "$crate" --lib --config 'target."cfg(all())".rustflags=["-Cforce-unwind-tables=yes"]' > "$out/llvm-lines-$crate.txt"
           done
+      - name: Rust format and focused lint
+        run: |
+          out="$PWD/.spider/scratch/sc-size"
+          cargo fmt --all --check > "$out/format.log" 2>&1 || {
+            cargo fmt --all
+            git diff > "$out/format.patch"
+            exit 1
+          }
+          cargo clippy -p rspack_plugin_split_chunks -p rspack_binding_api --all-targets --all-features -- -D warnings > "$out/clippy.log" 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
