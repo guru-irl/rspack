@@ -1,0 +1,180 @@
+--- a/dist/esm/rsbuild/plugin.js
++++ b/dist/esm/rsbuild/plugin.js
+@@ -38,6 +38,29 @@
+ 	let devServerRef = null;
+ 	const serverFnsById = {};
+ 	let updateServerFnResolver;
++	let concurrentDev = false;
++	let ssrCompiler;
++	let firstClientManifest;
++	let releaseFirstClientManifest;
++	let rejectFirstClientManifest;
++	let clientManifestPublished = false;
++	let resolverRevision = 0;
++	let ssrResolverRevision = -1;
++	let followUpQueued = false;
++	const coldOverlapMode = process.env.TSS_SSR_COLD_OVERLAP;
++	const coldOverlap = coldOverlapMode === "1";
++	const coldAfterMake = coldOverlapMode === "after-make";
++	let releaseFirstClientMake;
++	let firstClientMake;
++	let clientMakeComplete = false;
++	const invalidateSsr = () => {
++		if (!ssrCompiler || followUpQueued) return;
++		followUpQueued = true;
++		setImmediate(() => {
++			followUpQueued = false;
++			ssrCompiler?.watching?.invalidate();
++		});
++	};
+ 	return {
+ 		name: "tanstack-start-rsbuild",
+ 		setup(api) {
+@@ -155,6 +178,7 @@
+ 				serverFnsById,
+ 				onServerFnsByIdChange: () => {
+ 					updateServerFnResolver?.();
++					if (concurrentDev) resolverRevision = virtualModuleState.getResolverWriteRevision(serverFnProviderEnv);
+ 				}
+ 			});
+ 			registerImportProtection(api, {
+@@ -177,12 +201,26 @@
+ 			if (!rscEnabled) api.modifyRspackConfig((config, utils) => {
+ 				if (!startCompilerServerEnvironmentNames.includes(utils.environment.name)) return;
+ 				config.plugins.push({ apply(compiler) {
++					if (utils.environment.name === RSBUILD_ENVIRONMENT_NAMES.server) ssrCompiler = compiler;
++					const isDev = api.context.action === "dev";
++					let lastBuiltResolverRevision = -1;
++					if (isDev) compiler.hooks.done.tap("TanStackStartResolverWriteCheck", () => {
++						if (lastBuiltResolverRevision >= 0 && lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) {
++							if (compiler === ssrCompiler) invalidateSsr();
++							else setImmediate(() => compiler.watching?.invalidate());
++						}
++					});
+ 					compiler.hooks.finishMake.tapPromise({
+ 						name: "TanStackStartServerFnResolverRebuild",
+ 						stage: -10
+ 					}, async (compilation) => {
+ 						virtualModuleState.updateServerFnResolver();
+-						await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++						const revision = virtualModuleState.getResolverWriteRevision(utils.environment.name);
++						if (concurrentDev && compilation.compiler === ssrCompiler) ssrResolverRevision = revision;
++						if (!isDev || compilation.compiler !== compiler || lastBuiltResolverRevision !== revision) {
++							await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++							if (isDev && compilation.compiler === compiler) lastBuiltResolverRevision = revision;
++						}
+ 					});
+ 				} });
+ 			});
+@@ -272,7 +310,60 @@
+ 					devServerRef = server;
+ 				});
+ 			}
++			const logConcurrencyState = (compiler) => {
++				if (api.context.action !== "dev") return;
++				const concurrentSwitch = process.env.TSS_SSR_CONCURRENT;
++				if (coldOverlapMode !== undefined && !["0", "after-make", "1"].includes(coldOverlapMode)) api.logger.warn(`[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=${coldOverlapMode}`);
++				if (concurrentSwitch !== undefined && !["0", "1"].includes(concurrentSwitch)) api.logger.warn(`[tss-ssr-concurrency] ignored TSS_SSR_CONCURRENT=${concurrentSwitch}`);
++				if (concurrentSwitch === "0") api.logger.info("[tss-ssr-concurrency] disengaged reason=switch (TSS_SSR_CONCURRENT=0) gate=on");
++				else if (concurrentDev) api.logger.info(`[tss-ssr-concurrency] engaged mode=${coldAfterMake ? "after-make" : coldOverlap ? "1" : "default"} gate=on`);
++				else {
++					const reason = rscEnabled ? "rsc" : !ssrIsProvider || serverFnProviderEnv !== RSBUILD_ENVIRONMENT_NAMES.server ? "provider" : !("compilers" in compiler) || compiler.compilers.length !== 2 ? "compiler-count" : "names-or-dependencies";
++					api.logger.info(`[tss-ssr-concurrency] disengaged reason=topology (${reason}) gate=on`);
++				}
++			};
++			if (rscEnabled) api.onAfterCreateCompiler(({ compiler }) => logConcurrencyState(compiler));
+ 			if (!rscEnabled) api.onAfterCreateCompiler(({ compiler }) => {
++				if (api.context.action === "dev" && process.env.TSS_SSR_CONCURRENT !== "0" && ssrIsProvider && serverFnProviderEnv === RSBUILD_ENVIRONMENT_NAMES.server && "compilers" in compiler && compiler.compilers.length === 2) {
++					const clientCompiler = compiler.compilers.find((c) => c.name === RSBUILD_ENVIRONMENT_NAMES.client);
++					const serverCompiler = compiler.compilers.find((c) => c.name === RSBUILD_ENVIRONMENT_NAMES.server);
++					const hasDependencies = (c) => (compiler.dependencies?.get(c)?.length ?? 0) > 0 || (c.options.dependencies?.length ?? 0) > 0;
++					if (clientCompiler && serverCompiler && !hasDependencies(clientCompiler) && !hasDependencies(serverCompiler)) {
++						concurrentDev = true;
++						ssrCompiler = serverCompiler;
++						resolverRevision = virtualModuleState.getResolverWriteRevision(serverFnProviderEnv);
++						firstClientManifest = new Promise((resolve, reject) => {
++							releaseFirstClientManifest = resolve;
++							rejectFirstClientManifest = reject;
++						});
++						// Overlap mode has no consumer for this promise; avoid an unhandled rejection.
++						firstClientManifest.catch(() => {});
++						firstClientMake = new Promise((resolve) => { releaseFirstClientMake = resolve; });
++						clientCompiler.hooks.finishMake.tap({ name: "TanStackStartClientMakeBarrier", stage: 1000 }, (compilation) => {
++							if (compilation.compiler !== clientCompiler) return;
++							clientMakeComplete = true;
++							releaseFirstClientMake();
++						});
++						clientCompiler.hooks.failed.tap("TanStackStartClientManifestBarrier", (error) => rejectFirstClientManifest(error));
++						clientCompiler.hooks.watchClose.tap("TanStackStartClientManifestBarrier", () => {
++							rejectFirstClientManifest(new Error("TanStack Start: client watcher closed"));
++							releaseFirstClientMake();
++						});
++						clientCompiler.hooks.afterDone.tap("TanStackStartClientManifestBarrier", () => {
++							if (clientManifestPublished) releaseFirstClientManifest();
++						});
++						serverCompiler.hooks.watchRun.tapPromise({ name: "TanStackStartClientManifestBarrier", stage: -100 }, async () => {
++							if (coldAfterMake && !clientMakeComplete) await Promise.race([firstClientMake, firstClientManifest]);
++							else if (!coldOverlap && !coldAfterMake && !clientManifestPublished) await firstClientManifest;
++						});
++						serverCompiler.hooks.done.tap({ name: "TanStackStartSsrRevisionCheck", stage: 1000 }, () => {
++							if (ssrResolverRevision !== virtualModuleState.getResolverWriteRevision(serverFnProviderEnv)) invalidateSsr();
++						});
++						logConcurrencyState(compiler);
++						return;
++					}
++				}
++				logConcurrencyState(compiler);
+ 				if ("compilers" in compiler) for (const environmentName of startCompilerServerEnvironmentNames) {
+ 					const serverCompiler = compiler.compilers.find((c) => c.name === environmentName);
+ 					if (serverCompiler) {
+@@ -317,7 +408,14 @@
+ 				if (environment.name !== RSBUILD_ENVIRONMENT_NAMES.client) return;
+ 				virtualModuleState.updateServerFnResolver();
+ 				const clientBuild = getClientBuild();
+-				if (clientBuild) virtualModuleState.updateManifest(clientBuild);
++				if (clientBuild) {
++					virtualModuleState.updateManifest(clientBuild);
++					if (concurrentDev) {
++						clientManifestPublished = true;
++						resolverRevision = virtualModuleState.getResolverWriteRevision(serverFnProviderEnv);
++						if (resolverRevision !== ssrResolverRevision && !ssrCompiler.watching?.running && (coldOverlap || coldAfterMake || ssrResolverRevision >= 0)) invalidateSsr();
++					}
++				}
+ 			});
+ 			if (api.context.action === "build") api.onAfterBuild(async () => {
+ 				const { startConfig } = getConfig();
+--- a/dist/esm/rsbuild/virtual-modules.js
++++ b/dist/esm/rsbuild/virtual-modules.js
+@@ -138,6 +138,7 @@
+ 	const pendingWrites = /* @__PURE__ */ new Map();
+ 	let clientBuild;
+ 	const lastResolverContentByEnvironment = {};
++	const resolverWriteRevisionByEnvironment = {};
+ 	const hasSeparateProviderEnvironment = !opts.rscEnabled && opts.providerEnvName !== RSBUILD_ENVIRONMENT_NAMES.server;
+ 	const hasSerializationAdapters = Boolean(opts.serializationAdapters?.length);
+ 	function isProviderEnvironment(environmentName) {
+@@ -229,6 +230,14 @@
+ 		const initialContent = getInitialContent(envName);
+ 		const VMP = utils.rspack.experiments.VirtualModulesPlugin;
+ 		const vmPlugin = new VMP(initialContent);
++		if (!opts.rscEnabled) {
++			const writeModule = vmPlugin.writeModule.bind(vmPlugin);
++			vmPlugin.writeModule = (filePath, content) => {
++				const result = writeModule(filePath, content);
++				if (isDev && filePath === paths.serverFnResolver) resolverWriteRevisionByEnvironment[envName] = (resolverWriteRevisionByEnvironment[envName] ?? 0) + 1;
++				return result;
++			};
++		}
+ 		vmPlugins[envName] = vmPlugin;
+ 		readyVmPlugins[envName] = false;
+ 		config.plugins.push(vmPlugin);
+@@ -255,6 +264,9 @@
+ 	});
+ 	return {
+ 		serverFnResolverPath: paths.serverFnResolver,
++		getResolverWriteRevision(environmentName) {
++			return resolverWriteRevisionByEnvironment[environmentName] ?? 0;
++		},
+ 		manifestPath: paths.manifest,
+ 		vmPlugins,
+ 		generateCurrentResolverContent(forProvider) {

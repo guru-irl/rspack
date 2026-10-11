@@ -25,7 +25,7 @@ export function structural(pristine,patched) {
  v=v.replace('\tconst resolverWriteRevisionByEnvironment = {};\n','');
  v=v.replace('\t\tgetResolverWriteRevision(environmentName) {\n\t\t\treturn resolverWriteRevisionByEnvironment[environmentName] ?? 0;\n\t\t},\n','');
  // Only this explicitly non-RSC addition may differ in the shared registration.
- const wrapStart='\t\tif (!opts.rscEnabled) {\n\t\t\tconst writeModule = vmPlugin.writeModule.bind(vmPlugin);';
+ const wrapStart=v.includes('\t\tif (isDev && !opts.rscEnabled) {')?'\t\tif (isDev && !opts.rscEnabled) {\n\t\t\tconst writeModule = vmPlugin.writeModule.bind(vmPlugin);':'\t\tif (!opts.rscEnabled) {\n\t\t\tconst writeModule = vmPlugin.writeModule.bind(vmPlugin);';
  if(v.includes(wrapStart)){const wrap=between(v,wrapStart,'\t\tvmPlugins[envName] = vmPlugin;');v=v.replace(wrap,'');}
  check('virtual-modules.js','all stock RSC virtual module code',pristine['virtual-modules.js'],v);
  return {passed:rows.every(r=>r.equal),regions:rows};

@@ -36,6 +36,20 @@ const compilers = new Map();
 const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
+const startPlugin=tanstackStart();
+assert.equal(startPlugin.name,'tanstack-start-rsbuild');
+const originalSetup=startPlugin.setup;
+startPlugin.setup=(api)=>{
+ const registrations=[];
+ const processAssets=api.processAssets.bind(api);
+ api.processAssets=(options,callback)=>{registrations.push({options,source:Function.prototype.toString.call(callback)});return processAssets(options,callback);};
+ originalSetup(api);
+ api.onAfterCreateCompiler(()=>{
+  const matched=registrations.filter(({options})=>Object.keys(options).length===2&&options.stage==='report'&&JSON.stringify(options.environments)==='["client"]');
+  assert.equal(matched.length,1,'exactly one client report capture registration');
+  fs.writeFileSync(path.join(out,'plugin-capture.json'),JSON.stringify({pluginName:startPlugin.name,registrations:matched},null,2));
+ });
+};
 const probe = { name: 'watch-observer', setup(api) {
   api.onBeforeStartDevServer(({server})=>{hookEnvironment=server.environments.ssr;});
 
@@ -217,7 +231,7 @@ let readiness;
 let closeRequested=false;
 const started=now();
 try {
-  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, output:requestWindowEnabled?{filename:customWindow?{js:'[name].js',css:'[name].css'}:{css:'[name].[contenthash:8].css'}}:undefined, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
+  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),startPlugin,probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, output:requestWindowEnabled?{filename:customWindow?{js:'[name].js',css:'[name].css'}:{css:'[name].[contenthash:8].css'}}:undefined, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   if(customWindow) {
     server=await rsbuild.createDevServer();
     assert.equal(server.environments.ssr,hookEnvironment,'createDevServer exposes the same SSR environment as the hook');

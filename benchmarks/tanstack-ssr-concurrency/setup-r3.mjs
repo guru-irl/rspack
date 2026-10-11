@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { captureIdentity, functionInventory } from './check-identity.mjs';
+import { topology } from './check-topology.mjs';
 import { structural, execution } from './check-rsc.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -9,13 +11,13 @@ const fixture=path.join(root,'benchmarks/tanstack-ssr-concurrency');
 const work=process.env.WORK_DIR || path.join(root,'bench-results/tanstack-ssr-concurrency');
 const app=path.join(work,'app');
 fs.mkdirSync(app,{recursive:true});
-const deps={ '@rsbuild/core':process.env.RSBUILD_VERSION||'2.2.12','@rsbuild/plugin-react':'2.1.1','@tanstack/react-start':'1.168.61','@tanstack/react-router':'1.170.42','@tanstack/start-plugin-core':'1.171.46','@tanstack/start-server-core':'1.169.40','react':'19.3.0','react-dom':'19.3.0','@rspack/core':'2.2.8' };
+const deps={ '@rsbuild/core':process.env.RSBUILD_VERSION||'2.2.12','@rsbuild/plugin-react':'2.1.1','@tanstack/react-start':'1.168.61','@tanstack/react-router':'1.170.42','@tanstack/start-plugin-core':'1.171.46','@tanstack/start-server-core':'1.169.40','react':'19.3.0','react-dom':'19.3.0','acorn':'8.15.0','@rspack/core':'2.2.8' };
 fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({name:'public-watch-fixture',private:true,type:'module',dependencies:deps,overrides:{'@rspack/core':'2.2.8','@tanstack/start-plugin-core':'1.171.46','@tanstack/start-server-core':'1.169.40'}},null,2));
 const install=spawnSync('npm',['install','--registry=https://registry.npmjs.org','--no-audit','--no-fund'],{cwd:app,encoding:'utf8',timeout:600000});
 fs.writeFileSync(path.join(work,'install.log'),install.stdout+install.stderr); assert.equal(install.status,0,'public npm install');
 const pkg=path.join(app,'node_modules/@tanstack/start-plugin-core');
 const dist=path.join(pkg,'dist/esm/rsbuild');
-const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
+const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js','normalized-client-build.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
 fs.copyFileSync(path.join(app,'package-lock.json'),path.join(work,'package-lock.json'));
 // Independently reconstruct the measured candidate and regenerate the corrected
 // patch from pristine bytes. Retain complete non-RSC partition hashes as evidence.
@@ -31,28 +33,36 @@ const appliedMeasured=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',histori
 for(const f of ['plugin.js','virtual-modules.js'])fs.copyFileSync(path.join(measuredFiles,f),path.join(measuredRoot,`measured-${f}`));
 const generatedRoot=path.join(work,'generated-dist'),generatedPatch=path.join(work,'generated-combined.patch');
 const generated=spawnSync('python3',[path.join(fixture,'generate-r2b.py'),pristineRoot,measuredRoot,generatedRoot,generatedPatch],{encoding:'utf8'});assert.equal(generated.status,0,generated.stdout+generated.stderr);
-assert.deepEqual(fs.readFileSync(generatedPatch),fs.readFileSync(path.join(fixture,'start-plugin-core-1.171.46-combined.patch')),'scoped generator must exactly reproduce the tested patch');
+assert.deepEqual(fs.readFileSync(generatedPatch),fs.readFileSync(path.join(fixture,'start-plugin-core-1.171.46-approved-v2.patch')),'scoped generator must exactly reproduce the tested patch');
 fs.copyFileSync(path.join(generatedRoot,'non-rsc-region-proof.json'),path.join(work,'r2b-non-rsc-region-proof.json'));
-const structuralApply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',path.join(fixture,'start-plugin-core-1.171.46-combined.patch')],{cwd:pkg,encoding:'utf8'});
+const v3Root=path.join(work,'generated-v3'),v3Patch=path.join(work,'generated-v3.patch');
+const generateV3=spawnSync('python3',[path.join(fixture,'generate-r3.py'),pristineRoot,generatedRoot,v3Root,v3Patch],{encoding:'utf8'});assert.equal(generateV3.status,0,generateV3.stdout+generateV3.stderr);
+fs.copyFileSync(path.join(v3Root,'v2-partition-proof.json'),path.join(work,'r3-v2-partition-proof.json'));
+const v3=Object.fromEntries(['plugin.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(v3Root,f),'utf8')]));
+
+const structuralApply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',v3Patch],{cwd:pkg,encoding:'utf8'});
 fs.writeFileSync(path.join(work,'r2b-clean-apply.log'),structuralApply.stdout+structuralApply.stderr);
 assert.equal(structuralApply.status,0);assert.ok(!/offset|fuzz|FAILED/i.test(structuralApply.stdout+structuralApply.stderr));
 const candidate=Object.fromEntries(['plugin.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
+await captureIdentity(originals['normalized-client-build.js'],pkg,work);
 const structure=structural(originals,candidate);
 fs.writeFileSync(path.join(work,'r2b-structural.json'),JSON.stringify(structure,null,2));
 assert.ok(structure.passed,'RSC byte equality before syntax, execution, or watch validation');
 fs.writeFileSync(path.join(work,'r2b-execution.json'),JSON.stringify(await execution(originals,candidate,pkg,work),null,2));
+fs.writeFileSync(path.join(work,'r3-topology.json'),JSON.stringify(topology(v3['plugin.js']),null,2));
+functionInventory(originals,v3,work);
 if(process.env.MODE==='r2b-red') process.exit(0);
 const execute=(arm,scenario,index)=>{
  const result=path.join(work,`${scenario}-${index}-${arm}`); fs.mkdirSync(result,{recursive:true});
  for(const [f,text] of Object.entries(originals)) fs.writeFileSync(path.join(dist,f),text);
  if(arm!=='stock') {
-  const patchFile=arm==='v2'?path.join(root,'benchmarks/tanstack-topology/start-plugin-core-1.171.46-gate-resolver-rebuild-v2.patch'):path.join(fixture,'start-plugin-core-1.171.46-combined.patch');
+  const patchFile=arm==='v2'?path.join(fixture,'start-plugin-core-1.171.46-approved-v2.patch'):v3Patch;
   const apply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',patchFile],{cwd:pkg,encoding:'utf8'});
   fs.writeFileSync(path.join(result,'patch-apply.log'),apply.stdout+apply.stderr); assert.equal(apply.status,0,'pristine dist patch applies');assert.ok(!/offset|fuzz|FAILED/i.test(apply.stdout+apply.stderr),'clean apply without offsets or fuzz');
  }
- const expected=arm==='stock'?{ 'plugin.js':'c892ae8404c1e30a2f409fcf1890713453fd465b9a515a5d5a8e685160d1e63b','virtual-modules.js':'8b1aca7c277767ae7a84cb63057b34d4e2dc1b7b90e150a2bb9cf47a4c3bc8a6' }:{ 'plugin.js':'7facb464609413c2878889abc0dd413cc8a1fe1655a8a620b768ac8d0852146f','virtual-modules.js':'186d9992310fd77ebd06b91419c2de95029e67919d2ab29e1ff069da0e3984d0' };
+ const expected=arm==='stock'?{ 'plugin.js':'c892ae8404c1e30a2f409fcf1890713453fd465b9a515a5d5a8e685160d1e63b','virtual-modules.js':'8b1aca7c277767ae7a84cb63057b34d4e2dc1b7b90e150a2bb9cf47a4c3bc8a6' }:Object.fromEntries(Object.entries(arm==='v2'?Object.fromEntries(['plugin.js','virtual-modules.js'].map(f=>[f,fs.readFileSync(path.join(generatedRoot,f),'utf8')])):v3).map(([f,text])=>[f,crypto.createHash('sha256').update(text).digest('hex')]));
  for(const file of ['plugin.js','virtual-modules.js']) {
-  if(arm!=='v2')assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,file))).digest('hex'),expected[file],`${file}: pristine/patched output byte-for-byte hash`);
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,file))).digest('hex'),expected[file],`${file}: pristine/patched output byte-for-byte hash`);
   const checked=spawnSync('node',['--check',path.join(dist,file)],{encoding:'utf8'});
   fs.writeFileSync(path.join(result,`${file}-syntax.log`),checked.stdout+checked.stderr);assert.equal(checked.status,0,`${file}: syntax`);
   fs.copyFileSync(path.join(dist,file),path.join(result,`unobserved-${file}`));
@@ -78,12 +88,20 @@ const execute=(arm,scenario,index)=>{
   fs.writeFileSync(path.join(app,'aux/request.css'),'.generic-request { color: rgb(20, 20, 20); }\n');
   for(const name of ['aux-a','aux-b'])fs.writeFileSync(path.join(app,'aux',`${name}.js`),`document.body.textContent = 'Generic ${name}';\n`);
   fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
+ if(scenario==='production') {
+  fs.copyFileSync(path.join(fixture,'run-production.mjs'),path.join(app,'run-production.mjs'));
+  const run=spawnSync('node',['run-production.mjs'],{cwd:app,env:{...process.env,NODE_ENV:'production',RESULT_DIR:result},encoding:'utf8',timeout:600000});
+  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
+  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal}));
+  assert.ok(!/\[tss-ssr-concurrency\]/.test(run.stdout+run.stderr),'no production concurrency logs');
+  return {result,status:run.status};
+ }
  const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  if(run.status===0 && arm!=='stock' && arm!=='v2') {
   const log=fs.readFileSync(path.join(result,'node-console.log'),'utf8');
-  const state=process.env.USER_EDGES?'disengaged reason=topology (user-dependency)':scenario==='r2-topology'?'disengaged reason=topology (user-dependency)':arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
+  const state=arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':process.env.USER_EDGES?'disengaged reason=topology (user-dependency)':scenario==='r2-topology'?'disengaged reason=topology (user-dependency)':arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
   assert.equal(log.split(`[tss-ssr-concurrency] ${state} gate=on`).length-1,scenario==='r2-restart'?2:1,'literal startup state per start');
   if(arm==='invalid-mode')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=after_make'));
   if(arm==='invalid-switch')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_CONCURRENT=true'));
@@ -92,6 +110,7 @@ const execute=(arm,scenario,index)=>{
  return {result,status:run.status};
 };
 const mode=process.env.MODE;
+if(mode==='r3-checks')process.exit(0);
 const parity=(results,label)=>{
  const visible=r=>JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(({step,responses,calls,removedCalls})=>({step,responses,calls,removedCalls}));
  const reference=results[0];assert.equal(visible(reference).length,22,'full checkpoint count');
@@ -109,11 +128,11 @@ const checked=(arm,scenario,index)=>{const r=execute(arm,scenario,index);assert.
 if(mode==='r3-custom-red') {
  process.env.COMPILER_COUNT='2';
  const outcomes=[];
- for(const arm of ['stock','barrier']) {
+ for(const arm of ['stock','v2']) {
   const r=execute(arm,'r3-custom-request',arm);
   const evidence=JSON.parse(fs.readFileSync(path.join(r.result,'request-window.json')));
   outcomes.push({arm,status:r.status,...evidence});
-  if(arm==='barrier') {assert.equal(r.status,1,'v2 request window must be RED');assert.notDeepEqual(evidence.css,evidence.newCSS,'v2 omits the new CSS asset');}
+  if(arm==='v2') {assert.equal(r.status,1,'v2 request window must be RED');assert.notDeepEqual(evidence.css,evidence.newCSS,'v2 omits the new CSS asset');}
  }
  fs.writeFileSync(path.join(work,'r3-custom-red.json'),JSON.stringify({passed:true,outcomes},null,2));process.exit(0);
 }
@@ -138,11 +157,27 @@ if(mode==='r3-red') {
  // eligibility is the sole RED failure.
  checked('barrier','correctness','red');process.exit(0);
 }
+const production=()=>{
+ for(const count of ['2','4']) {
+  process.env.COMPILER_COUNT=count;
+  const stock=checked('stock','production',count),patched=checked('barrier','production',count);
+  for(const file of ['production-dependencies.json','production-assets.json','production-taps.json'])assert.deepEqual(JSON.parse(fs.readFileSync(path.join(patched.result,file))),JSON.parse(fs.readFileSync(path.join(stock.result,file))),`${count}: ${file} parity`);
+ }
+ fs.writeFileSync(path.join(work,'r3-production-parity.json'),JSON.stringify({passed:true,compilers:[2,4]}));
+};
+if(mode==='r3-production') {production();process.exit(0);}
+if(mode==='r3-custom-green') {
+ for(const count of ['2','4']) {process.env.COMPILER_COUNT=count;for(const arm of ['stock','v2','barrier']) {
+  const r=execute(arm,'r3-custom-request',count);
+  if(arm==='barrier')assert.equal(r.status,0,'v3 custom request window');
+ }} process.exit(0);
+}
 if(mode==='r3-measure') {
  process.env.COMPILER_COUNT='4';const orders=[];
  for(let i=1;i<=10;i++)for(const scenario of ['cold-measure','warm-leaf','warm-body']) {const forward=['stock','gate-only','barrier'];const arms=i%2?forward:[...forward].reverse();orders.push({index:i,scenario,arms});for(const arm of arms)checked(arm,scenario,i);}
  fs.writeFileSync(path.join(work,'arm-orders.json'),JSON.stringify(orders,null,2));process.exit(0);
 }
+production();
 for(const count of ['4','2']) {
  process.env.COMPILER_COUNT=count;
  parity(['stock','gate-only','barrier','after-make','overlap'].map(arm=>checked(arm,'correctness',Number(count))),`compilers-${count}`);
@@ -152,11 +187,13 @@ for(const count of ['4','2']) {
 }
 process.env.COMPILER_COUNT='4';
 for(const edge of ['direct','transitive']) {
+ process.env.USER_EDGES=edge;
  const baseline=checked('gate-only','correctness',edge+'-reference');
- process.env.USER_EDGES=edge;const edged=checked('barrier','correctness',edge);delete process.env.USER_EDGES;
+ const edged=checked('barrier','correctness',edge);delete process.env.USER_EDGES;
  parity([baseline,edged],`user-${edge}`);
  const counts=r=>{const builds=JSON.parse(fs.readFileSync(path.join(r.result,'builds.json')));return Object.fromEntries(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(c=>[c.step,Object.fromEntries(['client','ssr','aux-a','aux-b'].map(name=>[name,builds.filter(b=>b.step===c.step&&b.name===name).length]))]));};
  assert.deepEqual(counts(edged),counts(baseline),`${edge}: gate-only pass counts`);
  fs.writeFileSync(path.join(work,`user-${edge}-counts.json`),JSON.stringify({passed:true,reference:counts(baseline),edge:counts(edged)},null,2));
 }
+for(const count of ['2','4']){process.env.COMPILER_COUNT=count;checked('barrier','r3-custom-request',count);}
 fs.writeFileSync(path.join(work,'r3-success.json'),JSON.stringify({passed:true}));
