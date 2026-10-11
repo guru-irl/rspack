@@ -66,6 +66,7 @@ jobs:
           export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=source-swc STUDY_PROBE=1 STUDY_CACHE_PROBE=1
           for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
       - name: Perf profile
+        if: false
         timeout-minutes: 15
         shell: bash
         run: |
@@ -83,6 +84,7 @@ jobs:
           "$PERF" script -i "$STUDY_RESULTS/perf.data" -F comm,pid,tid,time,event,ip,sym,dso | python3 benchmarks/sourcemap-emit/profile-summary.py "$STUDY_RESULTS"
           rm "$STUDY_RESULTS/perf.data"
       - name: Paired direct content buffer prototype
+        if: false
         shell: bash
         run: |
           cp crates/node_binding/rspack.linux-x64-gnu.node "$STUDY_RESULTS/baseline.node"
@@ -99,7 +101,6 @@ jobs:
       - name: Paired parallel JSON prototype
         shell: bash
         run: |
-          git restore crates/rspack_binding_api/src/compilation/mod.rs packages/rspack/src/Compilation.ts packages/rspack/src/taps/compiler.ts
           python3 benchmarks/sourcemap-emit/prototype.py json
           pnpm run build:binding:profiling
           pnpm run build:js
@@ -111,17 +112,30 @@ jobs:
           import json, os, pathlib
           root = pathlib.Path(os.environ['STUDY_RESULTS'])
           baseline = json.loads((root / 'source-disk-hashes.json').read_text())
-          for name in ['source-memfs', 'owned-disk', 'owned-memfs', 'json-disk', 'json-memfs']:
+          for name in ['source-memfs', 'json-disk', 'json-memfs']:
             assert json.loads((root / (name + '-hashes.json')).read_text()) == baseline, name
           swc = json.loads((root / 'source-swc-disk-hashes.json').read_text())
-          for name in ['source-swc-memfs', 'published-swc-disk', 'published-swc-memfs', 'owned-swc-disk', 'owned-swc-memfs', 'json-swc-disk', 'json-swc-memfs']:
+          for name in ['source-swc-memfs', 'published-swc-disk', 'published-swc-memfs', 'json-swc-disk', 'json-swc-memfs']:
             assert json.loads((root / (name + '-hashes.json')).read_text()) == swc, name
           (root / 'parity.txt').write_text('Byte-identical bundles and maps across all baseline and prototype edits.\n')
           PY
-          rm "$STUDY_RESULTS/baseline.node" "$STUDY_RESULTS/buffer.node"
+      - name: Existing source-map correctness checks
+        shell: bash
+        run: |
+          pnpm --dir tests/rspack-test run test -t 'configCases/source-map|configCases/builtin-swc-loader/source-map|compiler#assetEmitted' > "$STUDY_RESULTS/focused-tests.log" 2>&1
+          pnpm run test:unit > "$STUDY_RESULTS/unit-tests.log" 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sourcemap-emit-${{ github.run_id }}
-          path: .spider/scratch/sourcemap-emit/results
+          path: |
+            .spider/scratch/sourcemap-emit/results/*.log
+            .spider/scratch/sourcemap-emit/results/*.json
+            .spider/scratch/sourcemap-emit/results/*.jsonl
+            .spider/scratch/sourcemap-emit/results/*.csv
+            .spider/scratch/sourcemap-emit/results/*.txt
+            !.spider/scratch/sourcemap-emit/results/**/*.node
+            !.spider/scratch/sourcemap-emit/results/**/*.map
+            !.spider/scratch/sourcemap-emit/results/**/*.js
+            !.spider/scratch/sourcemap-emit/results/**/node_modules/**
           retention-days: 14

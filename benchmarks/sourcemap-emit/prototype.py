@@ -58,13 +58,18 @@ elif sys.argv[1] == 'json':
     let mut fields = self.fields.as_borrowed();
     fields.sources_content = Cow::Borrowed(&[]);
     // Canonical small fields, preserving serializer field order. Insert sourcesContent before names.
-    let header = simd_json::to_vec(&fields).unwrap();
-    let marker = b",\\\"names\\\":";
-    let split = header.windows(marker.len()).position(|s| s == marker).unwrap();
+    let mut header_size = Counter(0);
+    simd_json::to_writer(&mut header_size, &fields).unwrap();
     let prefix = b",\\\"sourcesContent\\\":[";
     let content_size = lengths.iter().sum::<usize>() + lengths.len().saturating_sub(1);
-    let mut output = Vec::with_capacity(header.len() + prefix.len() + content_size + 1);
-    output.extend_from_slice(&header[..split]); output.extend_from_slice(prefix);
+    let mut output = Vec::with_capacity(header_size.0 + prefix.len() + content_size + 1);
+    output.extend_from_slice(b"{\\\"version\\\":");
+    simd_json::to_writer(&mut output, &fields.version).unwrap();
+    if let Some(file) = &fields.file {
+      output.extend_from_slice(b",\\\"file\\\":"); simd_json::to_writer(&mut output, file).unwrap();
+    }
+    output.extend_from_slice(b",\\\"sources\\\":"); simd_json::to_writer(&mut output, &fields.sources).unwrap();
+    output.extend_from_slice(prefix);
     let content_start = output.len();
     output.resize(content_start + content_size, 0);
     // Safe recursive splitting creates disjoint mutable output slices, with no per-string buffers.
@@ -89,7 +94,19 @@ elif sys.argv[1] == 'json':
     let fill_start = std::time::Instant::now();
     fill(&self.fields.sources_content, &lengths, &mut output[content_start..]);
     let fill_us = fill_start.elapsed().as_micros();
-    output.push(b']'); output.extend_from_slice(&header[split..]);
+    output.push(b']');
+    output.extend_from_slice(b",\\\"names\\\":"); simd_json::to_writer(&mut output, &fields.names).unwrap();
+    output.extend_from_slice(b",\\\"mappings\\\":"); simd_json::to_writer(&mut output, &fields.mappings).unwrap();
+    if let Some(value) = &fields.source_root {
+      output.extend_from_slice(b",\\\"sourceRoot\\\":"); simd_json::to_writer(&mut output, value).unwrap();
+    }
+    if let Some(value) = &fields.debug_id {
+      output.extend_from_slice(b",\\\"debugId\\\":"); simd_json::to_writer(&mut output, value).unwrap();
+    }
+    if let Some(value) = &fields.ignore_list {
+      output.extend_from_slice(b",\\\"ignoreList\\\":"); simd_json::to_writer(&mut output, value).unwrap();
+    }
+    output.push(b'}');
     if std::env::var_os("STUDY_PROBE").is_some() {
       eprintln!("STUDY_METRIC parallel_json_count_us {} fill_us {} total_us {}", count_us, fill_us, start.elapsed().as_micros());
     }
