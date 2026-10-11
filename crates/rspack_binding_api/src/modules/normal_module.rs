@@ -18,6 +18,25 @@ use crate::{
   shared_properties::get_shared_properties,
 };
 
+type NormalModuleInstaller<'a> = Function<'a,
+  FnArgs<(
+    Object<'a>,
+    napi::JsString<'a>,
+    napi::JsString<'a>,
+    napi::JsString<'a>,
+    napi::JsString<'a>,
+    Object<'a>,
+    napi::JsString<'a>,
+    napi::JsString<'a>,
+    Object<'a>,
+    Object<'a>,
+    Object<'a>,
+    napi::JsString<'a>,
+    napi::Unknown<'a>,
+  )>,
+  (),
+>;
+
 #[napi]
 #[repr(C)]
 pub struct NormalModule {
@@ -81,24 +100,7 @@ impl NormalModule {
     let derived = Self::shared_properties(env)?;
     let base_descriptors: Object = base.get_named_property("descriptors")?;
     let derived_descriptors: Object = derived.get_named_property("descriptors")?;
-    let install: Function<
-      FnArgs<(
-        Object,
-        napi::JsString,
-        napi::JsString,
-        napi::JsString,
-        napi::JsString,
-        Object,
-        napi::JsString,
-        napi::JsString,
-        Object,
-        Object,
-        Object,
-        napi::JsString,
-        napi::Unknown,
-      )>,
-      (),
-    > = match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
+    let install: NormalModuleInstaller<'_> = match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
       Some(_) => derived.get_named_property("install")?,
       None => {
         let install: Function<napi::Unknown, ()> =
