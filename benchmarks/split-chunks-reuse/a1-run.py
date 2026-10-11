@@ -15,7 +15,7 @@ os.environ.update(TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch))
 core = here / 'node_modules/@rspack/core'
 binding = here / 'node_modules/@rspack/binding'
 sequence = []
-for block in range(1, 6):
+for block in range(1, int(os.environ.get('PAIRS', '5')) + 1):
     if args.mode == 'timing':
         arms = [('C', 'main', 'js'), ('CA1', 'main-a1', 'js'), ('D', 'batch', 'js'), ('DA1', 'batch-a1', 'js'), ('C2', 'main', 'native-only'), ('C2A1', 'main-a1', 'native-only')]
         if block % 2 == 0:

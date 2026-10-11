@@ -9,9 +9,22 @@ permissions:
   contents: read
   actions: read
 jobs:
-  macos-memory:
-    runs-on: macos-15
-    timeout-minutes: 100
+  memory:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            pairs: 5
+          - os: windows-latest
+            pairs: 5
+          - os: macos-15
+            pairs: 10
+    env:
+      PAIRS: ${{ matrix.pairs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@v4
@@ -23,13 +36,13 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          name: a1-source-macos-15-main
+          name: a1-source-${{ matrix.os }}-main
           path: source-artifacts/main
           run-id: 38114499302
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
-          name: a1-source-macos-15-main-a1
+          name: a1-source-${{ matrix.os }}-main-a1
           path: source-artifacts/main-a1
           run-id: 38114499302
           github-token: ${{ github.token }}
@@ -44,7 +57,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: split-chunks-a1-macos-15-${{ github.run_id }}
+          name: split-chunks-a1-${{ matrix.os }}-${{ github.run_id }}
           path: |
             .spider/scratch/split-chunks-name-once/**/*.json
             .spider/scratch/split-chunks-name-once/**/*.log
