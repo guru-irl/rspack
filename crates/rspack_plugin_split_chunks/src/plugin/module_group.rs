@@ -13,7 +13,7 @@ use itertools::Either;
 use rayon::prelude::*;
 use rspack_collections::SsoHashSet;
 use rspack_core::{
-  ChunkByUkey, ChunkUkey, Compilation, ExportsInfoArtifact, Module, ModuleIdentifier,
+  ChunkByUkey, ChunkUkey, Compilation, ExportsInfoArtifact, Logger, Module, ModuleIdentifier,
   RuntimeKeyMap, UsageKey, get_runtime_key,
 };
 use rspack_error::Result;
