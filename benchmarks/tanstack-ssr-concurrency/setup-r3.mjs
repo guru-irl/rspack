@@ -108,7 +108,7 @@ const execute=(arm,scenario,index)=>{
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  if(run.status===0 && arm!=='stock' && arm!=='v2') {
-  const log=fs.readFileSync(path.join(result,'node-console.log'),'utf8');
+  const log=fs.readFileSync(path.join(result,process.env.MODE==='r3-response-diagnosis'?'console.log':'node-console.log'),'utf8');
   const state=arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':process.env.USER_EDGES?'disengaged reason=topology (user-dependency)':scenario==='r2-topology'?'disengaged reason=topology (user-dependency)':arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
   assert.equal(log.split(`[tss-ssr-concurrency] ${state} gate=on`).length-1,scenario==='r2-restart'?2:1,'literal startup state per start');
   if(arm==='invalid-mode')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=after_make'));
