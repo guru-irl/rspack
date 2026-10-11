@@ -14,9 +14,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - host: macos-15
-            target: aarch64-apple-darwin
-            jobs: '3'
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             jobs: '4'

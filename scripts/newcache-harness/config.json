@@ -7,7 +7,7 @@
   "pairs": 5,
   "aa_pairs": 5,
   "enabled": true,
-  "phases": ["watch"],
+  "phases": ["warm"],
   "post_done_ms": [100, 500],
   "idle_timeout_ms": 3000
 }
