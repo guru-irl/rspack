@@ -1,5 +1,7 @@
 name: New Cache Value Compression Checks
 on:
+  push:
+    branches: [bench/newcache-value-compression-checks]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -25,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || inputs.source_ref }}
+          ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || inputs.source_ref || 'f8861dd74c' }}
           path: source
       - uses: actions/checkout@v4
         with:
@@ -126,7 +128,7 @@ jobs:
       target: x86_64-unknown-linux-gnu
       runner: '"ubuntu-24.04"'
       profile: ci
-      ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || inputs.source_ref }}
+      ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || inputs.source_ref || 'f8861dd74c' }}
       binding_postfix: -${{ matrix.arm }}
   size-limit:
     name: Binary Size Limit
@@ -147,7 +149,7 @@ jobs:
           from pathlib import Path
           a = next(Path('artifacts/bindings-x86_64-unknown-linux-gnu-main').glob('*.node')).stat().st_size
           b = next(Path('artifacts/bindings-x86_64-unknown-linux-gnu-branch').glob('*.node')).stat().st_size
-          result = {'base': 'f2903b6482cb7a0fcdca912d23062bd94d3d5636', 'head': '${{ inputs.source_ref }}', 'main_bytes': a, 'branch_bytes': b, 'growth_bytes': b-a, 'limit_bytes': 51200, 'passed': b-a <= 51200}
+          result = {'base': 'f2903b6482cb7a0fcdca912d23062bd94d3d5636', 'head': '${{ inputs.source_ref || 'f8861dd74c' }}', 'main_bytes': a, 'branch_bytes': b, 'growth_bytes': b-a, 'limit_bytes': 51200, 'passed': b-a <= 51200}
           Path('size.json').write_text(json.dumps(result, indent=2))
           print(json.dumps(result))
           if not result['passed']: raise SystemExit('Binary Size Limit exceeded')
