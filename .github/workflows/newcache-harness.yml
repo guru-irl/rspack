@@ -1,7 +1,7 @@
-name: New Cache Sanity
+name: New Cache Idle Release
 on:
   push:
-    branches: [bench/newcache-harness]
+    branches: [bench/newcache-b1-measure]
 permissions:
   contents: read
 jobs:

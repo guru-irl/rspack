@@ -29,9 +29,30 @@ let done,
   idleDone = false,
   complete = false;
 let resolveIdle;
-const idle = new Promise((r) => {
-  resolveIdle = r;
-});
+let idle;
+function resetIdle() {
+  idleDone = false;
+  idle = new Promise((r) => {
+    resolveIdle = r;
+  });
+}
+resetIdle();
+let editStart, editCpu;
+const rounds = [];
+const outputsByRound = [];
+const postDoneMs = JSON.parse(process.env.POST_DONE_MS || '[100, 500]');
+const idleTimeoutMs = Number(process.env.IDLE_TIMEOUT_MS || 3000);
+if (
+  !Array.isArray(postDoneMs) ||
+  postDoneMs.some(
+    (v, i) =>
+      !Number.isFinite(v) ||
+      v <= 0 ||
+      v >= idleTimeoutMs ||
+      (i && v <= postDoneMs[i - 1]),
+  )
+)
+  throw new Error('Invalid post-done offsets');
 const deadline = setTimeout(() => {
   console.error('Harness deadline exceeded');
   process.exit(2);
@@ -63,7 +84,17 @@ async function anchor(name, gc = false) {
     if (!global.gc) throw new Error('--expose-gc required');
     global.gc();
   }
-  const value = { name, ...checkpoint(), memory: memory() };
+  const value = {
+    name,
+    ...checkpoint(),
+    memory: memory(),
+    idle_complete: idleDone,
+  };
+  if (name === 'rebuild_done') {
+    const cpu = process.cpuUsage(editCpu);
+    value.rebuild_ms = performance.now() - editStart;
+    value.rebuild_cpu_ms = (cpu.user + cpu.system) / 1000;
+  }
   anchors.push(value);
   console.log(JSON.stringify({ marker: name, ...value }));
   if (process.env.PARENT_SAMPLER === '1')
@@ -115,6 +146,9 @@ const config = {
     type: 'filesystem',
     cacheLocation: path.join(root, 'cache'),
     version: 'synthetic-sanity',
+    idleTimeout: idleTimeoutMs,
+    idleTimeoutForInitialStore: idleTimeoutMs,
+    idleTimeoutAfterLargeChanges: idleTimeoutMs,
     buildDependencies: { harness: [import.meta.filename] },
   },
   experiments: { newCache: true },
@@ -137,23 +171,75 @@ const config = {
         c.hooks.done.tapPromise('sanity', async (stats) => {
           if (stats.hasErrors())
             throw new Error(stats.toString({ all: false, errors: true }));
-          done = await anchor('done');
+          done = await anchor(
+            editStart === undefined ? 'done' : 'rebuild_done',
+          );
+          rounds.push(done);
         });
       },
     },
   ],
 };
 const compiler = rspack(config);
-await new Promise((res, rej) => compiler.run((e) => (e ? rej(e) : res())));
-await Promise.race([
-  idle,
-  delay(180000, undefined, { ref: false }).then(() => {
-    throw new Error('Missing idle completion');
-  }),
-]);
-await delay(2000); // Same delay after verified store and compaction completion in both arms.
+async function waitIdle() {
+  await Promise.race([
+    idle,
+    delay(180000, undefined, { ref: false }).then(() => {
+      throw new Error('Missing idle completion');
+    }),
+  ]);
+  await delay(2000);
+}
+async function postDone() {
+  const doneAt = start + done.wall_ms;
+  for (const offset of postDoneMs) {
+    await delay(Math.max(0, doneAt + offset - performance.now()));
+    const a = await anchor(`post_done_${offset}ms`, true);
+    a.actual_after_done_ms = a.wall_ms - done.wall_ms;
+    if (a.idle_complete || a.actual_after_done_ms >= idleTimeoutMs)
+      throw new Error('Pre-timeout checkpoint ran too late');
+  }
+}
+let watching;
+let resolveRound, rejectRound;
+let pending;
+const nextRound = () => {
+  pending = new Promise((res, rej) => {
+    resolveRound = res;
+    rejectRound = rej;
+  });
+};
+if (phase === 'watch') {
+  nextRound();
+  watching = compiler.watch({ aggregateTimeout: 50 }, (e, stats) =>
+    e ? rejectRound(e) : resolveRound(stats),
+  );
+  await pending;
+} else {
+  await new Promise((res, rej) => compiler.run((e) => (e ? rej(e) : res())));
+}
+if (phase !== 'cold') await postDone();
+outputsByRound.push(manifest());
+await waitIdle();
 await anchor('END', true);
+if (watching) {
+  const leaf = path.join(root, 'src/d0/m9.js');
+  const original = fs.readFileSync(leaf, 'utf8');
+  resetIdle();
+  nextRound();
+  editStart = performance.now();
+  editCpu = process.cpuUsage();
+  fs.writeFileSync(leaf, original + '\n// public synthetic edit\n');
+  await pending;
+  outputsByRound.push(manifest());
+  await waitIdle();
+  await anchor('rebuild_END', true);
+}
+const closeStart = performance.now();
+if (watching)
+  await new Promise((res, rej) => watching.close((e) => (e ? rej(e) : res())));
 await new Promise((res, rej) => compiler.close((e) => (e ? rej(e) : res())));
+const closeMs = performance.now() - closeStart;
 await anchor('post_close', true);
 if (!done || !idleDone) throw new Error('Missing anchor');
 if (
@@ -169,6 +255,11 @@ const result = {
   anchors,
   events,
   outputs: manifest(),
+  outputs_by_round: outputsByRound,
+  close_ms: closeMs,
+  rebuild_ms: rounds[1]?.rebuild_ms,
+  checkpoints_ms: postDoneMs,
+  idle_timeout_ms: idleTimeoutMs,
   node: process.version,
   platform: process.platform,
 };

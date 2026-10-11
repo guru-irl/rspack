@@ -29,3 +29,11 @@ The after-all-stored wrapper logs failures rather than returning them. The harne
 ## Failure and memory policy
 
 Any nonzero command, missing counter/anchor, invalid cache, output mismatch or infrastructure failure invalidates the run. ENOSPC is never a sample. Raw successful observations, pair order and sampled timelines remain in JSON. The summary reports median and worst candidate-minus-baseline paired deltas, not differences of aggregate medians. For every memory counter and anchor it compares the worst A/B delta to the largest absolute A/A delta, with a zero floor. Any increase beyond this measured A/A envelope makes the command fail and blocks recommendation. A small sanity run is not a general memory-safety or performance proof. Host samples record CPU count and load average where available, plus Linux available memory before each process. Disclose background load and do not drop slow successful samples.
+
+## General lifecycle extensions
+
+This branch starts from the published harness at 94e064c594f5f4d1327cbd20343732b5c9e24ef4. The configuration adds `phases`, `post_done_ms` and `idle_timeout_ms`. The warm and watch phases sample 100 ms and 500 ms after the done hook, with all filesystem idle timeouts set to 3 seconds in both arms. This makes both observations pre-persistence; a checkpoint reaching the timeout or completed idle work fails. Actual offsets are retained.
+
+The watch phase warms from its own timestamp-preserving seed copy, reaches completed idle, edits one public synthetic module, observes rebuild done and completed idle, then closes the watcher and compiler. Every pair compares byte-identical output manifests for each corresponding compilation, including the edit. The original source bytes and nanosecond timestamp are restored before each process. Rebuild timing starts at the source edit and includes watcher aggregation. Close timing includes watcher and compiler shutdown, but excludes post-close GC and counter acknowledgement.
+
+The result retains close time, per-round manifests, current and lifetime peak memory at every new anchor, and sampled process peaks. The summary includes median and worst paired deltas and separately lists time increases beyond measured A/A. Memory-policy failure still blocks recommendation. A 3-second timeout is a disclosed harness setting, not a production default change.

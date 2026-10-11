@@ -57,14 +57,14 @@ def measure(command, output, env):
                 event = json.loads(line)
             except ValueError:
                 continue
-            if event.get('marker') in ['done','END','post_close']:
+            if event.get('marker') and event['marker'] != 'complete':
                 anchor_names.append(event['marker'])
                 markers[event['marker']] = sample()
                 process.stdin.write('ack\n'); process.stdin.flush()
     rc = process.wait(); stop.set(); thread.join()
     if handle: kernel.CloseHandle(handle)
     output.with_suffix('.timeline.json').write_text(json.dumps(samples))
-    if anchor_names != ['done','END','post_close']: raise RuntimeError(f'Missing or duplicate anchors: {anchor_names}')
+    if len(anchor_names) != len(set(anchor_names)) or not anchor_names or anchor_names[-1] != 'post_close': raise RuntimeError(f'Missing or duplicate anchors: {anchor_names}')
     if rc: raise RuntimeError(f'Command failed with exit {rc}: {command}')
     if errors: raise RuntimeError(f'Memory sampler failed: {errors}')
     result = json.loads(output.read_text())

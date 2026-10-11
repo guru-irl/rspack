@@ -1,10 +1,13 @@
 {
   "arms": {
     "A": "f2903b6482cb7a0fcdca912d23062bd94d3d5636",
-    "B": "28b6b8ab3ddec1eefccef9b872e2881088812ce0"
+    "B": "3d527a9b5a026d7e9ea6e20a4d2ca1157fb6f0ca"
   },
   "modules": 60000,
   "pairs": 5,
   "aa_pairs": 5,
-  "enabled": true
+  "enabled": true,
+  "phases": ["warm", "watch"],
+  "post_done_ms": [100, 500],
+  "idle_timeout_ms": 3000
 }

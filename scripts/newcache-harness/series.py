@@ -35,7 +35,7 @@ def run(arm, phase, name):
         if available < 8*1024**3:raise RuntimeError('Measurement needs >=8 GiB available RAM')
     host_samples.append(info)
     (results/'host-samples.json').write_text(json.dumps(host_samples))
-    env = dict(os.environ, PROJECT=str(project), RSPACK_CORE=str(cores[arm]), SOURCE_SHA=config['arms'][arm], PARENT_SAMPLER='1')
+    env = dict(os.environ, PROJECT=str(project), RSPACK_CORE=str(cores[arm]), SOURCE_SHA=config['arms'][arm], PARENT_SAMPLER='1', POST_DONE_MS=json.dumps(config.get('post_done_ms',[100,500])), IDLE_TIMEOUT_MS=str(config.get('idle_timeout_ms',3000)))
     return measure(['node','--expose-gc',str(HERE/'run.mjs'),phase,str(results/(name+'.json'))], results/(name+'.json'), env)
 
 def preread():
@@ -47,8 +47,14 @@ def preread():
                     while f.read(1024*1024): pass
 
 def validate(result, reference):
-    if result['outputs'] != reference: raise RuntimeError('Byte-identical output parity failed')
-    if [a['name'] for a in result['anchors']] != ['done','END','post_close']: raise RuntimeError('Missing anchors')
+    if result['outputs_by_round'][0] != reference: raise RuntimeError('Byte-identical initial output parity failed')
+    names=['done']
+    if result['phase'] != 'cold': names += [f'post_done_{n}ms' for n in config.get('post_done_ms',[100,500])]
+    names += ['END']
+    if result['phase']=='watch': names += ['rebuild_done','rebuild_END']
+    names += ['post_close']
+    if [a['name'] for a in result['anchors']] != names: raise RuntimeError('Missing anchors')
+    if len(result['outputs_by_round']) != (2 if result['phase']=='watch' else 1): raise RuntimeError('Missing output round')
     for a in result['anchors']:
         expected = ['RssAnon','VmHWM'] if sys.platform.startswith('linux') else ['phys_footprint','peak_phys_footprint'] if sys.platform=='darwin' else ['private_bytes','peak_commit','working_set','peak_working_set']
         if any(k not in a['memory'] for k in expected): raise RuntimeError('Missing memory counter')
@@ -63,50 +69,60 @@ for arm in ['A','B']:
     validate(result,reference)
     shutil.copytree(project/'cache',seeds/arm,copy_function=shutil.copy2)
 
-for kind,n in [('AA',config['aa_pairs']),('AB',config['pairs'])]:
+leaf=project/'src/d0/m9.js'
+original=leaf.read_bytes(); source_stat=leaf.stat()
+phases=config.get('phases',['warm','watch'])
+for phase in phases:
+  for kind,n in [('AA',config['aa_pairs']),('AB',config['pairs'])]:
     for pair in range(n):
         arms=['A','A'] if kind=='AA' else ['A','B']
         order=[0,1] if pair%2==0 else [1,0]
         observed={}
         for pos in order:
             arm=arms[pos]
+            leaf.write_bytes(original);os.utime(leaf,ns=(source_stat.st_atime_ns,source_stat.st_mtime_ns))
             shutil.rmtree(project/'cache');shutil.copytree(seeds/arm,project/'cache',copy_function=shutil.copy2)
             preread()
             if (project/'dist').exists():shutil.rmtree(project/'dist')
-            result=run(arm,'warm',f'{kind}-{pair}-{pos}-{arm}')
+            result=run(arm,phase,f'{phase}-{kind}-{pair}-{pos}-{arm}')
             validate(result,reference)
             observed[pos]=result
-        row=dict(kind=kind,pair=pair,order=order,baseline=observed[0],candidate=observed[1])
+        if observed[0]['outputs_by_round'] != observed[1]['outputs_by_round']: raise RuntimeError('Per-round byte-identical paired parity failed')
+        row=dict(phase=phase,kind=kind,pair=pair,order=order,baseline=observed[0],candidate=observed[1])
         records.append(row)
         (results/'pairs.json').write_text(json.dumps(records))
-
 summary={}
-for kind in ['AA','AB']:
-    rows=[r for r in records if r['kind']==kind]
+for phase in phases:
+  summary[phase]={}
+  for kind in ['AA','AB']:
+    rows=[r for r in records if r['kind']==kind and r['phase']==phase]
     metrics={}
-    for name in ['done','END','post_close']:
-        for field in ['wall_ms','cpu_ms'] if name=='done' else []:
-            vals=[r['candidate']['anchors'][0][field]-r['baseline']['anchors'][0][field] for r in rows]
-            metrics[name+'.'+field]=dict(median=statistics.median(vals),worst=max(vals),deltas=vals)
-        base=next(a for a in rows[0]['baseline']['anchors'] if a['name']==name)
-        for field in base['memory']:
-            vals=[next(a for a in r['candidate']['anchors'] if a['name']==name)['memory'][field]-next(a for a in r['baseline']['anchors'] if a['name']==name)['memory'][field] for r in rows]
-            metrics[name+'.'+field]=dict(median=statistics.median(vals),worst=max(vals),deltas=vals)
+    def add(metric,values):
+      metrics[metric]=dict(median=statistics.median(values),worst=max(values),deltas=values)
+    for name in [a['name'] for a in rows[0]['baseline']['anchors']]:
+        def at(result): return next(a for a in result['anchors'] if a['name']==name)
+        for field in ['wall_ms','cpu_ms'] if name=='done' else ['rebuild_ms','rebuild_cpu_ms'] if name=='rebuild_done' else []:
+            add(name+'.'+field,[at(r['candidate'])[field]-at(r['baseline'])[field] for r in rows])
+        for field in at(rows[0]['baseline'])['memory']:
+            add(name+'.'+field,[at(r['candidate'])['memory'][field]-at(r['baseline'])['memory'][field] for r in rows])
+    add('close_ms',[r['candidate']['close_ms']-r['baseline']['close_ms'] for r in rows])
     for field in rows[0]['baseline'].get('sampled_peak',{}):
-        vals=[r['candidate']['sampled_peak'][field]-r['baseline']['sampled_peak'][field] for r in rows]
-        metrics['sampled_peak.'+field]=dict(median=statistics.median(vals),worst=max(vals),deltas=vals)
-    summary[kind]=metrics
-increases=[]
-for metric,value in summary['AB'].items():
-    if metric.endswith(('wall_ms','cpu_ms')):continue
-    noise=max(0,max(abs(v) for v in summary['AA'][metric]['deltas']))
-    if value['worst']>noise:increases.append(dict(metric=metric,worst=value['worst'],aa_max_abs=noise))
-summary.update(memory_increases=increases,config=config,platform=platform.platform(),node=subprocess.check_output(['node','--version'],text=True).strip())
+        add('sampled_peak.'+field,[r['candidate']['sampled_peak'][field]-r['baseline']['sampled_peak'][field] for r in rows])
+    summary[phase][kind]=metrics
+increases=[];time_increases=[]
+for phase in phases:
+  for metric,value in summary[phase]['AB'].items():
+    noise=max(0,max(abs(v) for v in summary[phase]['AA'][metric]['deltas']))
+    if value['worst']>noise:
+      row=dict(phase=phase,metric=metric,median=value['median'],worst=value['worst'],aa_max_abs=noise)
+      (time_increases if metric.endswith('ms') else increases).append(row)
+summary.update(memory_increases=increases,time_increases=time_increases,config=config,platform=platform.platform(),node=subprocess.check_output(['node','--version'],text=True).strip())
 with (results/'paired-deltas.csv').open('w',newline='') as f:
-    writer=csv.writer(f);writer.writerow(['comparison','metric','pair','delta'])
-    for kind in ['AA','AB']:
-        for metric,value in summary[kind].items():
-            for pair,delta in enumerate(value['deltas']):writer.writerow([kind,metric,pair,delta])
+    writer=csv.writer(f);writer.writerow(['phase','comparison','metric','pair','delta'])
+    for phase in phases:
+      for kind in ['AA','AB']:
+        for metric,value in summary[phase][kind].items():
+            for pair,delta in enumerate(value['deltas']):writer.writerow([phase,kind,metric,pair,delta])
 (results/'summary.json').write_text(json.dumps(summary,indent=2))
 print(json.dumps(summary,indent=2))
 if increases: raise RuntimeError('Memory increase beyond A/A noise: stop')
