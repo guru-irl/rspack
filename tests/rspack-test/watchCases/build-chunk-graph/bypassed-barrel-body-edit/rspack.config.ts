@@ -1,5 +1,5 @@
 import { defineConfig } from '@rspack/cli';
-import type { NormalModule } from '@rspack/core';
+import type { Compiler, NormalModule } from '@rspack/core';
 
 export default defineConfig({
   optimization: {
@@ -14,7 +14,7 @@ export default defineConfig({
   },
   plugins: [
     {
-      apply(compiler) {
+      apply(compiler: Compiler) {
         compiler.hooks.finishMake.tapPromise(
           'RebuildStableResolver',
           async compilation => {
