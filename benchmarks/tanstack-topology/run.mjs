@@ -98,9 +98,11 @@ const probe = {
                   });
                 },
               );
-              compilation.hooks.afterOptimizeDependencies.tap('PublicTopologyProbe', () => {
+              compilation.hooks.optimizeModules.tap({ name: 'PublicTopologyProbe', stage: 10000 }, () => {
                 const snapshot = [...compilation.modules].filter(m => target(m.identifier())).map(m => ({
                   id: m.identifier(), ...dependencies(m, compilation),
+                  incoming: compilation.moduleGraph.getIncomingConnections(m).map(c => ({ origin: c.originModule?.identifier(), active: c.getActiveState(undefined) })),
+                  outgoing: compilation.moduleGraph.getOutgoingConnectionsInOrder(m).map(c => ({ module: c.module?.identifier(), active: c.getActiveState(undefined), type: c.dependency?.type })),
                 }));
                 fs.writeFileSync(path.join(out, `${name}-${index}-optimized.json`), JSON.stringify(snapshot, null, 2));
               });
@@ -109,6 +111,8 @@ const probe = {
                   id: m.identifier(),
                   chunks: [...compilation.chunkGraph.getModuleChunksIterable(m)].map(c => c.name ?? c.id),
                   ...dependencies(m, compilation),
+                  incoming: compilation.moduleGraph.getIncomingConnections(m).map(c => ({ origin: c.originModule?.identifier(), active: c.getActiveState(undefined) })),
+                  outgoing: compilation.moduleGraph.getOutgoingConnectionsInOrder(m).map(c => ({ module: c.module?.identifier(), active: c.getActiveState(undefined), type: c.dependency?.type })),
                 }));
                 fs.writeFileSync(path.join(out, `${name}-${index}-sealed.json`), JSON.stringify(snapshot, null, 2));
               });
