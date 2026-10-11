@@ -1,28 +1,95 @@
-// Bench-only timing. Async spans include suspension; do not sum overlapping spans.
-use std::{sync::atomic::{AtomicU64, Ordering}, time::Instant};
-use rspack_core::{Compilation, CompilationLogger, Logger, Module, ModuleIdentifier};
+// Bench-only diagnostics. Phase spans may overlap; sampled call durations are CPU estimates.
+use std::{
+  sync::atomic::{AtomicU64, Ordering},
+  time::Instant,
+};
 
-pub(super) struct Span {
-  logger: CompilationLogger,
-  start: Option<rspack_core::StartTime>,
+use rspack_core::{CompilationLogger, LogType, Logger, Module, ModuleIdentifier};
+
+pub(super) const LABELS: [&str; 13] = [
+  "stage0 priority total",
+  "stage0 combinator",
+  "stage0 matching total",
+  "stage0 matching native",
+  "stage0 matching JS-bearing",
+  "stage0 matching assembly",
+  "stage0 candidate initial sizes",
+  "stage0 candidate selection",
+  "stage0 candidate updates",
+  "stage0 split application",
+  "stage0 JS test phase",
+  "stage0 JS chunks phase",
+  "stage0 JS name phase",
+];
+pub(super) const NATIVE_TEST: usize = 13;
+pub(super) const NATIVE_NAME: usize = 14;
+const COUNT: usize = 15;
+
+#[derive(Default)]
+pub(super) struct Timings {
+  nanos: [AtomicU64; COUNT],
+  pub(super) names: Names,
 }
-impl Span {
-  pub(super) fn new(compilation: &Compilation, label: &'static str) -> Self {
-    let logger = compilation.get_logger("rspack.SplitChunksPlugin");
-    let start = Some(logger.time(label));
-    Self { logger, start }
+impl Timings {
+  pub(super) fn span(&self, slot: usize) -> Span<'_> {
+    Span { nanos: &self.nanos[slot], start: Some(Instant::now()), scale: 1 }
+  }
+  // Selection/application/update are per-candidate operations. No clock on 15/16 calls.
+  pub(super) fn sampled(&self, slot: usize, candidate: usize) -> Span<'_> {
+    Span { nanos: &self.nanos[slot], start: (candidate & 15 == 0).then(Instant::now), scale: 16 }
+  }
+  fn values(&self) -> [u64; COUNT] {
+    std::array::from_fn(|i| self.nanos[i].load(Ordering::Relaxed))
+  }
+  fn emit(logger: &CompilationLogger, values: &[u64; COUNT]) {
+    for (label, nanos) in LABELS.iter().copied().chain(["stage0 native test phase", "stage0 native name phase"]).zip(values) {
+      time(logger, label, *nanos);
+    }
+  }
+  pub(super) fn report(logger: &CompilationLogger, levels: &[(f64, Self)], shared_names: &Names) {
+    let mut total = [0; COUNT];
+    let names = Names::default();
+    for (_, level) in levels {
+      for (sum, value) in total.iter_mut().zip(level.values()) { *sum += value; }
+      names.merge(&level.names);
+    }
+    names.merge(shared_names);
+    Self::emit(logger, &total);
+    names.report(logger);
+    let mut ranked = levels.iter().collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.1.nanos[0].load(Ordering::Relaxed).cmp(&a.1.nanos[0].load(Ordering::Relaxed)).then_with(|| b.0.total_cmp(&a.0)));
+    logger.log(format!("stage0 priority levels: {}; top {} by priority wall time", levels.len(), levels.len().min(10)));
+    for (priority, level) in ranked.into_iter().take(10) {
+      let child = logger.get_child(&format!("priority {priority}"));
+      Self::emit(&child, &level.values());
+      level.names.report(&child);
+    }
   }
 }
-impl Drop for Span {
+
+pub(super) struct Span<'a> {
+  nanos: &'a AtomicU64,
+  start: Option<Instant>,
+  scale: u64,
+}
+impl Drop for Span<'_> {
   fn drop(&mut self) {
-    self.logger.time_end(self.start.take().expect("one timing span"));
+    if let Some(start) = self.start {
+      self.nanos.fetch_add(start.elapsed().as_nanos() as u64 * self.scale, Ordering::Relaxed);
+    }
   }
 }
+
+fn time(logger: &CompilationLogger, label: &'static str, nanos: u64) {
+  logger.raw(LogType::Time { label, secs: nanos / 1_000_000_000, subsec_nanos: (nanos % 1_000_000_000) as u32 });
+}
+
 #[derive(Default)]
 pub(super) struct Names {
   nanos: AtomicU64,
   samples: AtomicU64,
   matcher_nanos: AtomicU64,
+  matcher_samples: AtomicU64,
 }
 impl Names {
   pub(super) fn get(&self, module: &dyn Module, identifier: ModuleIdentifier) -> Option<Box<str>> {
@@ -33,46 +100,22 @@ impl Names {
     self.samples.fetch_add(1, Ordering::Relaxed);
     result
   }
-  pub(super) fn test(&self, module: &dyn Module, identifier: ModuleIdentifier, test: impl FnOnce(Box<str>) -> bool) -> bool {
-    if identifier.precomputed_hash() & 1023 != 0 { return self.get(module, identifier).is_some_and(test); }
+  pub(super) fn test(&self, identifier: ModuleIdentifier, test: impl FnOnce() -> bool) -> bool {
+    if identifier.precomputed_hash() & 1023 != 0 { return test(); }
     let start = Instant::now();
-    let result = self.get(module, identifier).is_some_and(test);
+    let result = test();
     self.matcher_nanos.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    self.matcher_samples.fetch_add(1, Ordering::Relaxed);
     result
   }
-  pub(super) fn report(&self, compilation: &Compilation) {
-    let logger = compilation.get_logger("rspack.SplitChunksPlugin");
-    logger.raw(rspack_core::LogType::Time { label: "stage0 name_for_condition sampled", secs: 0,
-      subsec_nanos: self.nanos.load(Ordering::Relaxed) as u32 });
-    let nanos = self.matcher_nanos.load(Ordering::Relaxed);
-    logger.raw(rspack_core::LogType::Time { label: "stage0 native matcher sampled CPU", secs: nanos / 1_000_000_000,
-      subsec_nanos: (nanos % 1_000_000_000) as u32 });
-    logger.log(format!("stage0 name_for_condition samples: {} (hash 1/1024)", self.samples.load(Ordering::Relaxed)));
-  }
-}
-
-#[derive(Default)]
-pub(super) struct Callbacks {
-  test: AtomicU64,
-  chunks: AtomicU64,
-  name: AtomicU64,
-}
-pub(super) struct AwaitSpan<'a> {
-  nanos: &'a AtomicU64,
-  start: Instant,
-}
-impl Drop for AwaitSpan<'_> {
-  fn drop(&mut self) { self.nanos.fetch_add(self.start.elapsed().as_nanos() as u64, Ordering::Relaxed); }
-}
-impl Callbacks {
-  pub(super) fn test(&self) -> AwaitSpan<'_> { AwaitSpan { nanos: &self.test, start: Instant::now() } }
-  pub(super) fn chunks(&self) -> AwaitSpan<'_> { AwaitSpan { nanos: &self.chunks, start: Instant::now() } }
-  pub(super) fn name(&self) -> AwaitSpan<'_> { AwaitSpan { nanos: &self.name, start: Instant::now() } }
-  pub(super) fn report(&self, compilation: &Compilation) {
-    let logger = compilation.get_logger("rspack.SplitChunksPlugin");
-    for (label, counter) in [("stage0 JS test overlapping awaits", &self.test), ("stage0 JS chunks overlapping awaits", &self.chunks), ("stage0 JS name overlapping awaits", &self.name)] {
-      let nanos = counter.load(Ordering::Relaxed);
-      logger.raw(rspack_core::LogType::Time { label, secs: nanos / 1_000_000_000, subsec_nanos: (nanos % 1_000_000_000) as u32 });
+  fn merge(&self, other: &Self) {
+    for (to, from) in [(&self.nanos, &other.nanos), (&self.samples, &other.samples), (&self.matcher_nanos, &other.matcher_nanos), (&self.matcher_samples, &other.matcher_samples)] {
+      to.fetch_add(from.load(Ordering::Relaxed), Ordering::Relaxed);
     }
+  }
+  fn report(&self, logger: &CompilationLogger) {
+    time(logger, "stage0 name_for_condition sampled", self.nanos.load(Ordering::Relaxed));
+    time(logger, "stage0 native matcher sampled CPU", self.matcher_nanos.load(Ordering::Relaxed));
+    logger.log(format!("stage0 name_for_condition samples: {}; native matcher samples: {} (hash 1/1024; raw sampled ns, multiply by 1024 for aggregate CPU estimate)", self.samples.load(Ordering::Relaxed), self.matcher_samples.load(Ordering::Relaxed)));
   }
 }

@@ -875,6 +875,8 @@ impl SplitChunksPlugin {
     all_modules: &[ModuleIdentifier],
     stages: &[Option<&[IndexedCacheGroup<'_>]>],
     compilation: &Compilation,
+    timings: &[(f64, super::stage0::Timings)],
+    shared_names: &super::stage0::Names,
   ) -> Vec<Option<Vec<NativeCacheGroupMatches>>> {
     let mut matches = stages
       .iter()
@@ -899,7 +901,7 @@ impl SplitChunksPlugin {
     // transpose the borrows so a task tests every group for its modules.
     // This keeps one bitset per group and one lazy name query per module,
     // without temporary bitsets, merging copies or shared mutable writes.
-    for (stage, groups) in matches.iter_mut().zip(stages) {
+    for ((stage, groups), (_, timing)) in matches.iter_mut().zip(stages).zip(timings) {
       if let (Some(stage), Some(groups)) = (stage, groups) {
         for (matched, indexed) in stage.iter_mut().zip(*groups) {
           if let NativeCacheGroupMatches::Modules(modules) = matched {
@@ -907,7 +909,7 @@ impl SplitChunksPlugin {
               .iter_mut()
               .zip(modules.as_mut_slice().chunks_mut(words_per_chunk))
             {
-              job.push((indexed.cache_group, words));
+              job.push((indexed.cache_group, words, &timing.names));
             }
           }
         }
@@ -918,7 +920,7 @@ impl SplitChunksPlugin {
     }
 
     let module_graph = compilation.get_module_graph();
-    let match_chunk = |(chunk_index, mut groups): (usize, Vec<(&CacheGroup, &mut [usize])>)| {
+    let match_chunk = |(chunk_index, mut groups): (usize, Vec<(&CacheGroup, &mut [usize], &super::stage0::Names)>)| {
       let modules = &all_modules[chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB
         ..all_modules
           .len()
@@ -929,7 +931,7 @@ impl SplitChunksPlugin {
           .expect("should have module")
           .as_ref();
         let mut name_for_condition = None;
-        for (group, words) in &mut groups {
+        for (group, words, probe) in &mut groups {
           if !is_default_module_layer_filter(&group.layer)
             && !group
               .layer
@@ -942,12 +944,12 @@ impl SplitChunksPlugin {
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
           ) {
             name_for_condition
-              .get_or_insert_with(|| module.name_for_condition())
+              .get_or_insert_with(|| shared_names.get(module, *identifier))
               .as_deref()
           } else {
             None
           };
-          if test_native_cache_group(&group.test, name) {
+          if probe.test(*identifier, || test_native_cache_group(&group.test, name)) {
             words[index / usize::BITS as usize] |= 1 << (index % usize::BITS as usize);
           }
         }
@@ -980,11 +982,12 @@ impl SplitChunksPlugin {
     all_modules: &[ModuleIdentifier],
     cache_groups: &[IndexedCacheGroup<'_>],
     native_matches: Option<Vec<NativeCacheGroupMatches>>,
+    timings: &super::stage0::Timings,
     compilation: &Compilation,
     module_chunks: &[SsoHashSet<ChunkUkey>],
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
   ) -> Result<ModuleGroupMap> {
-    let names_probe = super::stage0::Names::default();
+    let names_probe = &timings.names;
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
     let batch_getters = self.batch_getters.as_deref();
@@ -1081,6 +1084,7 @@ impl SplitChunksPlugin {
           {
             continue;
           }
+          names_probe.test(module_identifier, || {
           let name = if matches!(
             cache_group.test,
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
@@ -1090,6 +1094,7 @@ impl SplitChunksPlugin {
             None
           };
           test_native_cache_group(&cache_group.test, name.as_deref())
+          })
         };
         if !is_match || belong_to_chunks.len() < cache_group.min_chunks as usize {
           continue;
@@ -1183,7 +1188,7 @@ impl SplitChunksPlugin {
     };
 
     if !native_positions.is_empty() {
-      let _timer = super::stage0::Span::new(compilation, "stage0 matching native");
+      let _timer = timings.span(3);
       if let Some(candidates) = &candidates {
         if candidates.count_ones(..) < NATIVE_SEQUENTIAL_MODULES {
           for index in candidates.ones() {
@@ -1212,10 +1217,11 @@ impl SplitChunksPlugin {
       }
     }
     if !use_native_preparation {
-      let _timer = super::stage0::Span::new(compilation, "stage0 matching JS-bearing");
+      let _timer = timings.span(4);
       callback::prepare_callback_groups(
         callback::Stage {
           plugin: self,
+          timings,
           combinator,
           all_modules,
           compilation,
@@ -1230,8 +1236,7 @@ impl SplitChunksPlugin {
       .await?;
     }
 
-    names_probe.report(compilation);
-    let _assembly_timer = super::stage0::Span::new(compilation, "stage0 matching assembly");
+    let _assembly_timer = timings.span(5);
     let module_group_count = module_group_map.len();
     let mut result = Vec::with_capacity(module_group_count);
     result.extend(module_group_map);

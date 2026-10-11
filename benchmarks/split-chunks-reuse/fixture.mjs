@@ -167,6 +167,18 @@ await new Promise((resolve, reject) => {
       const actual = (await lib.load[0]()).default;
       const expected = getBaseSum(0);
       if (actual !== expected) throw new Error(`Output mismatch on build ${build}: ${actual} !== ${expected}`);
+      // NEXT-MAX-T parity: identical absolute fixture path across sequential arms.
+      const assets = fs.readdirSync(path.join(root, 'dist')).sort();
+      const reference = path.join(process.env.ASSET_REFERENCE, String(build));
+      if (process.env.SAVE_ASSET_REFERENCE === '1') {
+        fs.mkdirSync(reference, { recursive: true });
+        for (const asset of assets) fs.copyFileSync(path.join(root, 'dist', asset), path.join(reference, asset));
+      } else {
+        const expectedAssets = fs.readdirSync(reference).sort();
+        if (JSON.stringify(assets) !== JSON.stringify(expectedAssets)) throw new Error('Emitted asset list differs');
+        for (const asset of assets) if (!fs.readFileSync(path.join(root, 'dist', asset)).equals(fs.readFileSync(path.join(reference, asset)))) throw new Error(`Emitted bytes differ: ${asset}`);
+      }
+      fs.writeFileSync(path.join(out, `assets-${build}.json`), JSON.stringify(Object.fromEntries(assets.map(asset => [asset, crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'dist', asset))).digest('hex')]))));
       const splitTimer = Object.entries(timers).find(([key]) => key.endsWith('/process cache groups'))?.[1];
       if (splitTimer === undefined) throw new Error(`Missing process cache groups timer; see logging-${build}.json`);
       const reconstructed = Object.keys(timers).some(key => key.endsWith('/rebuild chunk graph'));

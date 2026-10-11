@@ -219,17 +219,24 @@ impl SplitChunksPlugin {
       .iter()
       .map(|(_, groups, precompute)| precompute.then_some(groups.as_slice()))
       .collect::<Vec<_>>();
+    let level_timings = priority_cache_groups.iter().map(|(priority, _, _)| (*priority, stage0::Timings::default())).collect::<Vec<_>>();
+    let shared_names = stage0::Names::default();
+    let native_precompute_timer = logger.time("stage0 native precompute");
     let native_matches = if stages.iter().any(Option::is_some) {
-      self.prepare_native_cache_group_matches(&all_modules, &stages, compilation)
+      self.prepare_native_cache_group_matches(&all_modules, &stages, compilation, &level_timings, &shared_names)
     } else {
       stages.iter().map(|_| None).collect()
     };
+    logger.time_end(native_precompute_timer);
     let priority_len = priority_cache_groups.len();
+    let mut candidate = 0usize;
     for (index, ((_, cache_groups, _), native_matches)) in priority_cache_groups
       .into_iter()
       .zip(native_matches)
       .enumerate()
     {
+      let timings = &level_timings[index].1;
+      let _priority_timer = timings.span(0);
       for (module, removed) in removed_module_chunks.drain() {
         let remaining = &mut module_chunks[module_indices[&module]];
         for chunk in removed {
@@ -280,7 +287,7 @@ impl SplitChunksPlugin {
         .map(|cache_group| cache_group.cache_group.min_chunks as usize)
         .min();
 
-      let combination_timer = logger.time("stage0 combinator");
+      let combination_timer = timings.span(1);
       if let Some(min_chunks) = non_used_exports_min_chunks {
         combinator.prepare_group_by_chunks(
           &all_modules,
@@ -315,21 +322,22 @@ impl SplitChunksPlugin {
         );
       }
 
-      logger.time_end(combination_timer);
-      let matching_timer = logger.time("stage0 matching total");
+      drop(combination_timer);
+      let matching_timer = timings.span(2);
       let mut module_group_map = self
         .prepare_module_group_map(
           &combinator,
           &all_modules,
           &cache_groups,
           native_matches,
+          timings,
           compilation,
           available_module_chunks,
           &chunk_index_map,
         )
         .await?;
-      logger.time_end(matching_timer);
-      let size_timer = logger.time("stage0 candidate initial sizes");
+      drop(matching_timer);
+      let size_timer = timings.span(6);
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
       module_group_map
@@ -337,13 +345,14 @@ impl SplitChunksPlugin {
         .for_each(|(_, module_group)| module_group.prepare_modules_for_sizes_and_compare());
       self.ensure_min_size_fit(&mut module_group_map, &module_sizes);
 
-      logger.time_end(size_timer);
+      drop(size_timer);
       while !module_group_map.is_empty() {
-        let selection_timer = logger.time("stage0 candidate selection");
+        candidate += 1;
+        let selection_timer = timings.sampled(7, candidate);
         let (module_group_key, mut module_group) =
           self.find_best_module_group(&mut module_group_map);
-        logger.time_end(selection_timer);
-        let _application_timer = stage0::Span::new(compilation, "stage0 split application");
+        drop(selection_timer);
+        let _application_timer = timings.sampled(9, candidate);
 
         tracing::trace!(
           "ModuleGroup({}) wins, {:?} `ModuleGroup` remains",
@@ -571,14 +580,15 @@ impl SplitChunksPlugin {
 
         self.split_from_original_chunks(&module_group, &used_chunks, new_chunk, compilation);
 
-        let update_timer = logger.time("stage0 candidate updates");
+        drop(_application_timer);
+        let update_timer = timings.sampled(8, candidate);
         self.remove_all_modules_from_other_module_groups(
           &placed_module_chunks,
           &mut module_group_map,
           &module_sizes,
         );
 
-        logger.time_end(update_timer);
+        drop(update_timer);
         if index != priority_len - 1 {
           match &placed_module_chunks {
             ModuleChunkMap::Shared { modules, chunks } => {
@@ -602,6 +612,7 @@ impl SplitChunksPlugin {
       }
     }
     logger.time_end(start);
+    stage0::Timings::report(&logger, &level_timings, &shared_names);
 
     let start = logger.time("ensure max size fit");
     self

@@ -1,0 +1,89 @@
+name: NEXT-MAX-T diagnostic pack
+on:
+  push:
+    branches: ['bench/next-max-sctimers']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, diagnostic]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      RUST_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.arm == 'baseline' && '8aefea23a929df4c500562739b7b994966195108' || github.sha }}
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '24'
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - uses: ./.github/actions/rustup
+        with:
+          key: next-max-t-release
+          save-if: true
+      - name: Build matching release native and JS
+        run: |
+          mkdir -p .spider/scratch/next-max-t/tmp source-result
+          export TMPDIR="$PWD/.spider/scratch/next-max-t/tmp"
+          rustc -Vv > source-result/toolchain.txt
+          pnpm install --frozen-lockfile
+          cargo codegen
+          if [[ '${{ matrix.arm }}' == diagnostic ]]; then
+            rustfmt --edition 2024 crates/rspack_plugin_split_chunks/src/plugin/stage0.rs
+            git diff > source-result/format.diff
+          fi
+          pnpm run build:binding:release 2>&1 | tee source-result/build-binding.log
+          pnpm --filter @rspack/core run build 2>&1 | tee source-result/build-core.log
+          mkdir -p source-result/core source-result/binding
+          cp -a packages/rspack/dist packages/rspack/compiled source-result/core/
+          cp crates/node_binding/binding.js crates/node_binding/rspack.linux-x64-gnu.node source-result/binding/
+          git rev-parse HEAD > source-result/head.txt
+          sha256sum source-result/binding/*.node > source-result/native-sha256.txt
+          git diff > source-result/build-generated.diff
+          if [[ '${{ matrix.arm }}' == diagnostic ]]; then bash benchmarks/split-chunks-reuse/next-max-t-pack.sh; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: next-max-t-source-${{ matrix.arm }}
+          path: source-result
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: matrix.arm == 'diagnostic'
+        with:
+          name: next-max-t-pack
+          path: .spider/scratch/next-max-t/pack
+          retention-days: 14
+  verify:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-max-t-source-baseline
+          path: source-artifacts/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-max-t-source-diagnostic
+          path: source-artifacts/diagnostic
+      - name: Stage 0 parity, timing presence and overhead
+        run: bash benchmarks/split-chunks-reuse/next-max-t-run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: next-max-t-verification
+          path: .spider/scratch/next-max-t/results
+          retention-days: 14
