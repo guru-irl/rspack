@@ -806,12 +806,15 @@ impl<'a> Phase<'a> {
           })
           .buffered(SCALAR_WINDOW);
         while let Some((index, result)) = results.next().await {
-          apply(index, result.map(|value| {
-            let CallbackValue::Bool(value) = value else {
-              unreachable!("chunk callback should return a boolean")
-            };
-            value
-          }));
+          apply(
+            index,
+            result.map(|value| {
+              let CallbackValue::Bool(value) = value else {
+                unreachable!("chunk callback should return a boolean")
+              };
+              value
+            }),
+          );
         }
       }
     }
