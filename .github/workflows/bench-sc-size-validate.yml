@@ -1,5 +1,8 @@
 name: bench SplitChunks size validation
 on:
+  push:
+    branches: [bench/sc-size-24]
+    paths: ['.github/workflows/bench-sc-size-validate.yml']
   workflow_dispatch:
     inputs:
       size_run:
@@ -40,14 +43,14 @@ jobs:
           path: .spider/scratch/sc-validate/bindings
       - uses: actions/download-artifact@v4
         with:
-          run-id: ${{ inputs.size_run }}
+          run-id: ${{ inputs.size_run || '38105741351' }}
           github-token: ${{ github.token }}
           pattern: sc-size-*
           path: .spider/scratch/sc-validate/bindings
       - name: Behavior and paired performance
         env:
-          CHANGED24: ${{ inputs.changed24 }}
-          CHANGED25: ${{ inputs.changed25 }}
+          CHANGED24: ${{ inputs.changed24 || '13e4150e111a3fc644e86d40f42d140aad5110cd' }}
+          CHANGED25: ${{ inputs.changed25 || 'e349ca4754c5c7226b260a53c37f0ccee86e8b92' }}
         run: |
           root="$PWD/.spider/scratch/sc-validate"
           { uname -a; lscpu; node --version; pnpm --version; uptime; df -h .; } > "$root/results/host.txt"
