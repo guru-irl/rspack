@@ -149,10 +149,18 @@ fn encode_cache_entry<T: CacheValueData>(
     .clone()
     .downcast::<T>()
     .map_err(|_| rspack_error::error!("Cache value type mismatch"))?;
-  codec.encode(&StoredCacheEntry {
+  let entry = StoredCacheEntry {
     etag: entry.etag.clone(),
     value,
-  })
+  };
+  #[cfg(not(target_family = "wasm"))]
+  {
+    Ok(super::value_codec::encode(codec.encode_aligned(&entry)?))
+  }
+  #[cfg(target_family = "wasm")]
+  {
+    codec.encode(&entry)
+  }
 }
 
 fn decode_cache_entry<T: CacheValueData>(
@@ -160,6 +168,10 @@ fn decode_cache_entry<T: CacheValueData>(
   etag: Option<&Etag>,
   codec: &CacheCodec,
 ) -> Result<Option<ErasedCacheValue>> {
+  #[cfg(not(target_family = "wasm"))]
+  let archive = super::value_codec::decode(bytes)?;
+  #[cfg(not(target_family = "wasm"))]
+  let bytes = archive.as_ref();
   let entry = codec.decode::<StoredCacheEntry<T>>(bytes)?;
   Ok((entry.etag.as_ref() == etag).then(|| ErasedCacheValue::new(entry.value)))
 }
