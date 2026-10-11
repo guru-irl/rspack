@@ -6,6 +6,7 @@ mod cgm_hash_artifact;
 mod cgm_runtime_requirement_artifact;
 mod chunk_hashes_artifact;
 mod chunk_ids_artifact;
+mod chunk_ids_diff_artifact;
 mod chunk_render_artifact;
 mod chunk_render_cache_artifact;
 mod circular_modules_info;
@@ -95,6 +96,9 @@ pub use cgm_hash_artifact::*;
 pub use cgm_runtime_requirement_artifact::*;
 pub use chunk_hashes_artifact::*;
 pub use chunk_ids_artifact::*;
+pub use chunk_ids_diff_artifact::{
+  ChunkGroupIdIdentity, ChunkIdIdentity, ChunkIdsDiffArtifact, DeterministicChunkIdsInputs,
+};
 pub use chunk_render_artifact::ChunkRenderArtifact;
 pub use chunk_render_cache_artifact::ChunkRenderCacheArtifact;
 pub use circular_modules_info::*;

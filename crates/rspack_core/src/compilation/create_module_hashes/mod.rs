@@ -20,6 +20,8 @@ impl PassExt for CreateModuleHashesPass {
     // IDs now correspond to the updated hash artifact. A failed earlier pass
     // must not advance this baseline, even if it completed ID assignment.
     compilation.module_ids_diff_artifact.previous_ids = None;
+    // The CHUNK_IDS artifact's baseline must correspond to completed hashes.
+    compilation.chunk_ids_diff_artifact.advance_hash_baseline();
     Ok(())
   }
 }
