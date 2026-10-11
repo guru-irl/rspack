@@ -1,4 +1,4 @@
-use std::panic::AssertUnwindSafe;
+use std::{panic::AssertUnwindSafe, sync::Mutex};
 
 use futures::{Future, FutureExt};
 use rspack_napi::napi::{
@@ -74,6 +74,36 @@ impl<R: ToNapiValue> JsValuesTupleIntoVec for CallbackArgs<R> {
         // SAFETY: the error is materialized in the same active JS handle scope.
         Ok(vec![unsafe { JsError::from(error).into_value(env) }])
       }
+    }
+  }
+}
+
+// Serialize only build start/finish bookkeeping and collection, not builds.
+// Holding the lock during collection prevents a new build starting mid-purge.
+static ACTIVE_BUILDS: Mutex<(usize, bool)> = Mutex::new((0, false));
+
+pub(crate) struct ActiveBuild;
+
+impl ActiveBuild {
+  pub(crate) fn new() -> Self {
+    let mut state = ACTIVE_BUILDS.lock().unwrap_or_else(|e| e.into_inner());
+    state.0 += 1;
+    Self
+  }
+
+  pub(crate) fn finish_rebuild(self) {
+    ACTIVE_BUILDS.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+    drop(self);
+  }
+}
+
+impl Drop for ActiveBuild {
+  fn drop(&mut self) {
+    let mut state = ACTIVE_BUILDS.lock().unwrap_or_else(|e| e.into_inner());
+    state.0 -= 1;
+    if state.0 == 0 && state.1 {
+      state.1 = false;
+      rspack_allocator::collect();
     }
   }
 }

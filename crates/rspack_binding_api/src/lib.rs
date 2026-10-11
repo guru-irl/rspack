@@ -451,9 +451,11 @@ impl JsCompiler {
         callbackify(
           f,
           async move {
+            let active_build = utils::ActiveBuild::new();
             let result = compiler.build().await.to_napi_result_with_message(|e| {
               print_error_diagnostic(e, compiler.options.stats.colors)
             });
+            drop(active_build);
             result?;
             tracing::debug!("build ok");
             Ok(())
@@ -481,6 +483,7 @@ impl JsCompiler {
         callbackify(
           f,
           async move {
+            let active_build = utils::ActiveBuild::new();
             let result = compiler
               .rebuild(
                 changed_files.into_iter().collect::<FxHashSet<_>>(),
@@ -490,9 +493,9 @@ impl JsCompiler {
               .to_napi_result_with_message(|e| {
                 print_error_diagnostic(e, compiler.options.stats.colors)
               });
-            // Return pages freed by the rebuild to the OS before control
-            // returns to JavaScript, on the same task without an await.
-            rspack_allocator::collect();
+            // Purge freed pages only when no peer build is active. The last
+            // finishing build collects on its task without another await.
+            active_build.finish_rebuild();
             result?;
             tracing::debug!("rebuild ok");
             Ok(())
