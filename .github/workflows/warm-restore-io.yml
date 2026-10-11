@@ -1,33 +1,14 @@
 name: Legacy warm restore IO study
 on:
   push:
-    branches: [bench/warm-restore-io]
+    branches: [bench/warm-restore-io-r2]
   workflow_dispatch:
 permissions:
   contents: read
   actions: read
   issues: write
 jobs:
-  main:
-    if: github.repository == 'guru-irl/rspack'
-    uses: ./.github/workflows/reusable-build-build.yml
-    with:
-      target: x86_64-unknown-linux-gnu
-      runner: '["ubuntu-24.04"]'
-      ref: ff0cd64adc06db77c3138a9797db327fa0adfcf5
-      profile: ci
-      binding_postfix: -warm-main
-  prototype:
-    if: github.repository == 'guru-irl/rspack'
-    uses: ./.github/workflows/reusable-build-build.yml
-    with:
-      target: x86_64-unknown-linux-gnu
-      runner: '["ubuntu-24.04"]'
-      ref: bd6aff036f0d1dbb6ed5ac56b665d259694c8b4f
-      profile: ci
-      binding_postfix: -warm-prototype
   measure:
-    needs: [main, prototype]
     if: github.repository == 'guru-irl/rspack'
     runs-on: ubuntu-24.04
     timeout-minutes: 350
@@ -44,10 +25,14 @@ jobs:
         with:
           name: bindings-x86_64-unknown-linux-gnu-warm-main
           path: artifacts/main
+          run-id: 38140608502
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
           name: bindings-x86_64-unknown-linux-gnu-warm-prototype
           path: artifacts/prototype
+          run-id: 38140608502
+          github-token: ${{ github.token }}
       - name: Validate harness and fixture
         env:
           FIXTURE: ${{ github.workspace }}/fixture
