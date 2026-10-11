@@ -18,6 +18,8 @@ jobs:
       PUPPETEER_SKIP_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/pnpm/setup
         with:
           node-version: 24
