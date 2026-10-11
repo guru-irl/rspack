@@ -38,6 +38,7 @@ def interval(values):
     return {'hl':hl,'low':min(accepted),'high':max(accepted),'pExact':wilcoxon(values),'n':len(values)}
 def read(arm,index):
     directory=root/f'warm-{index}-{arm}'
+    if not directory.exists():directory=root/f'correctness-{index}-{arm}'
     assert json.loads((directory/'exit.json').read_text())['status']==0,(directory,'failed sample')
     assert json.loads((directory/'success.json').read_text())['passed']
     checks=json.loads((directory/'checks.json').read_text())
@@ -66,8 +67,8 @@ def read(arm,index):
             assert len(starts)==len(ends)
             cold[env+label]=sum(b-a for a,b in zip(starts,ends))
     return {'warm':{m:statistics.median([w[m] for w in warm]) for m in ['spanMs','clientMs','ssrMs','peakMiB','postMiB']},'cold':cold}
-data={arm:[read(arm,i) for i in range(10)] for arm in ['stock','barrier','after-make','overlap']}
-result={'method':'10 independent process triplets, 10 edits per process; warm process-median pairs. Exact two-sided Wilcoxon sign enumeration with averaged tie ranks and omitted zeros; 95% inversion interval; HL median Walsh averages.','comparisons':[]}
+data={arm:[read(arm,i) for i in range(1,11)] for arm in ['stock','barrier','after-make','overlap']}
+result={'method':'10 independent fresh-process quadruplets, 10 edits per process; warm process-median pairs. Exact two-sided Wilcoxon sign enumeration with averaged tie ranks and omitted zeros; 95% inversion interval; HL median Walsh averages.','comparisons':[]}
 for mode,metrics in [('warm',['spanMs','clientMs','ssrMs','peakMiB','postMiB']),('cold',['ssrReadyMs','finalReadyMs','peakMiB','clientMakeMs','clientSealMs','ssrMakeMs','ssrSealMs'])]:
     for a,b in [('stock','barrier'),('stock','after-make'),('stock','overlap'),('barrier','after-make'),('barrier','overlap'),('after-make','overlap')]:
         for metric in metrics:
