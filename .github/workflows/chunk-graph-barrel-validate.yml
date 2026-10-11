@@ -1,5 +1,7 @@
 name: Chunk graph barrel validation
 on:
+  push:
+    branches: ['bench/chunk-graph-barrel-validate']
   workflow_dispatch:
     inputs:
       fix_sha:
@@ -31,7 +33,7 @@ jobs:
           set -euo pipefail
           mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,bench,validation}
           cp scripts/bench/chunk-graph-barrel/* .spider/scratch/chunk-graph-barrel/bench/
-          git checkout '${{ inputs.fix_sha }}'
+          git checkout '${{ inputs.fix_sha || github.sha }}'
           echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
           echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
           git rev-parse HEAD > .spider/scratch/chunk-graph-barrel/validation/source.txt
@@ -110,7 +112,7 @@ jobs:
           set -euo pipefail
           mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,bench,measurement,binaries}
           cp scripts/bench/chunk-graph-barrel/* .spider/scratch/chunk-graph-barrel/bench/
-          git checkout '${{ inputs.fix_sha }}'
+          git checkout '${{ inputs.fix_sha || github.sha }}'
           echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
           echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
           echo "FIX_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
