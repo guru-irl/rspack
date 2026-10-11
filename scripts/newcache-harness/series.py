@@ -24,8 +24,17 @@ cores = {arm:Path(os.environ['CORE_'+arm]).resolve() for arm in ['A','B']}
 for sha in config['arms'].values():
     if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha): raise ValueError('Full source SHA required')
 records = []
+host_samples = []
 
 def run(arm, phase, name):
+    info=dict(sample=name,at=time.time(),cpu_count=os.cpu_count())
+    if hasattr(os,'getloadavg'):info['loadavg']=os.getloadavg()
+    if sys.platform.startswith('linux'):
+        info['meminfo']=Path('/proc/meminfo').read_text()
+        available=int(next(l.split()[1] for l in info['meminfo'].splitlines() if l.startswith('MemAvailable:')))*1024
+        if available < 8*1024**3:raise RuntimeError('Measurement needs >=8 GiB available RAM')
+    host_samples.append(info)
+    (results/'host-samples.json').write_text(json.dumps(host_samples))
     env = dict(os.environ, PROJECT=str(project), RSPACK_CORE=str(cores[arm]), SOURCE_SHA=config['arms'][arm], PARENT_SAMPLER='1')
     return measure(['node','--expose-gc',str(HERE/'run.mjs'),phase,str(results/(name+'.json'))], results/(name+'.json'), env)
 
@@ -47,6 +56,7 @@ def validate(result, reference):
 subprocess.run(['node',str(HERE/'gen.mjs'),str(config['modules'])],env=dict(os.environ,PROJECT=str(project)),check=True)
 reference = None
 for arm in ['A','B']:
+    if (project/'dist').exists():shutil.rmtree(project/'dist')
     if (project/'cache').exists(): shutil.rmtree(project/'cache')
     result = run(arm,'cold','seed-'+arm)
     if reference is None: reference=result['outputs']
@@ -62,6 +72,7 @@ for kind,n in [('AA',config['aa_pairs']),('AB',config['pairs'])]:
             arm=arms[pos]
             shutil.rmtree(project/'cache');shutil.copytree(seeds/arm,project/'cache',copy_function=shutil.copy2)
             preread()
+            if (project/'dist').exists():shutil.rmtree(project/'dist')
             result=run(arm,'warm',f'{kind}-{pair}-{pos}-{arm}')
             validate(result,reference)
             observed[pos]=result
