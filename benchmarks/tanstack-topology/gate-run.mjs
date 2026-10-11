@@ -112,16 +112,16 @@ const sample = async (name, expected, leafText, removedName) => {
     const result = await rpc(ids[fn]);
     assert.equal(result.status, 200, `${name}: ${fn} RPC status: ${result.text}`);
     assert.ok(result.text.includes(value), `${name}: ${fn} RPC value: ${result.text}`);
-    calls[fn] = { status: result.status, value };
+    calls[fn] = { status: result.status, value, response: result.text };
   }
   let removed;
   if (removedName) {
     assert.ok(knownIds[removedName], `${name}: old ID recorded`);
     removed = await rpc(knownIds[removedName]);
     assert.ok(removed.status >= 400, `${name}: removed function must fail: ${removed.text}`);
-    assert.ok(removed.error, `${name}: removed function error: ${removed.text}`);
+    assert.deepEqual(JSON.parse(removed.text), { status: 500, unhandled: true, message: 'HTTPError' }, `${name}: removed function error`);
     assert.equal(ids[removedName], undefined, `${name}: removed manifest entry`);
-    removed = { status: removed.status, error: removed.error.replace(knownIds[removedName], '<id>') };
+    removed = { status: removed.status, response: removed.text };
   }
   const changed = previousHash === undefined || previousHash !== last.generatedHash;
   const explicit = ssr.flatMap((b) => b.explicit).filter(isResolver).length;

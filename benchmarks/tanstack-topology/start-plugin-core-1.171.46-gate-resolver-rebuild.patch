@@ -1,0 +1,40 @@
+--- a/dist/esm/rsbuild/plugin.js
++++ b/dist/esm/rsbuild/plugin.js
+@@ -177,12 +177,17 @@
+ 			if (!rscEnabled) api.modifyRspackConfig((config, utils) => {
+ 				if (!startCompilerServerEnvironmentNames.includes(utils.environment.name)) return;
+ 				config.plugins.push({ apply(compiler) {
++					let lastRebuiltResolverContent;
+ 					compiler.hooks.finishMake.tapPromise({
+ 						name: "TanStackStartServerFnResolverRebuild",
+ 						stage: -10
+ 					}, async (compilation) => {
++						const resolverContent = virtualModuleState.generateCurrentResolverContent(utils.environment.name === serverFnProviderEnv);
+ 						virtualModuleState.updateServerFnResolver();
+-						await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++						if (resolverContent !== lastRebuiltResolverContent) {
++							await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++							lastRebuiltResolverContent = resolverContent;
++						}
+ 					});
+ 				} });
+ 			});
+@@ -243,13 +248,17 @@
+ 							}
+ 						}));
+ 						config.plugins.push({ apply(compiler) {
++							let lastRebuiltResolverContent;
+ 							compiler.hooks.finishMake.tapPromise({
+ 								name: "TanStackStartRscServerFnResolverRebuild",
+ 								stage: -10
+ 							}, async (compilation) => {
+ 								const resolverContent = virtualModuleState.generateCurrentResolverContent(true);
+ 								virtualModuleState.tryUpdateServerFnResolver(resolverContent);
+-								await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++								if (resolverContent !== lastRebuiltResolverContent) {
++									await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++									lastRebuiltResolverContent = resolverContent;
++								}
+ 							});
+ 						} });
+ 						if (api.context.action !== "dev") config.plugins.push({ apply(compiler) {
