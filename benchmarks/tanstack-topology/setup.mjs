@@ -44,7 +44,7 @@ for (const version of versions) {
       '@tanstack/react-router': 'latest',
       react: 'latest',
       'react-dom': 'latest',
-      '@rspack/core': version === '2.2.8' ? version : `npm:@rspack-canary/core@${version}`, 
+      '@rspack/core': version === '2.2.8' ? version : `npm:@rspack-canary/core@${version}`,
     },
     overrides: { '@rspack/core': version === '2.2.8' ? version : `npm:@rspack-canary/core@${version}` },
   };
