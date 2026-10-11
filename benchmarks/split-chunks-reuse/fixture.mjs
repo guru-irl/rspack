@@ -30,13 +30,30 @@ const sampleCount = parameter('SAMPLES', 4);
 const warmups = parameter('WARMUPS', 2);
 const policy = process.env.SELECTORS || 'js';
 if (!['js', 'native-membership', 'native-only'].includes(policy)) throw new Error('Invalid selector policy');
-const isCss = i => i % groupCount >= groupCount - cssCount;
-const payloadPath = i => `payload/g${String(i % groupCount).padStart(3, '0')}/m${i}.${isCss(i) ? 'css' : 'js'}`;
+const shape = process.env.SHAPE || 'default';
+if (!['default', 'many-winner'].includes(shape)) throw new Error('Invalid shape');
+const bulkLevels = [Math.floor(priorityCount * 0.75), Math.floor(priorityCount * 0.25)];
+const smallLevels = Array.from({ length: priorityCount }, (_, p) => p).filter(p => !bulkLevels.includes(p));
+const smallModules = 8;
+const bulkBuckets = 300;
+const assignment = i => i < smallLevels.length * smallModules
+  ? [smallLevels[Math.floor(i / smallModules)], 0]
+  : [bulkLevels[(i - smallLevels.length * smallModules) % 2], Math.floor((i - smallLevels.length * smallModules) / 2) % bulkBuckets];
+const isCss = i => shape === 'default' && i % groupCount >= groupCount - cssCount;
+const payloadPath = i => {
+  if (shape === 'many-winner') {
+    const [p, b] = assignment(i);
+    return `payload/p${String(p).padStart(3, '0')}/b${String(b).padStart(3, '0')}/m${i}.js`;
+  }
+  return `payload/g${String(i % groupCount).padStart(3, '0')}/m${i}.${isCss(i) ? 'css' : 'js'}`;
+};
 for (let g = 0; g < groupCount; g++) fs.mkdirSync(path.join(src, `payload/g${String(g).padStart(3, '0')}`), { recursive: true });
 fs.mkdirSync(path.join(src, 'routes'), { recursive: true });
 for (let i = 0; i < payloadCount; i++) {
   const text = isCss(i) ? `.public_${i}{color:#112233}\n` : `export default ${i % 1000};/*${'x'.repeat(96 + i % 3 * 64)}*/\n`;
-  fs.writeFileSync(path.join(src, payloadPath(i)), text);
+  const file = path.join(src, payloadPath(i));
+  if (shape === 'many-winner') fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
 }
 const routeImports = Array.from({ length: routeCount }, () => []);
 for (let i = 0; i < payloadCount; i++) {
@@ -108,6 +125,20 @@ for (let g = 0; g < groupCount; g++) {
   }
   cacheGroups[`group${g}`] = group;
 }
+if (shape === 'many-winner') {
+  for (const key of Object.keys(cacheGroups)) delete cacheGroups[key];
+  cacheGroups.default = false;
+  cacheGroups.defaultVendors = false;
+  for (let p = 0; p < priorityCount; p++) {
+    cacheGroups[`level${p}`] = {
+      test: new RegExp(`/p${String(p).padStart(3, '0')}/`), priority: p,
+      enforce: true, minSize: 0, minChunks: 2, reuseExistingChunk: false,
+      name: bulkLevels.includes(p)
+        ? measured(`name-bulk-${p}`, m => `bulk-${p}-${m.resource.match(/\/b(\d+)\//)[1]}`)
+        : `small-${p}`,
+    };
+  }
+}
 const config = {
   context: src, mode: 'development', target: 'node', devtool: false,
   entry: './index.js', cache: false, incremental: true,
@@ -141,7 +172,7 @@ function durations(logging) {
   return values;
 }
 const manifest = {
-  fixture: { moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: groupCount, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: enforceCount, reuse: reuseCount, cssGroups: cssCount, minSizeGroups: minSizeCount, nonzeroMinSizeGroups: nonzeroMinSizeCount, minChunksGroups: minChunksCount, testFunctions: policy === 'js' ? 6 : policy === 'native-membership' ? 4 : 0, chunksFunctions: policy === 'js' ? 1 : 0, nameFunctions: policy === 'js' ? 2 : 0, policy },
+  fixture: { shape, smallModules, bulkBuckets, bulkLevels, moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: groupCount, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: enforceCount, reuse: reuseCount, cssGroups: cssCount, minSizeGroups: minSizeCount, nonzeroMinSizeGroups: nonzeroMinSizeCount, minChunksGroups: minChunksCount, testFunctions: policy === 'js' ? 6 : policy === 'native-membership' ? 4 : 0, chunksFunctions: policy === 'js' ? 1 : 0, nameFunctions: policy === 'js' ? 2 : 0, policy },
   system: { node: process.version, platform: process.platform, arch: process.arch, cpus: os.cpus(), memory: os.totalmem(), release: os.release(), runnerImage: process.env.ImageVersion, commit: process.env.GITHUB_SHA, run: process.env.GITHUB_RUN_ID },
   versions: { core: require('@rspack/core/package.json').version, binding: require('@rspack/binding/package.json').version },
   selectorsInstrumented: true, samples: sampleCount - warmups, warmups, editProtocol: 'append statement then restore (length-changing)', sourceBase: process.env.SOURCE_BASE, instrumentedSource: process.env.SOURCE_HEAD,

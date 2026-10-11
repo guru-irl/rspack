@@ -1,7 +1,7 @@
-name: Bench SplitChunks Stage 0
+name: Bench SplitChunks Combinator
 on:
   push:
-    branches: ['bench/split-chunks-reuse-stage0']
+    branches: ['bench/split-chunks-combinator']
     paths:
       - '.github/workflows/bench-split-chunks-reuse.yml'
       - 'benchmarks/split-chunks-reuse/**'
@@ -14,12 +14,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - arm: main
-            ref: 83982099a25fa136de939cf6e3adbfd316b947cb
-            base: f2903b6482cb7a0fcdca912d23062bd94d3d5636
-          - arm: batch
+          - arm: 'off'
             ref: 2e71aeb6b7ee402571fb72a380cadbeaf3457d2d
-            base: 8b5ea6ac2e
+          - arm: 'on'
+            ref: 5d27d821b69d1619412ae17a22dc7be937b79561
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
@@ -39,26 +37,28 @@ jobs:
           save-if: true
       - name: Build pinned source binding and matching JS
         run: |
-          mkdir -p .spider/scratch/split-chunks-reuse/tmp
-          export TMPDIR="$PWD/.spider/scratch/split-chunks-reuse/tmp"
+          mkdir -p .spider/scratch/split-chunks-combinator/tmp
+          export TMPDIR="$PWD/.spider/scratch/split-chunks-combinator/tmp"
           pnpm install --frozen-lockfile
           cargo codegen
+          cargo fmt --all
           pnpm run build:binding:release
           pnpm --filter @rspack/core run build
+          cargo fmt --all -- --check
           mkdir -p source-result/core source-result/binding
           cp -a packages/rspack/dist packages/rspack/compiled source-result/core/
           cp crates/node_binding/binding.js crates/node_binding/rspack.linux-x64-gnu.node source-result/binding/
           git rev-parse HEAD > source-result/head.txt
-          echo '${{ matrix.base }}' > source-result/base.txt
+          echo '8b5ea6ac2e' > source-result/base.txt
           rustc -Vv > source-result/toolchain.txt
           sha256sum source-result/binding/*.node > source-result/native-sha256.txt
           git diff > source-result/build-generated.diff
       - uses: actions/upload-artifact@v4
         with:
-          name: stage0-source-${{ matrix.arm }}
+          name: combinator-source-${{ matrix.arm }}
           path: source-result
           retention-days: 14
-  published:
+  measure:
     needs: source
     runs-on: ubuntu-24.04
     timeout-minutes: 100
@@ -70,20 +70,20 @@ jobs:
           registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@v4
         with:
-          name: stage0-source-main
-          path: source-artifacts/main
+          name: combinator-source-off
+          path: source-artifacts/off
       - uses: actions/download-artifact@v4
         with:
-          name: stage0-source-batch
-          path: source-artifacts/batch
-      - name: Install stock published 2.2.8 in isolated fixture
+          name: combinator-source-on
+          path: source-artifacts/on
+      - name: Install published harness dependencies
         working-directory: benchmarks/split-chunks-reuse
         run: npm install --ignore-scripts --registry=https://registry.npmjs.org
-      - name: Interleaved fresh-process blocks with length-changing edits
-        run: bash benchmarks/split-chunks-reuse/stage0-run.sh
+      - name: Serial interleaved fresh processes
+        run: bash benchmarks/split-chunks-reuse/combinator-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: split-chunks-stage0-${{ github.run_id }}
-          path: .spider/scratch/split-chunks-reuse/stage0-results
+          name: split-chunks-combinator-${{ github.run_id }}
+          path: .spider/scratch/split-chunks-combinator/results
           retention-days: 14
