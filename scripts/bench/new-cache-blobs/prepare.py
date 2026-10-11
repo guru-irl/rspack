@@ -24,7 +24,13 @@ with tarfile.open(archive) as package:
     package.extractall(WORK / "published", filter="data")
 
 published = WORK / "published/rspack-turbo-persistence-0.1.1"
-vendor = ROOT / "vendor/rspack-turbo-persistence"
+# Git object bytes avoid Windows checkout line-ending conversion.
+vendor = WORK / "vendor"
+shutil.copytree(ROOT / "vendor/rspack-turbo-persistence", vendor)
+tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "vendor/rspack-turbo-persistence"], text=True)
+for name in tracked.splitlines():
+    data = subprocess.check_output(["git", "-C", str(ROOT), "show", f"HEAD:{name}"])
+    (vendor / Path(name).relative_to("vendor/rspack-turbo-persistence")).write_bytes(data)
 # Verify the six-file patch against the authenticated published archive.
 check = WORK / "patch-check"
 shutil.copytree(published, check)
@@ -40,7 +46,7 @@ shutil.copytree(vendor, WORK / "patched-crate")
 # Only the new regression is copied into the baseline crate. Production stays pristine.
 tests = (vendor / "src/tests.rs").read_text()
 start = tests.index("#[test]\nfn commit_deletes_superseded_blob()")
-end = tests.index("\n#[test]", start + 1)
+end = tests.index("\n}", start) + 2
 regression = tests[start:end]
 base_tests = WORK / "baseline-crate/src/tests.rs"
 base_tests.write_text(base_tests.read_text() + "\n" + regression + "\n")
