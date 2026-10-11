@@ -7,7 +7,7 @@ mod etag;
 mod file_cache_strategy;
 mod idle_file_cache;
 mod memory_cache;
-mod resolver_cache;
+pub(crate) mod resolver_cache;
 pub(crate) mod snapshot;
 mod validator;
 
@@ -71,6 +71,10 @@ pub fn create_cache(
   let database_path = options.cache_location.clone();
   let strategy = FileCacheStrategy::new(
     options.readonly,
+    compiler_options
+      .incremental
+      .passes
+      .contains(crate::incremental::IncrementalPasses::BUILD_MODULE_GRAPH),
     rspack_workspace::rspack_pkg_version!().to_string(),
     options.version.clone(),
     codec,

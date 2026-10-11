@@ -1,6 +1,6 @@
 use rspack_error::Result;
 
-use crate::{Compilation, SharedPluginDriver, logger::Logger};
+use crate::{Compilation, SharedPluginDriver, incremental::IncrementalPasses, logger::Logger};
 
 pub async fn finish_make_pass(
   compilation: &mut Compilation,
@@ -15,12 +15,18 @@ pub async fn finish_make_pass(
     .await?;
   logger.time_end(start);
 
-  if let Some(cache) = &compilation.resolver_cache {
-    cache.release_persisted();
-    compilation.resolver_factory.release_unused_cache_locks();
-    compilation
-      .loader_resolver_factory
-      .release_unused_cache_locks();
+  if compilation
+    .incremental
+    .passes_enabled(IncrementalPasses::BUILD_MODULE_GRAPH)
+    && let Some(cache) = &compilation.resolver_cache
+  {
+    compilation.resolver_cache_release = Some(
+      crate::new_cache::resolver_cache::ResolverCacheRelease::start(
+        cache.clone(),
+        compilation.resolver_factory.clone(),
+        compilation.loader_resolver_factory.clone(),
+      ),
+    );
   }
 
   Ok(())

@@ -138,3 +138,49 @@ impl ResolverCache {
     logger.cache_end(self.counter.as_ref());
   }
 }
+
+/// Joins CPU-only eviction before done, including error unwinding. It transfers
+/// existing owners to rayon and allocates no copy of the decoded values.
+#[derive(Debug)]
+pub(crate) struct ResolverCacheRelease {
+  completed: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl ResolverCacheRelease {
+  pub(crate) fn start(
+    cache: ResolverCache,
+    normal: Arc<crate::ResolverFactory>,
+    loader: Arc<crate::ResolverFactory>,
+  ) -> Self {
+    let (sender, completed) = std::sync::mpsc::channel();
+    rayon::spawn(move || {
+      let start = std::time::Instant::now();
+      cache.release_persisted();
+      normal.release_unused_cache_locks();
+      loader.release_unused_cache_locks();
+      eprintln!(
+        "Benchmark background resolver release {:.3} ms",
+        start.elapsed().as_secs_f64() * 1000.0
+      );
+      let _ = sender.send(());
+    });
+    Self {
+      completed: std::sync::Mutex::new(completed),
+    }
+  }
+}
+
+impl Drop for ResolverCacheRelease {
+  fn drop(&mut self) {
+    let start = std::time::Instant::now();
+    let _ = self
+      .completed
+      .get_mut()
+      .expect("release completion should not be poisoned")
+      .recv();
+    eprintln!(
+      "Benchmark resolver release join {:.3} ms",
+      start.elapsed().as_secs_f64() * 1000.0
+    );
+  }
+}

@@ -359,20 +359,28 @@ impl Compiler {
 
     let logger = self.compilation.get_logger("rspack.Compiler");
     let start = logger.time("seal compilation");
-    self
+    let passes_result = self
       .compilation
       .run_passes_with_incremental_artifacts(
         self.plugin_driver.clone(),
         &mut self.incremental_artifacts,
         &mut *self.cache,
       )
-      .await?;
+      .await;
+    drop(self.compilation.resolver_cache_release.take());
+    passes_result?;
     logger.time_end(start);
 
     if let Some(cache) = &self.compilation.resolver_cache {
-      cache.release_persisted();
-      self.resolver_factory.release_unused_cache_locks();
-      self.loader_resolver_factory.release_unused_cache_locks();
+      if self
+        .compilation
+        .incremental
+        .passes_enabled(IncrementalPasses::BUILD_MODULE_GRAPH)
+      {
+        cache.release_persisted();
+        self.resolver_factory.release_unused_cache_locks();
+        self.loader_resolver_factory.release_unused_cache_locks();
+      }
       cache.log(&self.compilation.get_logger("rspack.ResolverCache"));
     }
 

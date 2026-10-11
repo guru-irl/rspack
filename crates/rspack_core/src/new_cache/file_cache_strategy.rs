@@ -66,12 +66,14 @@ pub struct FileCacheStrategy {
   state: OnceLock<RwLock<Option<State>>>,
   unavailable: Notify,
   readonly: bool,
+  release_resolver_entries: bool,
   logger: Arc<InfrastructureLogger>,
 }
 
 impl FileCacheStrategy {
   pub fn new(
     readonly: bool,
+    release_resolver_entries: bool,
     rspack_pkg_version: String,
     cache_version: String,
     codec: Arc<CacheCodec>,
@@ -91,6 +93,7 @@ impl FileCacheStrategy {
       state: OnceLock::new(),
       unavailable: Notify::new(),
       readonly,
+      release_resolver_entries,
       logger,
     }
   }
@@ -370,56 +373,89 @@ impl FileCacheStrategy {
         None
       };
 
-      let failed_encodes = FxDashMap::<CacheKey, ()>::default();
-      let writes = entries
-        .par_iter()
-        .filter_map(|pending| {
-          let key = pending.key();
-          let pending = pending.value();
-          match (pending.encoder)(&pending.entry, codec) {
-            Ok(value) => Some((DatabaseFamily::Cache, key.clone(), value)),
-            Err(error) => {
-              failed_encodes.insert(key.clone(), ());
-              self.logger.warn(format!(
-                "Failed to encode cache entry for key {key}: {error}"
-              ));
-              None
+      let writes_len = if self.release_resolver_entries {
+        let failed_encodes = FxDashMap::<CacheKey, ()>::default();
+        let writes = entries
+          .par_iter()
+          .filter_map(|pending| {
+            let key = pending.key();
+            let pending = pending.value();
+            match (pending.encoder)(&pending.entry, codec) {
+              Ok(value) => Some((DatabaseFamily::Cache, key.clone(), value)),
+              Err(error) => {
+                failed_encodes.insert(key.clone(), ());
+                self.logger.warn(format!(
+                  "Failed to encode cache entry for key {key}: {error}"
+                ));
+                None
+              }
+            }
+          })
+          .chain(validator.into_par_iter().map(|validator| {
+            (
+              DatabaseFamily::Validator,
+              CacheKey::from(VALIDATOR_KEY),
+              validator,
+            )
+          }));
+
+        let writes_len = {
+          let state = self.read_state();
+          let Some(state) = state.as_ref() else {
+            return Ok(());
+          };
+          state.database.write_batch(writes)?
+        };
+        // The batch has committed. Until this point the memory tier remains the
+        // restore source even while the pending map has been drained for writing.
+        if cfg!(not(target_family = "wasm"))
+          && let Some(memory_cache) = self
+            .memory_cache
+            .get()
+            .and_then(|cache| cache.as_ref())
+            .and_then(Weak::upgrade)
+        {
+          for pending in &entries {
+            let key = pending.key();
+            let pending = pending.value();
+            if key.as_str().contains("|ResolverCache|") && !failed_encodes.contains_key(key) {
+              memory_cache.release_stored(key, &pending.entry);
             }
           }
-        })
-        .chain(validator.into_par_iter().map(|validator| {
-          (
-            DatabaseFamily::Validator,
-            CacheKey::from(VALIDATOR_KEY),
-            validator,
-          )
-        }));
-
-      let writes_len = {
-        let state = self.read_state();
-        let Some(state) = state.as_ref() else {
-          return Ok(());
-        };
-        state.database.write_batch(writes)?
-      };
-      // The batch has committed. Until this point the memory tier remains the
-      // restore source even while the pending map has been drained for writing.
-      if cfg!(not(target_family = "wasm"))
-        && let Some(memory_cache) = self
-          .memory_cache
-          .get()
-          .and_then(|cache| cache.as_ref())
-          .and_then(Weak::upgrade)
-      {
-        for pending in &entries {
-          let key = pending.key();
-          let pending = pending.value();
-          if key.as_str().contains("|ResolverCache|") && !failed_encodes.contains_key(key) {
-            memory_cache.release_stored(key, &pending.entry);
-          }
+          memory_cache.shrink_to_fit();
         }
-        memory_cache.shrink_to_fit();
-      }
+        writes_len
+      } else {
+        let writes = entries
+          .into_par_iter()
+          .filter_map(
+            |(key, pending)| match (pending.encoder)(&pending.entry, codec) {
+              Ok(value) => Some((DatabaseFamily::Cache, key, value)),
+              Err(error) => {
+                self.logger.warn(format!(
+                  "Failed to encode cache entry for key {key}: {error}"
+                ));
+                None
+              }
+            },
+          )
+          .chain(validator.into_par_iter().map(|validator| {
+            (
+              DatabaseFamily::Validator,
+              CacheKey::from(VALIDATOR_KEY),
+              validator,
+            )
+          }));
+
+        let writes_len = {
+          let state = self.read_state();
+          let Some(state) = state.as_ref() else {
+            return Ok(());
+          };
+          state.database.write_batch(writes)?
+        };
+        writes_len
+      };
       self.logger.time_end(start);
 
       self
