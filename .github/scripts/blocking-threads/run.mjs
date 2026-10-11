@@ -46,7 +46,10 @@ const wallMs = performance.now() - start;
 const cpuBuild = process.cpuUsage(cpu);
 const end0 = memory('end0');
 if (stats.hasErrors()) throw new Error(stats.toString({ all: false, errors: true }));
-await new Promise(resolve => setTimeout(resolve, 12000));
+const endDeadline = end0.atMs + 12000;
+while (performance.now() < endDeadline) {
+  await new Promise(resolve => setTimeout(resolve, Math.max(1, Math.ceil(endDeadline - performance.now()))));
+}
 const end12 = memory('end12');
 clearInterval(interval);
 const data = stats.toJson({ all: false, timings: true, errors: true });
