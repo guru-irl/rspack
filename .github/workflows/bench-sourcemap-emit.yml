@@ -59,14 +59,42 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y linux-tools-common linux-tools-generic
-          PERF=$(find /usr/lib/linux-tools -name perf -type f | sort | tail -1)
+          PERF=$(find -L /usr/lib/linux-tools -name perf -type f | sort | tail -1)
+          test -n "$PERF"
           echo "$PERF" > "$STUDY_RESULTS/perf-tool.txt"
           sudo sysctl kernel.perf_event_paranoid=-1
           export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=profile STUDY_ARM=memfs STUDY_PROBE=1 STUDY_EDITS=5
           "$PERF" record -F 199 -g --call-graph dwarf,8192 -o "$STUDY_RESULTS/perf.data" -- python3 benchmarks/sourcemap-emit/monitor.py
           "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --no-children --percent-limit 0.2 > "$STUDY_RESULTS/perf-self.txt"
           "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --children --percent-limit 0.5 > "$STUDY_RESULTS/perf-inclusive.txt"
+          "$PERF" script -i "$STUDY_RESULTS/perf.data" -F comm,pid,tid,time,event,ip,sym,dso | python3 benchmarks/sourcemap-emit/profile-summary.py "$STUDY_RESULTS"
           rm "$STUDY_RESULTS/perf.data"
+      - name: Paired direct content buffer prototype
+        shell: bash
+        run: |
+          cp crates/node_binding/rspack.linux-x64-gnu.node "$STUDY_RESULTS/baseline.node"
+          python3 benchmarks/sourcemap-emit/prototype.py buffer
+          pnpm run build:binding:profiling
+          pnpm run build:js
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=buffer STUDY_PROBE=1
+          for STUDY_ARM in memfs disk; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+          cp crates/node_binding/rspack.linux-x64-gnu.node "$STUDY_RESULTS/buffer.node"
+      - name: Paired parallel JSON prototype
+        shell: bash
+        run: |
+          python3 benchmarks/sourcemap-emit/prototype.py json
+          pnpm run build:binding:profiling
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=buffer-json STUDY_PROBE=1
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['STUDY_RESULTS'])
+          baseline = json.loads((root / 'source-disk-hashes.json').read_text())
+          for name in ['source-memfs', 'buffer-disk', 'buffer-memfs', 'buffer-json-disk', 'buffer-json-memfs']:
+            assert json.loads((root / (name + '-hashes.json')).read_text()) == baseline, name
+          (root / 'parity.txt').write_text('Byte-identical bundles and maps across all baseline and prototype edits.\n')
+          PY
+          rm "$STUDY_RESULTS/baseline.node" "$STUDY_RESULTS/buffer.node"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

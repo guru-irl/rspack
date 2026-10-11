@@ -33,7 +33,7 @@ for (const op of ['writeFile', 'readFile', 'stat', 'mkdir', 'unlink', 'rmdir']) 
   };
 }
 const plugin = { apply(compiler) {
-  compiler.hooks.compile.tap('Study', () => { row = { label, arm, edit: -1, fs: [], content: [], stage: {}, start: performance.now() }; console.log('STUDY_BEGIN'); });
+  compiler.hooks.compile.tap('Study', () => { row = { label, arm, edit: -1, fs: [], content: [], stage: {}, start: performance.now() }; console.log('STUDY_BEGIN ' + process.hrtime.bigint()); });
   compiler.hooks.thisCompilation.tap('Study', compilation => {
     for (const [name, stage] of [['begin', -10000], ['beforeMap', 499], ['afterMap', 501], ['end', 10000]]) {
       compilation.hooks.processAssets.tap({ name: `Study:${name}`, stage }, () => { row.stage[name] = performance.now(); });
@@ -72,7 +72,7 @@ watcher = compiler.watch({ aggregateTimeout: 30 }, async (err, stats) => {
     row.mapPluginMs = row.stage.afterMap - row.stage.beforeMap;
     row.emitMs = row.emitEnd - row.emitStart;
     row.rssEnd = process.memoryUsage().rss;
-    console.log('STUDY_END ' + JSON.stringify({ edit: step, rss: row.rssEnd }));
+    console.log('STUDY_END ' + JSON.stringify({ edit: step, rss: row.rssEnd, monoNs: String(process.hrtime.bigint()) }));
     if (global.gc) global.gc();
     row.rssEndGc = process.memoryUsage().rss;
     // Hash output AFTER timings, streaming disk bytes. Memfs readFile copies are excluded too.
