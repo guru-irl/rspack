@@ -1,7 +1,7 @@
 --- a/crates/rspack_core/src/new_cache/db/turbo.rs
 +++ b/crates/rspack_core/src/new_cache/db/turbo.rs
 @@ -244,6 +244,11 @@
- 
+
    pub fn clear_block_caches(&self) {
      self.inner.clear_block_caches();
 +    unsafe extern "C" {
@@ -10,7 +10,7 @@
 +    rayon::broadcast(|_| unsafe { mi_collect(true) });
 +    unsafe { mi_collect(true) };
    }
- 
+
    pub fn compact(&self) -> Result<()> {
 --- a/crates/rspack_core/src/new_cache/idle_file_cache.rs
 +++ b/crates/rspack_core/src/new_cache/idle_file_cache.rs
@@ -26,7 +26,7 @@
 @@ -128,12 +126,15 @@
      }
    }
- 
+
 -  async fn process_idle_tasks(&mut self, check_idle_ended: impl FnMut() -> bool) {
 +  async fn process_idle_tasks(&mut self, mut check_idle_ended: impl FnMut() -> bool) {
      let start = Instant::now();

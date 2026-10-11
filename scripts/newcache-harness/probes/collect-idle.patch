@@ -1,7 +1,7 @@
 --- a/crates/rspack_core/src/new_cache/db/turbo.rs
 +++ b/crates/rspack_core/src/new_cache/db/turbo.rs
 @@ -244,6 +244,10 @@
- 
+
    pub fn clear_block_caches(&self) {
      self.inner.clear_block_caches();
 +    unsafe extern "C" {
@@ -9,5 +9,5 @@
 +    }
 +    unsafe { mi_collect(true) };
    }
- 
+
    pub fn compact(&self) -> Result<()> {
