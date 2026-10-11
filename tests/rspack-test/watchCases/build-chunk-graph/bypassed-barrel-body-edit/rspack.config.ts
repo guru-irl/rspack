@@ -1,4 +1,5 @@
 import { defineConfig } from '@rspack/cli';
+import type { NormalModule } from '@rspack/core';
 
 export default defineConfig({
   optimization: {
@@ -11,4 +12,26 @@ export default defineConfig({
   module: {
     rules: [{ test: /\.js$/, sideEffects: false }],
   },
+  plugins: [
+    {
+      apply(compiler) {
+        compiler.hooks.finishMake.tapPromise(
+          'RebuildStableResolver',
+          async compilation => {
+            const resolver = [...compilation.modules].find(module =>
+              (module as NormalModule).resource?.endsWith('/resolver.js'),
+            );
+            if (resolver) {
+              await new Promise<void>((resolve, reject) => {
+                compilation.rebuildModule(resolver, error => {
+                  if (error) reject(error);
+                  else resolve();
+                });
+              });
+            }
+          },
+        );
+      },
+    },
+  ],
 });

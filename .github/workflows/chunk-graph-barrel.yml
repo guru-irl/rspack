@@ -48,10 +48,11 @@ jobs:
         run: |
           set -o pipefail
           pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/bypassed-barrel-body-edit' 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/green.log
-      - name: Genuine topology changes
+      - name: Candidate format and configuration checks
         run: |
           set -euo pipefail
-          VARIANT=fix FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/controls" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/diagnostic/controls.json" node scripts/bench/chunk-graph-barrel/controls.mjs 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/controls.log
+          cargo fmt --all --check 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/fmt.log
+          pnpm --dir tests/rspack-test run test:configs 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/configs.log
       - name: Strengthened regression against baseline
         run: |
           set -euo pipefail
