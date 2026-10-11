@@ -27,6 +27,8 @@ jobs:
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
+          node --check benchmarks/tanstack-ssr-concurrency/run.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/setup.mjs
           node benchmarks/tanstack-ssr-concurrency/setup.mjs
       - uses: actions/upload-artifact@v4
         if: always()

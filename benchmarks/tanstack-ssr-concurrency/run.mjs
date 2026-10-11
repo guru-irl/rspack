@@ -299,7 +299,7 @@ try {
   fs.writeFileSync(path.join(out,'builds.json'),JSON.stringify(builds,null,2));
   if(['r2-close','r2-restart'].includes(scenario)&&closeRequested) {process.exit(process.exitCode||1);}
   if(server?.close) await (server.close ? server.close() : server.server.close());
-  else if(server?.server?.close) await server.(server.close ? server.close() : server.server.close());
+  else if(server?.server?.close) await server.server.close();
 }
 
 process.exit(process.exitCode || 0);
