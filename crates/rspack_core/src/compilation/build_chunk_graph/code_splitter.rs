@@ -44,7 +44,7 @@ type BlockConnectionMap = DependenciesBlockIdentifierMap<Arc<BlockModules>>;
 
 static EMPTY_BLOCK_MODULES: LazyLock<Arc<BlockModules>> = LazyLock::new(|| Arc::new(Vec::new()));
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct PreparedBlockConnection {
   block: DependenciesBlockIdentifier,
   module: ModuleIdentifier,
@@ -593,7 +593,51 @@ impl CodeSplitter {
       }
     }
 
-    found_cached_root
+    if found_cached_root {
+      return true;
+    }
+
+    // Side-effect optimization can bypass a barrel entirely. Preparation still
+    // records its connections, but chunk traversal never caches a runtime root.
+    // Reuse only unchanged, synchronous outgoings with no active incoming from
+    // a previously traversed parent. Connections between untraversed barrels
+    // do not affect placement; their outgoings are validated independently.
+    current_blocks.is_empty()
+      && compilation
+        .build_chunk_graph_artifact
+        .chunk_graph
+        .get_number_of_module_chunks(module)
+        == 0
+      && self
+        .prepared_connection_map
+        .get(&module)
+        .is_some_and(|cached| current_connections_by_block.get(&module_block) == Some(cached))
+      && self
+        .block_modules_runtime_map
+        .iter()
+        .all(|(runtime, block_modules)| {
+          module_graph
+            .get_incoming_connections(&module)
+            .all(|connection| {
+              connection
+                .active_state(
+                  module_graph,
+                  runtime.as_deref(),
+                  module_graph_cache,
+                  side_effects_state_artifact,
+                  exports_info_artifact,
+                )
+                .is_false()
+                || connection.original_module_identifier.is_some_and(|parent| {
+                  !block_modules.contains_key(&DependenciesBlockIdentifier::Module(parent))
+                    && compilation
+                      .build_chunk_graph_artifact
+                      .chunk_graph
+                      .get_number_of_module_chunks(parent)
+                      == 0
+                })
+            })
+        })
   }
 
   pub(crate) fn chunk_group_info(&self, ukey: &CgiUkey) -> &ChunkGroupInfo {
