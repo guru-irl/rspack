@@ -27,6 +27,10 @@ impl IncrementalArtifacts {
     self.previous_compilation = Some(compilation);
   }
 
+  pub(crate) fn release_previous_compilation(&mut self) {
+    self.previous_compilation = None;
+  }
+
   pub(crate) fn recover(&mut self, passes: IncrementalPasses, compilation: &mut Compilation) {
     if passes.contains(IncrementalPasses::BUILD_CHUNK_GRAPH)
       && BuildChunkGraphArtifact::should_recover(&compilation.incremental)
