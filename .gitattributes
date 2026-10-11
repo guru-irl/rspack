@@ -7,3 +7,5 @@ tests/**/*.js linguist-detectable=false
 *.ts eol=lf
 
 * text=auto
+
+benchmarks/tanstack-ssr-concurrency/*.patch -whitespace
