@@ -49,7 +49,7 @@ const execute=(arm,scenario,index)=>{
 const mode=process.env.MODE || 'red';
 let failed=false;
 if(mode==='r2-red') {
- for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-done'],['barrier','r2-passes']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
+ for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 } else if(mode==='final') {
  for(const [arm,scenario] of [['barrier','no-resolver'],['barrier','red-overlap'],['barrier','red-recovery'],['barrier','red-aba'],['after-make','red-after-make']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 }
