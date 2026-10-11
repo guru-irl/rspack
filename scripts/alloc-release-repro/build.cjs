@@ -23,6 +23,7 @@ const compiler = rspack(['client', 'server'].map(name => ({
   entry: `./${name}.js`,
   output: { path: path.join(output, name), filename: 'bundle.js', ...(name === 'server' ? { library: { type: 'commonjs2' } } : {}) },
   cache: true,
+  module: process.env.FIXTURE_SWC === '1' ? { rules: [{ test: /\.js$/, use: [{ loader: 'builtin:swc-loader', options: { sourceMaps: true, jsc: { parser: { syntax: 'ecmascript' }, target: 'es2017' } } }] }] } : undefined,
   optimization: { minimize: false },
   plugins: [{ apply(child) {
     child.hooks.beforeCompile.tap('SyntheticLifecycle', () => event('before_compile', { compiler: name }));

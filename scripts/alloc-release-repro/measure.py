@@ -20,7 +20,7 @@ a = p.parse_args()
 results = Path(a.results).resolve()
 results.mkdir(parents=True, exist_ok=True)
 script = Path(__file__).with_name('build.cjs').resolve()
-metadata = {'platform': platform.platform(), 'cpu_count': os.cpu_count(), 'memory': psutil.virtual_memory()._asdict(), 'arm': a.arm, 'sample_period_ms': 100, 'environment': {k: v for k, v in os.environ.items() if k.startswith(('MIMALLOC_', 'RSPACK_', 'TOKIO_', 'RAYON_', 'NODE_OPTIONS'))}}
+metadata = {'platform': platform.platform(), 'cpu_count': os.cpu_count(), 'memory': psutil.virtual_memory()._asdict(), 'arm': a.arm, 'sample_period_ms': 100, 'environment': {k: v for k, v in os.environ.items() if k.startswith(('MIMALLOC_', 'RSPACK_', 'TOKIO_', 'RAYON_', 'NODE_OPTIONS', 'FIXTURE_'))}}
 (results / 'host.json').write_text(json.dumps(metadata, indent=2))
 summaries = []
 

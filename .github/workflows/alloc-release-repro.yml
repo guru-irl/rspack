@@ -20,6 +20,10 @@ on:
       lines:
         type: string
         default: '24'
+      swc:
+        type: boolean
+        default: false
+        description: 'Transform-heavy fixture variation using published builtin SWC loader'
       arm:
         type: choice
         options: [baseline, purge-zero, no-reclaim-on-free, stats]
@@ -37,6 +41,7 @@ jobs:
       PACKAGE_SPEC: ${{ inputs.package || '2.2.8' }}
       LAUNCHES: ${{ inputs.launches || '2' }}
       ARM: ${{ inputs.arm || 'baseline' }}
+      FIXTURE_SWC: ${{ inputs.swc && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
