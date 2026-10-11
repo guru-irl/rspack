@@ -44,6 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           SMOKE=1 BODY_ONLY=1 FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/diagnostic" node scripts/bench/chunk-graph-barrel/run.mjs > .spider/scratch/chunk-graph-barrel/diagnostic/stdout.log 2> .spider/scratch/chunk-graph-barrel/diagnostic/stderr.log
+      - name: Watch regression against baseline
+        run: |
+          set -o pipefail
+          pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/bypassed-barrel-body-edit' 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/red.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
