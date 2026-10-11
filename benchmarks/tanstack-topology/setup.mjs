@@ -16,7 +16,8 @@ const canaryResponse = await fetch('https://registry.npmjs.org/@rspack-canary%2f
 const canaryMetadata = canaryResponse.ok ? await canaryResponse.json() : null;
 fs.writeFileSync(path.join(out, 'main-canary.json'), JSON.stringify(canaryMetadata ? { tags: canaryMetadata['dist-tags'], published: canaryMetadata.time[canaryMetadata['dist-tags'].latest] } : { unavailable: canaryResponse.status }, null, 2));
 const canary = canaryMetadata?.['dist-tags'].latest;
-if (canary && !process.env.DIAGNOSTIC_ONLY) versions.push(canary);
+if (canary) versions.push(canary);
+if (process.env.DIAGNOSTIC_ONLY) versions.shift();
 fs.writeFileSync(
   path.join(out, 'selected-versions.json'),
   JSON.stringify(versions),
