@@ -635,4 +635,4 @@ invalid_regex = "warn"
 trivial_regex = "warn"
 
 [patch.crates-io]
-rspack-turbo-persistence = { path = "vendor/rspack-turbo-persistence" }
+turbo-persistence = { package = "rspack-turbo-persistence", path = "vendor/rspack-turbo-persistence" }
