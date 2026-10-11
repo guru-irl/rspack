@@ -15,7 +15,7 @@ jobs:
   crate-tests:
     name: Blob regression (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +60,7 @@ jobs:
       - name: Build native footprint helper
         if: runner.os == 'macOS'
         run: clang -O2 -dynamiclib scripts/bench/new-cache-blobs/memory-macos.c -o "$RUNNER_TEMP/new-cache-blobs/memory-macos.dylib"
-      - name: Measure paired scenarios A and B
+      - name: Measure interleaved AA, BB and AB controls
         run: |
           python -m pip install psutil
           python scripts/bench/new-cache-blobs/measure.py

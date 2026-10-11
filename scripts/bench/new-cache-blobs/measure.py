@@ -98,12 +98,22 @@ for scenario, filler, churn in (("A", 0, 0), ("B", 1024, 2000)):
         subprocess.run([str(binary("baseline")), *arguments(seed, filler, churn, 0)],
                        stdout=log, stderr=log, check=True)
     seed_fingerprint = fingerprint(seed)
-    for pair in range(1, 4):
-        order = ("baseline", "patched") if pair % 2 else ("patched", "baseline")
-        for variant in order:
+    repeats = 5 if SYSTEM == "Darwin" and scenario == "B" else 3
+    schedule = []
+    comparisons = ("AA", "BB", "AB")
+    for pair in range(1, repeats + 1):
+        rotated = comparisons[(pair - 1) % 3:] + comparisons[:(pair - 1) % 3]
+        for comparison in rotated:
+            variants = {"AA": ("baseline", "baseline"), "BB": ("patched", "patched"),
+                        "AB": ("baseline", "patched")}[comparison]
+            if pair % 2 == 0:
+                variants = tuple(reversed(variants))
+            schedule.append((comparison, pair, variants))
+    for comparison, pair, variants in schedule:
+        for arm, variant in enumerate(variants, 1):
             assert shutil.disk_usage(WORK).free > 10 * 1024**3, "Insufficient disk"
             assert psutil.virtual_memory().available > 2 * 1024**3, "Insufficient memory"
-            name = f"{scenario}-{pair}-{variant}"
+            name = f"{scenario}-{comparison}-{pair}-{arm}-{variant}"
             database = WORK / f"db-{name}"
             shutil.copytree(seed, database, copy_function=shutil.copy2)
             assert fingerprint(database) == seed_fingerprint, "Cold seed bytes/mtime differ"
@@ -156,7 +166,7 @@ for scenario, filler, churn in (("A", 0, 0), ("B", 1024, 2000)):
             if variant == "patched":
                 assert all(int(row["dead_blobs"]) == 0 for row in rows), name
             warm = [s["current_bytes"] for s in samples if s["cycle"] >= 5]
-            result = {"scenario": scenario, "pair": pair, "variant": variant,
+            result = {"scenario": scenario, "comparison": comparison, "pair": pair, "arm": arm, "variant": variant,
                 "wall_ms": wall_ms, "commit_median_ms": statistics.median(int(r["commit_us"]) / 1000 for r in rows[1:]),
                 "final_blob_bytes": int(rows[-1]["blob_bytes"]), "final_directory_bytes": int(rows[-1]["total_bytes"]),
                 "final_dead_blobs": int(rows[-1]["dead_blobs"]), "sampled_peaks": peaks,
