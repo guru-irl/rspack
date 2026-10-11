@@ -89,8 +89,9 @@ for (let g = 0; g < groupCount; g++) {
 }
 const config = {
   context: src, mode: 'development', target: 'node', devtool: false,
-  entry: './index.js', cache: false,
-  experiments: { incremental: true, css: true },
+  entry: './index.js', cache: false, incremental: true,
+  experiments: { css: true },
+  module: { rules: [{ test: /\.css$/, type: 'css' }] },
   output: { path: path.join(root, 'dist'), filename: 'main.cjs', chunkFilename: '[name].cjs', library: { type: 'commonjs2' } },
   optimization: { minimize: false, concatenateModules: false, usedExports: false, splitChunks: { chunks: 'all', minSize: 256, minChunks: 2, cacheGroups } },
   stats: { preset: 'none', logging: 'verbose', loggingDebug: [/rspack\./] },
@@ -147,7 +148,10 @@ await new Promise((resolve, reject) => {
       if (actual !== expected) throw new Error(`Output mismatch on build ${build}: ${actual} !== ${expected}`);
       const splitTimer = Object.entries(timers).find(([key]) => key.endsWith('/process cache groups'))?.[1];
       if (splitTimer === undefined) throw new Error(`Missing process cache groups timer; see logging-${build}.json`);
-      records.push({ build, kind: build === 0 ? 'initial' : 'edit', editedValue: build % 2, compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
+      const reconstructed = Object.keys(timers).some(key => key.endsWith('/rebuild chunk graph'));
+      if (build === 0 && !reconstructed) throw new Error('Initial build did not establish chunk graph timer coverage');
+      if (build > 0 && reconstructed) throw new Error(`Topology reconstruction on edit ${build}`);
+      records.push({ build, kind: build === 0 ? 'initial' : 'edit', editedValue: build % 2, compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
       fs.writeFileSync(path.join(out, 'builds.json'), JSON.stringify(records, null, 2));
       console.log(JSON.stringify({ build, compilerMs: records.at(-1).compilerMs, processCacheGroupsMs: splitTimer, chunks: records.at(-1).chunks, modules: records.at(-1).modules, selectors: counters, rss: records.at(-1).memory.rss }));
       if (build >= sampleCount) {
