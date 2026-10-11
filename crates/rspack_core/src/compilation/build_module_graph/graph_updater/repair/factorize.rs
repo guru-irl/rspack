@@ -8,7 +8,6 @@ use crate::{
   BuildContext, Context, DependencyRef, FactorizeInfo, ImportPhase, ModuleFactory,
   ModuleFactoryCreateData, ModuleFactoryResult, ModuleIdentifier, ModuleLayer, Resolve,
   dependency::DependencyType,
-  module_graph::ModuleGraphModule,
   utils::task_loop::{Task, TaskResult, TaskType},
 };
 
@@ -162,8 +161,6 @@ impl Task<TaskContext> for FactorizeResultTask {
       return Ok(vec![]);
     };
     let module_identifier = module.identifier();
-    let mut mgm = ModuleGraphModule::new(module.identifier());
-    mgm.set_issuer_if_unset(original_module_identifier);
 
     tracing::trace!("Module created: {}", &module_identifier);
 
@@ -171,7 +168,6 @@ impl Task<TaskContext> for FactorizeResultTask {
       build_context,
       original_module_identifier,
       module,
-      module_graph_module: Box::new(mgm),
       dependencies,
       from_unlazy,
     })])

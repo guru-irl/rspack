@@ -15,7 +15,6 @@ pub struct AddTask {
   pub build_context: Arc<BuildContext>,
   pub original_module_identifier: Option<ModuleIdentifier>,
   pub module: BoxModule,
-  pub module_graph_module: Box<ModuleGraphModule>,
   pub dependencies: Vec<DependencyRef>,
   pub from_unlazy: bool,
 }
@@ -30,7 +29,6 @@ impl Task<TaskContext> for AddTask {
       build_context,
       original_module_identifier,
       module,
-      module_graph_module,
       dependencies,
       from_unlazy,
     } = *self;
@@ -38,16 +36,13 @@ impl Task<TaskContext> for AddTask {
 
     // reuse module for self referenced module
     if module.as_self_module().is_some() {
-      let issuer = module_graph_module
-        .issuer()
-        .identifier()
-        .expect("self module should have issuer");
+      let issuer = original_module_identifier.expect("self module should have issuer");
 
       set_resolved_module(
         &mut context.artifact.module_graph,
         original_module_identifier,
         dependencies,
-        *issuer,
+        issuer,
       )?;
 
       return Ok(vec![]);
@@ -109,10 +104,13 @@ impl Task<TaskContext> for AddTask {
       return Ok(vec![]);
     }
 
+    // Duplicate targets only need connections, not a temporary graph module.
+    let mut module_graph_module = ModuleGraphModule::new(module_identifier);
+    module_graph_module.set_issuer_if_unset(original_module_identifier);
     context
       .artifact
       .module_graph
-      .add_module_graph_module(*module_graph_module);
+      .add_module_graph_module(module_graph_module);
 
     context
       .exports_info_artifact
