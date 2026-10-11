@@ -26,7 +26,10 @@ const minChunksCount = Math.round(groupCount * parameter('MIN_CHUNKS_RATIO', 0.3
 const familyName = n => `family-${String.fromCharCode(97 + n % 4)}`;
 if (![moduleCount, routeCount, groupCount, priorityCount, cssCount].every(Number.isInteger) || groupCount < 12 || cssCount < 0 || cssCount > groupCount - 9 || routeCount < 4 || moduleCount <= routeCount || priorityCount < 1) throw new Error('Invalid fixture parameters');
 const payloadCount = moduleCount - routeCount - 1;
-const sampleCount = parameter('SAMPLES', 7);
+const sampleCount = parameter('SAMPLES', 4);
+const warmups = parameter('WARMUPS', 2);
+const policy = process.env.SELECTORS || 'js';
+if (!['js', 'native-membership', 'native-only'].includes(policy)) throw new Error('Invalid selector policy');
 const isCss = i => i % groupCount >= groupCount - cssCount;
 const payloadPath = i => `payload/g${String(i % groupCount).padStart(3, '0')}/m${i}.${isCss(i) ? 'css' : 'js'}`;
 for (let g = 0; g < groupCount; g++) fs.mkdirSync(path.join(src, `payload/g${String(g).padStart(3, '0')}`), { recursive: true });
@@ -85,6 +88,24 @@ for (let g = 0; g < groupCount; g++) {
     ...(g === 6 ? { chunks: chunkSelector } : {}),
     name: g === 7 ? nameConsumers : g === 8 ? nameSize : `split-group${g}`,
   };
+  if (policy !== 'js') {
+    // Equivalent only for this generated population: every g4 payload is >80
+    // bytes, version is immutable, all consumer names start with family-.
+    if (g === 4 || g === 5) group.test = new RegExp(`/g${String(g).padStart(3, '0')}/`);
+    if (g === 6) group.chunks = /^family-/;
+    // g7's three consumers are not all family-a. g8 spans three known size
+    // bands: preserve the candidates using disjoint resource regex groups.
+    if (g === 7) group.name = 'consumer-mixed';
+    if (g === 8) {
+      for (let band = 0; band < 3; band++) {
+        const ids = Array.from({length: payloadCount}, (_, i) => i)
+          .filter(i => i % groupCount === 8 && Math.floor(fs.statSync(path.join(src, payloadPath(i))).size / 128) === band);
+        if (ids.length) cacheGroups[`group8-band${band}`] = { ...group, test: new RegExp(`/g008/m(?:${ids.join('|')})\\.js$`), name: `size-band-${band}` };
+      }
+      continue;
+    }
+    if (g < 4 && policy === 'native-only') continue;
+  }
   cacheGroups[`group${g}`] = group;
 }
 const config = {
@@ -114,20 +135,20 @@ function durations(logging) {
       // Stats serializes logger timing into "label: N ms" messages.
       const text = e.message || String(e.args?.[0] || '');
       const match = text.match(/^(.*?):\s*([\d.]+)\s*ms$/);
-      if (match) values[`${logger}/${match[1]}`] = Number(match[2]);
+      if (match) { const key = `${logger}/${match[1]}`; values[key] = (values[key] || 0) + Number(match[2]); }
     }
   }
   return values;
 }
 const manifest = {
-  fixture: { moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: groupCount, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: enforceCount, reuse: reuseCount, cssGroups: cssCount, minSizeGroups: minSizeCount, nonzeroMinSizeGroups: nonzeroMinSizeCount, minChunksGroups: minChunksCount, testFunctions: 6, chunksFunctions: 1, nameFunctions: 2 },
+  fixture: { moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: groupCount, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: enforceCount, reuse: reuseCount, cssGroups: cssCount, minSizeGroups: minSizeCount, nonzeroMinSizeGroups: nonzeroMinSizeCount, minChunksGroups: minChunksCount, testFunctions: policy === 'js' ? 6 : policy === 'native-membership' ? 4 : 0, chunksFunctions: policy === 'js' ? 1 : 0, nameFunctions: policy === 'js' ? 2 : 0, policy },
   system: { node: process.version, platform: process.platform, arch: process.arch, cpus: os.cpus(), memory: os.totalmem(), release: os.release(), runnerImage: process.env.ImageVersion, commit: process.env.GITHUB_SHA, run: process.env.GITHUB_RUN_ID },
   versions: { core: require('@rspack/core/package.json').version, binding: require('@rspack/binding/package.json').version },
-  selectorsInstrumented: true, samples: sampleCount,
+  selectorsInstrumented: true, samples: sampleCount - warmups, warmups, editProtocol: 'append statement then restore (length-changing)', sourceBase: process.env.SOURCE_BASE, instrumentedSource: process.env.SOURCE_HEAD,
 };
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 const nativePackage = '@rspack/binding-linux-x64-gnu';
-try { const binary = require.resolve(nativePackage); manifest.nativeSha256 = crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex'); }
+try { const binary = process.env.NAPI_RS_NATIVE_LIBRARY_PATH || require.resolve(nativePackage); manifest.nativeSha256 = crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex'); }
 catch (e) { manifest.nativeHashError = String(e); }
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 await new Promise((resolve, reject) => {
@@ -144,14 +165,14 @@ await new Promise((resolve, reject) => {
       for (const key of Object.keys(require.cache)) if (key.startsWith(path.join(root, 'dist') + path.sep)) delete require.cache[key];
       const lib = require(main);
       const actual = (await lib.load[0]()).default;
-      const expected = getBaseSum(0) + (build % 2);
+      const expected = getBaseSum(0);
       if (actual !== expected) throw new Error(`Output mismatch on build ${build}: ${actual} !== ${expected}`);
       const splitTimer = Object.entries(timers).find(([key]) => key.endsWith('/process cache groups'))?.[1];
       if (splitTimer === undefined) throw new Error(`Missing process cache groups timer; see logging-${build}.json`);
       const reconstructed = Object.keys(timers).some(key => key.endsWith('/rebuild chunk graph'));
       if (build === 0 && !reconstructed) throw new Error('Initial build did not establish chunk graph timer coverage');
       if (build > 0 && reconstructed) throw new Error(`Topology reconstruction on edit ${build}`);
-      records.push({ build, kind: build === 0 ? 'initial' : 'edit', editedValue: build % 2, compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
+      records.push({ build, kind: build === 0 ? 'initial' : build <= warmups ? 'warmup' : 'edit', editedBytes: Buffer.byteLength(fs.readFileSync(editedFile)), originalBytes: Buffer.byteLength(original), compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
       fs.writeFileSync(path.join(out, 'builds.json'), JSON.stringify(records, null, 2));
       console.log(JSON.stringify({ build, compilerMs: records.at(-1).compilerMs, processCacheGroupsMs: splitTimer, chunks: records.at(-1).chunks, modules: records.at(-1).modules, selectors: counters, rss: records.at(-1).memory.rss }));
       if (build >= sampleCount) {
@@ -161,8 +182,8 @@ await new Promise((resolve, reject) => {
         return;
       }
       build++;
-      // A real file edit, constant length, no dependency/export/topology changes.
-      setTimeout(() => fs.writeFileSync(editedFile, original.replace('export default 0;', `export default ${build % 2};`)), 100);
+      // A real length-changing body edit with unchanged dependency/export topology.
+      setTimeout(() => fs.writeFileSync(editedFile, build % 2 ? original + 'globalThis.publicSyntheticEdit = 1;\n' : original), 100);
     } catch (e) {
       clearTimeout(deadline);
       clearInterval(rssTimer);

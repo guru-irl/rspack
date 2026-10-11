@@ -1,42 +1,89 @@
-name: Bench SplitChunks reuse opportunity
+name: Bench SplitChunks Stage 0
 on:
   push:
-    branches: ['bench/split-chunks-reuse']
+    branches: ['bench/split-chunks-reuse-stage0']
     paths:
       - '.github/workflows/bench-split-chunks-reuse.yml'
       - 'benchmarks/split-chunks-reuse/**'
 permissions:
   contents: read
 jobs:
-  published:
+  source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 150
+    strategy:
+      matrix:
+        include:
+          - arm: main
+            ref: 36673eac938cb793891eb890d26d7e8e893b0149
+            base: f2903b6482cb7a0fcdca912d23062bd94d3d5636
+          - arm: batch
+            ref: e864108e96ffdcd2d0c4734b6d4cf990984f53d0
+            base: 8b5ea6ac2e
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '24'
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - uses: ./.github/actions/rustup
+        with:
+          key: split-chunks-stage0-release
+          save-if: true
+      - name: Build pinned source binding and matching JS
+        run: |
+          mkdir -p .spider/scratch/split-chunks-reuse/tmp
+          export TMPDIR="$PWD/.spider/scratch/split-chunks-reuse/tmp"
+          pnpm install --frozen-lockfile
+          cargo codegen
+          pnpm run build:binding:release
+          pnpm --filter @rspack/core run build
+          mkdir -p source-result/core source-result/binding
+          cp -a packages/rspack/dist packages/rspack/compiled source-result/core/
+          cp crates/node_binding/binding.js crates/node_binding/rspack.linux-x64-gnu.node source-result/binding/
+          git rev-parse HEAD > source-result/head.txt
+          echo '${{ matrix.base }}' > source-result/base.txt
+          rustc -Vv > source-result/toolchain.txt
+          sha256sum source-result/binding/*.node > source-result/native-sha256.txt
+          git diff > source-result/build-generated.diff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage0-source-${{ matrix.arm }}
+          path: source-result
+          retention-days: 14
+  published:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@v4
         with:
           node-version: '22.15.1'
           registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage0-source-main
+          path: source-artifacts/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage0-source-batch
+          path: source-artifacts/batch
       - name: Install stock published 2.2.8 in isolated fixture
         working-directory: benchmarks/split-chunks-reuse
         run: npm install --ignore-scripts --registry=https://registry.npmjs.org
-      - name: Record runner and execute real watch edits
-        working-directory: benchmarks/split-chunks-reuse
-        env:
-          SAMPLES: '7'
-          FIXTURE_ROOT: '${{ github.workspace }}/.spider/scratch/split-chunks-reuse/run'
-          NODE_OPTIONS: '--max-old-space-size=8192'
-        run: |
-          mkdir -p "$FIXTURE_ROOT/results"
-          uname -a > "$FIXTURE_ROOT/results/host.txt"
-          lscpu >> "$FIXTURE_ROOT/results/host.txt"
-          free -b >> "$FIXTURE_ROOT/results/host.txt"
-          npm ls --all > "$FIXTURE_ROOT/results/npm-tree.txt"
-          cp package-lock.json "$FIXTURE_ROOT/results/package-lock.json"
-          /usr/bin/time -v node fixture.mjs > "$FIXTURE_ROOT/results/stdout.log" 2> "$FIXTURE_ROOT/results/stderr.log"
+      - name: Interleaved fresh-process blocks with length-changing edits
+        run: bash benchmarks/split-chunks-reuse/stage0-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: split-chunks-reuse-${{ github.run_id }}
-          path: .spider/scratch/split-chunks-reuse/run/results
+          name: split-chunks-stage0-${{ github.run_id }}
+          path: .spider/scratch/split-chunks-reuse/stage0-results
           retention-days: 14
