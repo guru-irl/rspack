@@ -101,29 +101,37 @@ jobs:
       - name: Paired parallel JSON prototype
         shell: bash
         run: |
+          python3 benchmarks/sourcemap-emit/rope-prototype.py
+          pnpm run build:binding:profiling
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=rope STUDY_PROBE=1 STUDY_CACHE_PROBE=1
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+          export STUDY_LOADER=swc STUDY_LABEL=rope-swc
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+          unset STUDY_LOADER
           python3 benchmarks/sourcemap-emit/prototype.py json
           pnpm run build:binding:profiling
           pnpm run build:js
-          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=json STUDY_PROBE=1 STUDY_CACHE_PROBE=1
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=rope-json STUDY_PROBE=1 STUDY_CACHE_PROBE=1
           for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
-          export STUDY_LOADER=swc STUDY_LABEL=json-swc STUDY_CACHE_PROBE=1
+          export STUDY_LOADER=swc STUDY_LABEL=rope-json-swc STUDY_CACHE_PROBE=1
           for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
           python3 - <<'PY'
           import json, os, pathlib
           root = pathlib.Path(os.environ['STUDY_RESULTS'])
           baseline = json.loads((root / 'source-disk-hashes.json').read_text())
-          for name in ['source-memfs', 'json-disk', 'json-memfs']:
+          for name in ['source-memfs', 'rope-disk', 'rope-memfs', 'rope-json-disk', 'rope-json-memfs']:
             assert json.loads((root / (name + '-hashes.json')).read_text()) == baseline, name
           swc = json.loads((root / 'source-swc-disk-hashes.json').read_text())
-          for name in ['source-swc-memfs', 'published-swc-disk', 'published-swc-memfs', 'json-swc-disk', 'json-swc-memfs']:
+          for name in ['source-swc-memfs', 'published-swc-disk', 'published-swc-memfs', 'rope-swc-disk', 'rope-swc-memfs', 'rope-json-swc-disk', 'rope-json-swc-memfs']:
             assert json.loads((root / (name + '-hashes.json')).read_text()) == swc, name
           (root / 'parity.txt').write_text('Byte-identical bundles and maps across all baseline and prototype edits.\n')
           PY
       - name: Existing source-map correctness checks
         shell: bash
         run: |
-          pnpm --dir tests/rspack-test run test -t 'configCases/source-map|configCases/builtin-swc-loader/source-map|compiler#assetEmitted' > "$STUDY_RESULTS/focused-tests.log" 2>&1
+          pnpm --dir tests/rspack-test run test -t 'source-map|compiler#assetEmitted' > "$STUDY_RESULTS/focused-tests.log" 2>&1
           pnpm run test:unit > "$STUDY_RESULTS/unit-tests.log" 2>&1
+          cargo test -p rspack_sources > "$STUDY_RESULTS/sources-tests.log" 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
