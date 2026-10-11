@@ -103,7 +103,22 @@ const parity=(results,label)=>{
  fs.writeFileSync(path.join(work,`${label}-parity.json`),JSON.stringify({passed:true,steps:22,arms:results.map(r=>r.arm)}));
 };
 const checked=(arm,scenario,index)=>{const r=execute(arm,scenario,index);assert.equal(r.status,0,`${arm} ${scenario}: correctness stop gate`);return {...r,arm};};
-if(mode==='r3-red') {process.env.COMPILER_COUNT='4';checked('barrier','cold',0);process.exit(0);}
+if(mode==='r3-red') {
+ process.env.COMPILER_COUNT='4';
+ const stock=checked('stock','correctness','fixture');
+ parity([stock],'repaired-stock');
+ for(const check of JSON.parse(fs.readFileSync(path.join(stock.result,'checks.json')))) {
+  const outputs=JSON.parse(fs.readFileSync(path.join(stock.result,`${check.step}-outputs.json`)));
+  for(const name of ['aux-a','aux-b']) {
+   assert.ok(outputs[name].assets.some(a=>a.name.endsWith('.js')),`${check.step}: ${name} JS output`);
+   assert.ok(!outputs[name].assets.some(a=>a.name.endsWith('.html')),`${check.step}: ${name} no HTML output`);
+  }
+ }
+ fs.writeFileSync(path.join(work,'repaired-stock-success.json'),JSON.stringify({passed:true,steps:22,auxiliaryHTML:false}));
+ // Unchanged v2 must complete correctness before its missing N-compiler
+ // eligibility is the sole RED failure.
+ checked('barrier','correctness','red');process.exit(0);
+}
 if(mode==='r3-measure') {
  process.env.COMPILER_COUNT='4';const orders=[];
  for(let i=1;i<=10;i++)for(const scenario of ['cold-measure','warm-leaf','warm-body']) {const forward=['stock','gate-only','barrier'];const arms=i%2?forward:[...forward].reverse();orders.push({index:i,scenario,arms});for(const arm of arms)checked(arm,scenario,i);}

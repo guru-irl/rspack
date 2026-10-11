@@ -178,7 +178,7 @@ let readiness;
 let closeRequested=false;
 const started=now();
 try {
-  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},html:{templateContent:'<!doctype html><div>Generic auxiliary entry</div>'}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
+  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},tools:{htmlPlugin:false}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   server=await rsbuild.startDevServer();
   if(['r2-close','r2-restart'].includes(scenario)) {
     const deadline=now()+10000;
