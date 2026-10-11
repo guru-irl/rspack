@@ -212,11 +212,27 @@ impl SplitChunksPlugin {
 
     let start = logger.time("process cache groups");
     let priority_len = priority_cache_groups.len();
-    for (index, (_, cache_groups)) in priority_cache_groups.into_iter().enumerate() {
+    let mut a2_previous_winners = 0usize;
+    let mut a2_previous_keys = FxHashSet::default();
+    for (index, (priority, cache_groups)) in priority_cache_groups.into_iter().enumerate() {
+      let mut changed_modules = 0usize;
+      let mut changed_edges = 0usize;
+      let mut changed_old_sets = FxHashSet::default();
+      let mut changed_new_sets = FxHashSet::default();
       for (module, removed) in removed_module_chunks.drain() {
         let remaining = &mut module_chunks[module_indices[&module]];
+        let old_key = module_group::Combinator::a2_set_key(remaining, &chunk_index_map);
+        let mut changed = false;
         for chunk in removed {
-          remaining.remove(&chunk);
+          if remaining.remove(&chunk) {
+            changed = true;
+            changed_edges += 1;
+          }
+        }
+        if changed {
+          changed_modules += 1;
+          changed_old_sets.insert(old_key);
+          changed_new_sets.insert(module_group::Combinator::a2_set_key(remaining, &chunk_index_map));
         }
       }
       let available_module_chunks = &module_chunks;
@@ -299,6 +315,13 @@ impl SplitChunksPlugin {
       }
 
       logger.time_end(combination_timer);
+      let keys = combinator.a2_keys();
+      let (modules, eligible, sets, relations, catalogue_edges, table_capacity) = combinator.a2_counts();
+      eprintln!("A2_LEVEL index={index} priority={priority} min_chunks={} prev_winners={a2_previous_winners} changed_modules={changed_modules} changed_edges={changed_edges} old_sets={} new_sets={} births={} deaths={} modules={modules} eligible={eligible} sets={sets} relations={relations} catalogue_edges={catalogue_edges} table_capacity={table_capacity}",
+        non_used_exports_min_chunks.unwrap_or(0), changed_old_sets.len(), changed_new_sets.len(),
+        keys.difference(&a2_previous_keys).count(), a2_previous_keys.difference(&keys).count());
+      a2_previous_keys = keys;
+      a2_previous_winners = 0;
       let matching_timer = logger.time("stage0 matching total");
       let mut module_group_map = self
         .prepare_module_group_map(
@@ -551,6 +574,7 @@ impl SplitChunksPlugin {
           compilation,
         );
 
+        a2_previous_winners += 1;
         self.split_from_original_chunks(&module_group, &used_chunks, new_chunk, compilation);
 
         let update_timer = logger.time("stage0 candidate updates");

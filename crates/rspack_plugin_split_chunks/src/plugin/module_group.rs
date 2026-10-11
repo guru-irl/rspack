@@ -660,6 +660,8 @@ impl Combinator {
     min_chunks: usize,
     intersection_preparation: IntersectionPreparation<'_>,
   ) {
+    let logger = intersection_preparation.compilation.get_logger("rspack.SplitChunksPlugin");
+    let membership_timer = logger.time("a2 membership");
     let intersection_min_chunks = intersection_preparation
       .settings
       .as_ref()
@@ -679,6 +681,8 @@ impl Combinator {
       })
       .collect::<Vec<_>>();
 
+    logger.time_end(membership_timer);
+    let catalogue_timer = logger.time("a2 catalogue");
     let mut chunk_sets_in_graph = FxHashMap::with_capacity_and_hasher(
       self.non_used_exports_chunks_keys.len(),
       Default::default(),
@@ -709,6 +713,8 @@ impl Combinator {
       });
     }
 
+    logger.time_end(catalogue_timer);
+    let relations_timer = logger.time("a2 relations");
     self.non_used_exports_candidates = Self::prepare_combinations(
       &mut self.combinations,
       chunk_sets_in_graph.into_values().collect(),
@@ -716,6 +722,27 @@ impl Combinator {
       chunk_index_map,
       &intersection_preparation,
     );
+    logger.time_end(relations_timer);
+  }
+
+  // Bench-only diagnostic helpers. Called outside attribution timers.
+  pub(super) fn a2_keys(&self) -> FxHashSet<u64> {
+    self.combinations.keys().copied().collect()
+  }
+
+  pub(super) fn a2_set_key(chunks: &SsoHashSet<ChunkUkey>, indices: &FxHashMap<ChunkUkey, u32>) -> u64 {
+    get_key(chunks.iter().copied(), indices)
+  }
+
+  pub(super) fn a2_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
+    (
+      self.non_used_exports_chunks_keys.len(),
+      self.non_used_exports_chunks_keys.iter().filter(|key| key.is_some()).count(),
+      self.combinations.len(),
+      self.combinations.values().map(|row| row.original_len).sum(),
+      self.combinations.values().map(|row| row.values.last().map_or(0, |set| set.len())).sum(),
+      self.combinations.capacity(),
+    )
   }
 
   pub(super) fn prepare_group_by_used_exports(
