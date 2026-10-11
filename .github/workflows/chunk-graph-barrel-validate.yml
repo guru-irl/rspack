@@ -1,0 +1,172 @@
+name: Chunk graph barrel validation
+on:
+  workflow_dispatch:
+    inputs:
+      fix_sha:
+        description: Candidate implementation commit
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_DEV_DEBUG: 0
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 24
+      - name: Preserve public bench scripts and install candidate
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,bench,validation}
+          cp scripts/bench/chunk-graph-barrel/* .spider/scratch/chunk-graph-barrel/bench/
+          git checkout '${{ inputs.fix_sha }}'
+          echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
+          echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
+          git rev-parse HEAD > .spider/scratch/chunk-graph-barrel/validation/source.txt
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-graph-barrel-dev
+          use-cache: true
+          save-if: true
+      - name: Build dev binding and JavaScript
+        run: |
+          set -euo pipefail
+          cargo codegen
+          pnpm run build:binding:dev 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/build.log
+          pnpm run build:js
+      - name: Format check
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          cargo fmt --all --check 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/fmt.log
+      - name: Clippy warnings denied
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --tests --locked -- -D warnings 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/clippy.log
+      - name: Chunk graph watch cases
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/' 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/chunk-graph.log
+      - name: Incremental watch cases
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          pnpm --dir tests/rspack-test run test:base -t 'incremental watch' 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/incremental-watch.log
+      - name: Full base integration suite
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          pnpm --dir tests/rspack-test run test:base 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/base.log
+      - name: Typecheck test configurations
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          pnpm --dir tests/rspack-test run test:configs 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/configs.log
+      - name: Topology changing controls
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          VARIANT=fix FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/controls" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/validation/controls.json" node .spider/scratch/chunk-graph-barrel/bench/controls.mjs 2>&1 | tee .spider/scratch/chunk-graph-barrel/validation/controls.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: barrel-validation
+          path: .spider/scratch/chunk-graph-barrel/validation
+          if-no-files-found: error
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_CI_DEBUG: 0
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 24
+      - name: Preserve bench and install candidate
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,bench,measurement,binaries}
+          cp scripts/bench/chunk-graph-barrel/* .spider/scratch/chunk-graph-barrel/bench/
+          git checkout '${{ inputs.fix_sha }}'
+          echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
+          echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
+          echo "FIX_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "BASELINE_SHA=f2903b6482cb7a0fcdca912d23062bd94d3d5636" >> "$GITHUB_ENV"
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-graph-barrel-ci
+          use-cache: true
+          save-if: true
+      - name: Build matched optimized bindings
+        run: |
+          set -euo pipefail
+          cargo codegen
+          pnpm run build:js
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/measurement/build-fix.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/fix.node
+          git show "$BASELINE_SHA:crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs" > crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
+          pnpm run build:binding:ci 2>&1 | tee .spider/scratch/chunk-graph-barrel/measurement/build-main.log
+          grep 'Compiling rspack_core ' .spider/scratch/chunk-graph-barrel/measurement/build-main.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node .spider/scratch/chunk-graph-barrel/binaries/main.node
+          sha256sum .spider/scratch/chunk-graph-barrel/binaries/*.node > .spider/scratch/chunk-graph-barrel/measurement/native-sha.txt
+          df -h > .spider/scratch/chunk-graph-barrel/measurement/disk.txt
+      - name: Paired isolated full-fixture measurements
+        run: |
+          set -euo pipefail
+          for split in 0 1; do
+            for pair in 1 2 3 4 5; do
+              order='main fix'
+              if (( pair % 2 == 0 )); then order='fix main'; fi
+              for variant in $order; do
+                ps -eo pid,comm,pcpu,rss --sort=-pcpu | head -20 > ".spider/scratch/chunk-graph-barrel/measurement/load-$split-$pair-$variant.txt"
+                binary="$PWD/.spider/scratch/chunk-graph-barrel/binaries/$variant.node"
+                VARIANT="$variant" SPLIT="$split" NAPI_RS_NATIVE_LIBRARY_PATH="$binary" NATIVE_SHA="$(sha256sum "$binary" | cut -d' ' -f1)" FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/measurement/$split-$pair-$variant.json" node --expose-gc .spider/scratch/chunk-graph-barrel/bench/measure.mjs
+              done
+            done
+          done
+          python3 .spider/scratch/chunk-graph-barrel/bench/summarize.py .spider/scratch/chunk-graph-barrel/measurement
+      - name: Baseline topology controls and parity
+        run: |
+          set -euo pipefail
+          for variant in main fix; do
+            rm -rf .spider/scratch/chunk-graph-barrel/controls
+            VARIANT="$variant" NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/.spider/scratch/chunk-graph-barrel/binaries/$variant.node" FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/controls" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/measurement/controls-$variant.json" node .spider/scratch/chunk-graph-barrel/bench/controls.mjs
+          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=Path('.spider/scratch/chunk-graph-barrel/measurement')
+          a=json.loads((r/'controls-main.json').read_text()); b=json.loads((r/'controls-fix.json').read_text())
+          assert [(x['label'], x['outputs']) for x in a] == [(x['label'], x['outputs']) for x in b]
+          print('All topology-control asset bytes match main')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: barrel-measurement
+          path: .spider/scratch/chunk-graph-barrel/measurement
+          if-no-files-found: error

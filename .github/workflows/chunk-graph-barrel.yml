@@ -48,6 +48,22 @@ jobs:
         run: |
           set -o pipefail
           pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/bypassed-barrel-body-edit' 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/green.log
+      - name: Genuine topology changes
+        run: |
+          set -euo pipefail
+          VARIANT=fix FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/controls" RESULT_FILE="$PWD/.spider/scratch/chunk-graph-barrel/diagnostic/controls.json" node scripts/bench/chunk-graph-barrel/controls.mjs 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/controls.log
+      - name: Strengthened regression against baseline
+        run: |
+          set -euo pipefail
+          git show f2903b6482:crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs > crates/rspack_core/src/compilation/build_chunk_graph/code_splitter.rs
+          pnpm run build:binding:dev 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/build-main.log
+          grep 'Compiling rspack_core ' .spider/scratch/chunk-graph-barrel/diagnostic/build-main.log
+          set +e
+          pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/bypassed-barrel-body-edit' > .spider/scratch/chunk-graph-barrel/diagnostic/red-star.log 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          grep 'a leaf body edit must reuse the chunk graph through a bypassed barrel' .spider/scratch/chunk-graph-barrel/diagnostic/red-star.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

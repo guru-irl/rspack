@@ -597,12 +597,11 @@ impl CodeSplitter {
       return true;
     }
 
-    eprintln!("BARREL_DIAG missing-root module={module} chunks={} blocks={current_blocks:?} prepared_equal={} current={current_connections_by_block:?} prepared={:?} incoming={:?}", compilation.build_chunk_graph_artifact.chunk_graph.get_number_of_module_chunks(module), self.prepared_connection_map.get(&module).is_some_and(|cached| current_connections_by_block.get(&module_block) == Some(cached)), self.prepared_connection_map.get(&module), self.block_modules_runtime_map.keys().map(|runtime| (runtime, module_graph.get_incoming_connections(&module).map(|connection| (connection.original_module_identifier, connection.dependency_id, connection.active_state(module_graph, runtime.as_deref(), module_graph_cache, side_effects_state_artifact, exports_info_artifact))).collect::<Vec<_>>())).collect::<Vec<_>>());
-
     // Side-effect optimization can bypass a barrel entirely. Preparation still
     // records its connections, but chunk traversal never caches a runtime root.
-    // Reuse only unchanged, synchronous outgoings while every incoming remains
-    // inactive. Transitive-only connections still require traversal.
+    // Reuse only unchanged, synchronous outgoings with no active incoming from
+    // a previously traversed parent. Connections between untraversed barrels
+    // do not affect placement; their outgoings are validated independently.
     current_blocks.is_empty()
       && compilation
         .build_chunk_graph_artifact
@@ -612,7 +611,7 @@ impl CodeSplitter {
       && self.prepared_connection_map.get(&module).is_some_and(|cached| {
         current_connections_by_block.get(&module_block) == Some(cached)
       })
-      && self.block_modules_runtime_map.keys().all(|runtime| {
+      && self.block_modules_runtime_map.iter().all(|(runtime, block_modules)| {
         module_graph.get_incoming_connections(&module).all(|connection| {
           connection
             .active_state(
@@ -623,6 +622,14 @@ impl CodeSplitter {
               exports_info_artifact,
             )
             .is_false()
+            || connection.original_module_identifier.is_some_and(|parent| {
+              !block_modules.contains_key(&DependenciesBlockIdentifier::Module(parent))
+                && compilation
+                  .build_chunk_graph_artifact
+                  .chunk_graph
+                  .get_number_of_module_chunks(parent)
+                  == 0
+            })
         })
       })
   }
