@@ -27,8 +27,10 @@ const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, 
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
 const probe = { name: 'watch-observer', setup(api) {
+  
   api.modifyRspackConfig((config, { environment }) => {
     config.devtool = false;
+    if(scenario==='r2-topology'&&environment.name==='ssr')config.dependencies=['client'];
     if(scenario==='no-resolver' && environment.name==='ssr') {config.entry={index:{import:['./src/no-resolver.ts']}};}
     config.plugins.push({ apply(compiler) {
       compilers.set(environment.name,compiler);
@@ -238,12 +240,27 @@ try {
     assert.equal(builds.filter(b=>b.name==='ssr'&&b.step==='body-single').length,1,'server-function body edit has one SSR pass');
     await edit('add-single','src/functions.ts',baselineFns+"\nexport const delta=createServerFn({method:'GET'}).handler(async()=> 'delta-public');\n",{...base,delta:'delta-public'});
     assert.equal(builds.filter(b=>b.name==='ssr'&&b.step==='add-single').length,1,'server-function add has one SSR pass');
-  } else if (scenario==='cold'||scenario==='cold-measure') {}
+  } else if (scenario==='cold'||scenario==='cold-measure'||scenario==='r2-topology') {}
   else if (scenario==='red-recovery') {
     step='resolver-recovery'; peak=process.memoryUsage().rss; lastEvent=now();
     globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("stale resolver") }\n');
     compilers.get('ssr').watching.invalidateWithChangesAndRemovals(new Set([globalThis.__watchVirtualState.serverFnResolverPath]),new Set());
     await waitIdle(1); await sample(base,'Public leaf baseline');
+  } else if(scenario==='r2-read') {
+    step='resolver-snapshot-read';lastEvent=now();
+    const compiler=compilers.get('ssr');let captured=false;
+    compiler.hooks.thisCompilation.tap('ReadBoundary',(compilation)=>{
+      const rebuild=compilation.rebuildModule.bind(compilation);
+      compilation.rebuildModule=(module,callback)=>{
+        if(!resolver(module.identifier())||captured)return rebuild(module,callback);
+        captured=true;
+        globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById(){throw new Error("between snapshot and read")}\n');
+        return rebuild(module,callback);
+      };
+    });
+    globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById(){throw new Error("trigger read boundary")}\n');
+    compiler.watching.invalidateWithChangesAndRemovals(new Set([globalThis.__watchVirtualState.serverFnResolverPath]),new Set());
+    await waitIdle(1);assert.ok(captured,'write between snapshot and read exercised');await sample(base,'Public leaf baseline');
   } else if(scenario==='red-aba') {
     step='resolver-aba'; lastEvent=now(); peak=process.memoryUsage().rss;
     const compiler=compilers.get('ssr');

@@ -49,7 +49,7 @@ const execute=(arm,scenario,index)=>{
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  if(run.status===0 && arm!=='stock' && arm!=='v2') {
   const log=fs.readFileSync(path.join(result,'node-console.log'),'utf8');
-  const state=arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
+  const state=scenario==='r2-topology'?'disengaged reason=topology (names-or-dependencies)':arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
   assert.equal(log.split(`[tss-ssr-concurrency] ${state} gate=on`).length-1,scenario==='r2-restart'?2:1,'literal startup state per start');
   if(arm==='invalid-mode')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=after_make'));
   if(arm==='invalid-switch')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_CONCURRENT=true'));
@@ -72,7 +72,10 @@ if(mode==='r2-measure') {
  process.exit(0);
 }
 
-if(mode==='r2-matrix') {
+if(mode==='r2-extra') {
+ for(const arm of ['barrier','gate-only','after-make','overlap']) {const r=execute(arm,'r2-read',0);if(r.status!==0)failed=true;}
+ const r=execute('barrier','r2-topology',0);if(r.status!==0)failed=true;
+} else if(mode==='r2-matrix') {
  for(const arm of ['barrier','after-make','gate-only','overlap']) {
   for(const scenario of ['red-recovery','red-aba','no-resolver']) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
  }
@@ -84,7 +87,7 @@ if(mode==='r2-matrix') {
 } else if(mode==='final') {
  for(const [arm,scenario] of [['barrier','no-resolver'],['barrier','red-overlap'],['barrier','red-recovery'],['barrier','red-aba'],['after-make','red-after-make']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 }
-if(mode==='r2-red'||mode==='r2-green') {} else if(mode==='supplement') {for(const arm of ['overlap','after-make','barrier','stock']){const r=execute(arm,'warm',10);if(r.status!==0)failed=true;}
+if(mode==='r2-extra'||mode==='r2-red'||mode==='r2-green') {} else if(mode==='supplement') {for(const arm of ['overlap','after-make','barrier','stock']){const r=execute(arm,'warm',10);if(r.status!==0)failed=true;}
 } else if(mode==='no-resolver') {const r=execute('barrier','no-resolver',0);failed=r.status!==0;
 } else if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0;
 } else if(mode==='aa-route') {for(let i=0;i<2;i++){const r=execute('stock','aa-route',i);if(r.status!==0)failed=true;}
