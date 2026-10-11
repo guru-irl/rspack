@@ -10,7 +10,7 @@ Use Node 22.18.0, the repository pnpm version and pinned Rust toolchain. Set `HA
 
 The generator is copied from `scripts/newcache-parity/gen.mjs`. Only its output path and Windows-compatible file-URL decoding change. Source and generator hashes, binding sizes/hashes, tools, host and exact arms are saved in `provenance.json`.
 
-Each arm has its own cold seed. Cold processes complete idle work, take END, close, and exit successfully before their cache becomes a seed. Each fresh warm process receives an independent `copy2` copy of its arm's closed seed, preserving file timestamps. The fixture path and source timestamps stay identical. Every pair compares byte hashes of all emitted files against both cold builds. A/A runs precede the five A/B pairs; pair execution alternates AB and BA. Sources, packages and cache bytes are preread before every warm run. No page-cache eviction or private fixture is used.
+Each arm has its own cold seed. Cold processes complete idle work, close, and exit successfully before their cache becomes a seed. They collect module cardinality and output hashes but no time or memory samples. Each fresh warm process receives an independent `copy2` copy of its arm's closed seed, preserving file timestamps. The fixture path and source timestamps stay identical. Every pair compares byte hashes of all emitted files against both cold builds. A/A runs precede the five A/B pairs; pair execution alternates AB and BA. Sources, packages and cache bytes are preread before every warm run. No page-cache eviction or private fixture is used.
 
 ## Anchors and counters
 
