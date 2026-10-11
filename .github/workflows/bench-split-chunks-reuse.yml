@@ -7,108 +7,11 @@ on:
       - 'benchmarks/split-chunks-reuse/**'
 permissions:
   contents: read
+  actions: read
 jobs:
-  source:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            arm: main
-            ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            arm: main-a1
-            ref: 8b0380ac0b49e68aadbec5a262e6c4e251c76acd
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            arm: batch
-            ref: 8b5ea6ac2eb404148499f243226fc631ed16d6a9
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            arm: batch-a1
-            ref: 078b389917dcc17c804569e2f96dfdb27264b04a
-          - os: macos-15
-            target: aarch64-apple-darwin
-            arm: main
-            ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636
-          - os: macos-15
-            target: aarch64-apple-darwin
-            arm: main-a1
-            ref: 8b0380ac0b49e68aadbec5a262e6c4e251c76acd
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            arm: main
-            ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            arm: main-a1
-            ref: 8b0380ac0b49e68aadbec5a262e6c4e251c76acd
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '4'
-      RUST_TARGET: ${{ matrix.target }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ matrix.ref }}
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          path: harness
-      - uses: ./.github/actions/pnpm/setup
-        with:
-          node-version: '24'
-      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
-        if: runner.os == 'Linux'
-        with:
-          tool-cache: false
-      - uses: ./.github/actions/rustup
-        with:
-          key: split-chunks-a1-release-${{ matrix.target }}
-          save-if: true
-      - name: Build pinned release binding and matching JS
-        shell: bash
-        run: |
-          mkdir -p .spider/scratch/split-chunks-name-once/tmp
-          export TMPDIR="$PWD/.spider/scratch/split-chunks-name-once/tmp"
-          pnpm install --frozen-lockfile
-          cargo codegen
-          pnpm run build:binding:release
-          pnpm --filter @rspack/core run build
-          mkdir -p source-result/core source-result/binding
-          cp -a packages/rspack/dist packages/rspack/compiled source-result/core/
-          cp crates/node_binding/binding.js crates/node_binding/*.node source-result/binding/
-          git rev-parse HEAD > source-result/head.txt
-          echo '${{ matrix.ref }}' > source-result/base.txt
-          rustc -Vv > source-result/toolchain.txt
-          git diff > source-result/build-generated.diff
-      - name: Build identical phase instrumentation on Linux
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          python3 harness/benchmarks/split-chunks-reuse/instrument-a1.py .
-          pnpm run build:binding:release
-          mkdir -p source-result/timing
-          cp crates/node_binding/*.node source-result/timing/
-          git diff > source-result/timing.diff
-      - uses: actions/upload-artifact@v4
-        with:
-          name: a1-source-${{ matrix.os }}-${{ matrix.arm }}
-          path: source-result
-          retention-days: 14
-  measure:
-    needs: source
-    runs-on: ${{ matrix.os }}
+  macos-memory:
+    runs-on: macos-15
     timeout-minutes: 100
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os: [ubuntu-24.04, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@v4
@@ -120,30 +23,33 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          pattern: a1-source-${{ matrix.os }}-*
-          path: downloaded
-      - name: Prepare source arms and install public fixture
+          name: a1-source-macos-15-main
+          path: source-artifacts/main
+          run-id: 38114499302
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: a1-source-macos-15-main-a1
+          path: source-artifacts/main-a1
+          run-id: 38114499302
+          github-token: ${{ github.token }}
+      - name: Install public fixture and monitor
         shell: bash
         run: |
-          mkdir -p source-artifacts
-          for dir in downloaded/*; do
-            arm="${dir##*${{ matrix.os }}-}"
-            cp -a "$dir" "source-artifacts/$arm"
-          done
           python -m pip install psutil==7.2.0
           cd benchmarks/split-chunks-reuse
           npm install --ignore-scripts --registry=https://registry.npmjs.org
       - name: Paired memory and equal-sized A/A controls
         run: python benchmarks/split-chunks-reuse/a1-run.py memory
-      - name: Switch to phase-timed bindings and run interleaved timing arms
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          for dir in source-artifacts/*; do cp "$dir"/timing/*.node "$dir/binding/"; done
-          python benchmarks/split-chunks-reuse/a1-run.py timing
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: split-chunks-a1-${{ matrix.os }}-${{ github.run_id }}
-          path: .spider/scratch/split-chunks-name-once
+          name: split-chunks-a1-macos-15-${{ github.run_id }}
+          path: |
+            .spider/scratch/split-chunks-name-once/**/*.json
+            .spider/scratch/split-chunks-name-once/**/*.log
+            .spider/scratch/split-chunks-name-once/**/*.csv
+            !.spider/scratch/split-chunks-name-once/**/node_modules/**
+            !.spider/scratch/split-chunks-name-once/**/dist/**
+            !.spider/scratch/split-chunks-name-once/**/src/**
           retention-days: 14

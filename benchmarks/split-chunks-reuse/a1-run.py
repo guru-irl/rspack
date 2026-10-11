@@ -11,7 +11,7 @@ results.mkdir(parents=True, exist_ok=True)
 scratch = results.parent / 'tmp'
 scratch.mkdir(exist_ok=True)
 os.environ.update(TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch))
-(results / 'host.json').write_text(json.dumps({'platform': sys.platform, 'cpuCount': os.cpu_count(), 'cpu': psutil.cpu_freq()._asdict() if psutil.cpu_freq() else None, 'memory': psutil.virtual_memory()._asdict(), 'image': os.environ.get('ImageVersion')}, indent=2))
+(results / 'host.json').write_text(json.dumps({'platform': sys.platform, 'cpuCount': os.cpu_count(), 'memory': psutil.virtual_memory()._asdict(), 'image': os.environ.get('ImageVersion')}, indent=2))
 core = here / 'node_modules/@rspack/core'
 binding = here / 'node_modules/@rspack/binding'
 sequence = []
