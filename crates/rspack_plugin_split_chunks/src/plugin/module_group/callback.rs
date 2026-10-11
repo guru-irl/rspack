@@ -1,4 +1,4 @@
-use futures::{StreamExt, stream};
+use futures::{StreamExt, future::BoxFuture, stream};
 use rspack_error::Error;
 
 use super::*;
@@ -18,6 +18,37 @@ const SCALAR_WINDOW: usize = 256;
 const ROUND_REFERENCE_LIMIT: usize = 131_072;
 // Keep items, selected chunks and names cache-local even for short combinations.
 const ROUND_MODULE_LIMIT: usize = 16384;
+
+// The callback already returns an owned boxed future. Share the indexed future
+// type so each ordered window reuses the same polling and cleanup code.
+enum PendingCallback {
+  Bool(BoxFuture<'static, Result<bool>>),
+  Test(BoxFuture<'static, Result<Option<bool>>>),
+  Name(BoxFuture<'static, Result<Option<String>>>),
+  Tests(BoxFuture<'static, Result<Vec<Result<Option<bool>>>>>),
+  Chunks(BoxFuture<'static, Result<Vec<Result<bool>>>>),
+}
+
+enum CallbackValue {
+  Bool(bool),
+  Test(Option<bool>),
+  Name(Option<String>),
+  Tests(Vec<Result<Option<bool>>>),
+  Chunks(Vec<Result<bool>>),
+}
+
+impl PendingCallback {
+  async fn resolve(self, index: usize) -> (usize, Result<CallbackValue>) {
+    let result = match self {
+      Self::Bool(future) => future.await.map(CallbackValue::Bool),
+      Self::Test(future) => future.await.map(CallbackValue::Test),
+      Self::Name(future) => future.await.map(CallbackValue::Name),
+      Self::Tests(future) => future.await.map(CallbackValue::Tests),
+      Self::Chunks(future) => future.await.map(CallbackValue::Chunks),
+    };
+    (index, result)
+  }
+}
 
 struct Failures {
   bits: Vec<u64>,
@@ -104,6 +135,27 @@ impl<'a> PhaseMemo<'a> {
       pending: false,
     });
     index
+  }
+}
+
+// Both ordinary rounds and failed memo retries use the same filtering future.
+// Only iteration differs; keep the transport and buffered streams monomorphic.
+enum FilterCombinations<'a, 'b> {
+  Pending {
+    entries: &'b [MemoEntry<'a>],
+    indices: std::slice::Iter<'b, usize>,
+  },
+  Retry(Option<&'a ChunkCombination>),
+}
+
+impl<'a> Iterator for FilterCombinations<'a, '_> {
+  type Item = &'a ChunkCombination;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    match self {
+      Self::Pending { entries, indices } => indices.next().map(|index| entries[*index].combination),
+      Self::Retry(combination) => combination.take(),
+    }
   }
 }
 
@@ -208,13 +260,15 @@ impl<'a> Phase<'a> {
           let result = group
             .layer
             .call(self.module(index).get_layer().map(ToString::to_string));
-          async move { (index, result.await) }
+          PendingCallback::Bool(result).resolve(index as usize)
         })
         .buffered(SCALAR_WINDOW);
       while let Some((index, result)) = results.next().await {
+        let index = index as u32;
         match result {
-          Ok(true) => matched.push(index),
-          Ok(false) => {}
+          Ok(CallbackValue::Bool(true)) => matched.push(index),
+          Ok(CallbackValue::Bool(false)) => {}
+          Ok(_) => unreachable!("layer callback should return a boolean"),
           Err(error) => failures.record(index, error),
         }
       }
@@ -246,12 +300,14 @@ impl<'a> Phase<'a> {
               })
               .collect(),
           );
-          async move { (start, result.await) }
+          PendingCallback::Tests(result).resolve(start)
         })
         .buffered(JS_BATCH_WINDOW);
       while let Some((start, result)) = batches.next().await {
         let indices = &candidates[start..(start + JS_TEST_BATCH_SIZE).min(candidates.len())];
-        let results = result?;
+        let CallbackValue::Tests(results) = result? else {
+          unreachable!("test batch should return test results")
+        };
         assert_eq!(
           results.len(),
           indices.len(),
@@ -277,17 +333,19 @@ impl<'a> Phase<'a> {
             module: self.module(index),
             compilation: self.stage.compilation,
           });
-          async move { (index, result.await) }
+          PendingCallback::Test(result).resolve(index as usize)
         })
         .buffered(SCALAR_WINDOW);
       while let Some((index, result)) = results.next().await {
+        let index = index as u32;
         match result {
-          Ok(Some(true))
+          Ok(CallbackValue::Test(Some(true)))
             if self.stage.module_chunks[index as usize].len() >= group.min_chunks as usize =>
           {
             matched.push(index)
           }
-          Ok(_) => {}
+          Ok(CallbackValue::Test(_)) => {}
+          Ok(_) => unreachable!("test callback should return a test result"),
           Err(error) => failures.record(index, error),
         }
       }
@@ -442,10 +500,10 @@ impl<'a> Phase<'a> {
     let group = self.indexed.cache_group;
     self
       .filter_combinations(
-        scratch
-          .pending
-          .iter()
-          .map(|index| memo.entries[*index].combination),
+        FilterCombinations::Pending {
+          entries: &memo.entries,
+          indices: scratch.pending.iter(),
+        },
         scratch.pending.len(),
         &mut scratch.chunk_refs,
         &mut scratch.owners,
@@ -484,7 +542,7 @@ impl<'a> Phase<'a> {
             // retries independently, matching the previous OnceCell path.
             self
               .filter_combinations(
-                std::iter::once(item.combination),
+                FilterCombinations::Retry(Some(item.combination)),
                 1,
                 &mut scratch.chunk_refs,
                 &mut scratch.owners,
@@ -603,12 +661,14 @@ impl<'a> Phase<'a> {
             chunks: &chunks,
             cache_group_key: &group.key,
           });
-          async move { (slot, index, result.await) }
+          PendingCallback::Name(result).resolve(slot)
         })
         .buffered(SCALAR_WINDOW);
-      while let Some((slot, index, result)) = results.next().await {
+      while let Some((slot, result)) = results.next().await {
+        let index = scratch.ready[slot];
         match result {
-          Ok(name) => scratch.names[slot] = name,
+          Ok(CallbackValue::Name(name)) => scratch.names[slot] = name,
+          Ok(_) => unreachable!("name callback should return a name"),
           Err(error) => failures.record(scratch.items[index].module, error),
         }
       }
@@ -677,7 +737,7 @@ impl<'a> Phase<'a> {
   // moves into the memo, which the base also held for each distinct combination.
   async fn filter_combinations(
     &self,
-    combinations: impl Iterator<Item = &'a ChunkCombination>,
+    combinations: FilterCombinations<'a, '_>,
     count: usize,
     chunks: &mut Vec<ChunkUkey>,
     owners: &mut Vec<u32>,
@@ -719,11 +779,14 @@ impl<'a> Phase<'a> {
             let start = index * JS_CHUNKS_BATCH_SIZE;
             let chunks = &chunks[start..(start + JS_CHUNKS_BATCH_SIZE).min(chunks.len())];
             let result = get_chunks(chunks, self.stage.compilation);
-            async move { (index, chunks.len(), result.await) }
+            PendingCallback::Chunks(result).resolve(index)
           })
           .buffered(JS_BATCH_WINDOW);
-        while let Some((batch, count, result)) = batches.next().await {
-          let results = result?;
+        while let Some((batch, result)) = batches.next().await {
+          let count = (chunks.len() - batch * JS_CHUNKS_BATCH_SIZE).min(JS_CHUNKS_BATCH_SIZE);
+          let CallbackValue::Chunks(results) = result? else {
+            unreachable!("chunks batch should return chunk results")
+          };
           assert_eq!(
             results.len(),
             count,
@@ -740,11 +803,19 @@ impl<'a> Phase<'a> {
               unreachable!("scalar chunk callback should be a function")
             };
             let result = get_chunks(&chunks[index], self.stage.compilation);
-            async move { (index, result.await) }
+            PendingCallback::Bool(result).resolve(index)
           })
           .buffered(SCALAR_WINDOW);
         while let Some((index, result)) = results.next().await {
-          apply(index, result);
+          apply(
+            index,
+            result.map(|value| {
+              let CallbackValue::Bool(value) = value else {
+                unreachable!("chunk callback should return a boolean")
+              };
+              value
+            }),
+          );
         }
       }
     }
