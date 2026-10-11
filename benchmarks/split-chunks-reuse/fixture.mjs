@@ -12,15 +12,27 @@ const out = path.join(root, 'results');
 const src = path.join(root, 'src');
 fs.mkdirSync(out, { recursive: true });
 fs.mkdirSync(src, { recursive: true });
-const moduleCount = 60000;
-const routeCount = 3000;
+const parameter = (name, fallback) => Number(process.env[name] ?? fallback);
+const moduleCount = parameter('MODULES', 60000);
+const routeCount = parameter('CHUNKS', 3000);
+const groupCount = parameter('GROUPS', 100);
+const priorityCount = parameter('PRIORITIES', 40);
+const enforceCount = Math.round(groupCount * parameter('ENFORCE_RATIO', 0.9));
+const reuseCount = Math.round(groupCount * parameter('REUSE_RATIO', 0.4));
+const cssCount = parameter('CSS_GROUPS', 4);
+const minSizeCount = Math.round(groupCount * parameter('MIN_SIZE_RATIO', 0.9));
+const nonzeroMinSizeCount = Math.round(minSizeCount * parameter('NONZERO_MIN_SIZE_RATIO', 0.2));
+const minChunksCount = Math.round(groupCount * parameter('MIN_CHUNKS_RATIO', 0.3));
+const familyName = n => `family-${String.fromCharCode(97 + n % 4)}`;
+if (![moduleCount, routeCount, groupCount, priorityCount, cssCount].every(Number.isInteger) || groupCount < 12 || cssCount < 0 || cssCount > groupCount - 9 || routeCount < 4 || moduleCount <= routeCount || priorityCount < 1) throw new Error('Invalid fixture parameters');
 const payloadCount = moduleCount - routeCount - 1;
-const sampleCount = Number(process.env.SAMPLES || 7);
-const payloadPath = i => `payload/g${String(i % 126).padStart(3, '0')}/m${i}.${i % 126 >= 118 ? 'css' : 'js'}`;
-for (let g = 0; g < 126; g++) fs.mkdirSync(path.join(src, `payload/g${String(g).padStart(3, '0')}`), { recursive: true });
+const sampleCount = parameter('SAMPLES', 7);
+const isCss = i => i % groupCount >= groupCount - cssCount;
+const payloadPath = i => `payload/g${String(i % groupCount).padStart(3, '0')}/m${i}.${isCss(i) ? 'css' : 'js'}`;
+for (let g = 0; g < groupCount; g++) fs.mkdirSync(path.join(src, `payload/g${String(g).padStart(3, '0')}`), { recursive: true });
 fs.mkdirSync(path.join(src, 'routes'), { recursive: true });
 for (let i = 0; i < payloadCount; i++) {
-  const text = i % 126 >= 118 ? `.public_${i}{color:#112233}\n` : `export default ${i % 1000};/*${'x'.repeat(96 + i % 3 * 64)}*/\n`;
+  const text = isCss(i) ? `.public_${i}{color:#112233}\n` : `export default ${i % 1000};/*${'x'.repeat(96 + i % 3 * 64)}*/\n`;
   fs.writeFileSync(path.join(src, payloadPath(i)), text);
 }
 const routeImports = Array.from({ length: routeCount }, () => []);
@@ -29,11 +41,11 @@ for (let i = 0; i < payloadCount; i++) {
 }
 for (let r = 0; r < routeCount; r++) {
   const modules = routeImports[r];
-  const imports = modules.map(i => i % 126 >= 118 ? `import '../${payloadPath(i)}';` : `import p${i} from '../${payloadPath(i)}';`).join('\n');
-  const sum = modules.filter(i => i % 126 < 118).map(i => `p${i}`).join('+') || '0';
+  const imports = modules.map(i => isCss(i) ? `import '../${payloadPath(i)}';` : `import p${i} from '../${payloadPath(i)}';`).join('\n');
+  const sum = modules.filter(i => !isCss(i)).map(i => `p${i}`).join('+') || '0';
   fs.writeFileSync(path.join(src, `routes/r${r}.js`), `${imports}\nexport default ${sum};\n`);
 }
-fs.writeFileSync(path.join(src, 'index.js'), `export const load=[\n${Array.from({ length: routeCount }, (_, r) => `()=>import(/* webpackChunkName: "family${r % 4}-route${r}" */ './routes/r${r}.js')`).join(',\n')}\n];\n`);
+fs.writeFileSync(path.join(src, 'index.js'), `export const load=[\n${Array.from({ length: routeCount }, (_, r) => `()=>import(/* webpackChunkName: "${familyName(r)}-route${r}" */ './routes/r${r}.js')`).join(',\n')}\n];\n`);
 const packageFile = path.join(src, 'public-package.json');
 fs.writeFileSync(packageFile, JSON.stringify({ name: 'public-synthetic-package', version: '1.0.0' }));
 const version = require(packageFile).version;
@@ -52,24 +64,24 @@ function measured(name, fn) {
 const resourceMatches = (m, g) => Boolean(m.resource?.includes(`/g${String(g).padStart(3, '0')}/`));
 const tests = Array.from({ length: 4 }, (_, g) => measured(`test-membership-${g}`, (m, { chunkGraph }) => {
   let count = 0;
-  for (const chunk of chunkGraph.getModuleChunksIterable(m)) if (chunk.name?.startsWith(`family${g}`)) count++;
+  for (const chunk of chunkGraph.getModuleChunksIterable(m)) if (chunk.name?.startsWith(familyName(g))) count++;
   return count >= 1 && resourceMatches(m, g);
 }));
 tests.push(measured('test-size-resource', m => m.size() > 80 && resourceMatches(m, 4)));
 tests.push(measured('test-package-version', m => version === '1.0.0' && resourceMatches(m, 5)));
-const chunkSelector = measured('chunks-prefix', chunk => chunk.name?.startsWith('family') === true);
-const nameConsumers = measured('name-consumers', (m, chunks) => `consumer-${chunks.every(c => c.name?.startsWith('family0')) ? 'zero' : 'mixed'}`);
+const chunkSelector = measured('chunks-prefix', chunk => chunk.name?.startsWith('family-') === true);
+const nameConsumers = measured('name-consumers', (m, chunks) => `consumer-${chunks.every(c => c.name?.startsWith('family-a')) ? 'zero' : 'mixed'}`);
 const nameSize = measured('name-size-band', m => `size-band-${Math.floor(m.size() / 128)}`);
 const cacheGroups = { default: false, defaultVendors: false };
-for (let g = 0; g < 126; g++) {
+for (let g = 0; g < groupCount; g++) {
   const group = {
     test: g < 6 ? tests[g] : new RegExp(`/g${String(g).padStart(3, '0')}/`),
-    priority: g < 6 ? 51 : g % 52,
-    ...(g < 113 ? { enforce: true } : {}),
-    ...(g < 120 ? { minSize: g % 6 === 0 || g === 119 ? 256 : 0 } : {}),
-    ...(g < 40 ? { minChunks: 2 } : {}),
-    ...(g < 51 ? { reuseExistingChunk: true } : {}),
-    ...(g >= 118 ? { type: 'css' } : {}),
+    priority: g < 6 ? priorityCount - 1 : g % priorityCount,
+    ...(g < enforceCount ? { enforce: true } : {}),
+    ...(g < minSizeCount ? { minSize: g < nonzeroMinSizeCount ? 256 : 0 } : {}),
+    ...(g < minChunksCount ? { minChunks: 2 } : {}),
+    ...(g < reuseCount ? { reuseExistingChunk: true } : {}),
+    ...(g >= groupCount - cssCount ? { type: 'css' } : {}),
     ...(g === 6 ? { chunks: chunkSelector } : {}),
     name: g === 7 ? nameConsumers : g === 8 ? nameSize : `split-group${g}`,
   };
@@ -87,7 +99,7 @@ const compiler = rspack(config);
 const records = [];
 const editedFile = path.join(src, payloadPath(0));
 const original = fs.readFileSync(editedFile, 'utf8');
-const getBaseSum = r => routeImports[r].filter(i => i % 126 < 118).reduce((n, i) => n + i % 1000, 0);
+const getBaseSum = r => routeImports[r].filter(i => !isCss(i)).reduce((n, i) => n + i % 1000, 0);
 let build = 0;
 let started = 0;
 let peakRss = 0;
@@ -107,7 +119,7 @@ function durations(logging) {
   return values;
 }
 const manifest = {
-  fixture: { moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: 126, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: 113, reuse: 51, cssGroups: 8, minSizeGroups: 120, nonzeroMinSizeGroups: 21, minChunksGroups: 40, testFunctions: 6, chunksFunctions: 1, nameFunctions: 2 },
+  fixture: { moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: groupCount, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: enforceCount, reuse: reuseCount, cssGroups: cssCount, minSizeGroups: minSizeCount, nonzeroMinSizeGroups: nonzeroMinSizeCount, minChunksGroups: minChunksCount, testFunctions: 6, chunksFunctions: 1, nameFunctions: 2 },
   system: { node: process.version, platform: process.platform, arch: process.arch, cpus: os.cpus(), memory: os.totalmem(), release: os.release(), runnerImage: process.env.ImageVersion, commit: process.env.GITHUB_SHA, run: process.env.GITHUB_RUN_ID },
   versions: { core: require('@rspack/core/package.json').version, binding: require('@rspack/binding/package.json').version },
   selectorsInstrumented: true, samples: sampleCount,
