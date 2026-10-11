@@ -122,9 +122,7 @@ impl<'a> Iterator for FilterCombinations<'a, '_> {
 
   fn next(&mut self) -> Option<Self::Item> {
     match self {
-      Self::Pending { entries, indices } => {
-        indices.next().map(|index| entries[*index].combination)
-      }
+      Self::Pending { entries, indices } => indices.next().map(|index| entries[*index].combination),
       Self::Retry(combination) => combination.take(),
     }
   }
