@@ -1,0 +1,62 @@
+name: bench deterministic chunk ids parity
+on:
+  workflow_dispatch:
+    inputs:
+      size_run:
+        description: Completed size run with head and candidate bindings
+        required: true
+        type: string
+      candidate:
+        required: true
+        default: '1c1d2714653f8bc50f0a7f625d59ecb8ac6b8075'
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/pnpm/setup
+      - run: |
+          mkdir -p .spider/scratch/ids-parity/tmp .spider/scratch/ids-parity/logs
+          echo "TMPDIR=$PWD/.spider/scratch/ids-parity/tmp" >> "$GITHUB_ENV"
+          pnpm install --frozen-lockfile
+          pnpm run build:js
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.size_run }}
+          github-token: ${{ github.token }}
+          pattern: ids-size-*
+          path: .spider/scratch/ids-parity/bindings
+      - name: Public watch fixture, paired output and memory
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          IDS_PAIRS: '5'
+        run: |
+          root="$PWD/.spider/scratch/ids-parity"
+          export IDS_RESULT_ROOT="$root"
+          export IDS_CORE="$PWD/packages/rspack"
+          export IDS_HEAD_BINDING="$root/bindings/ids-size-856680217de22e88729429cf204606e7df727eac/rspack.linux-x64-gnu.node"
+          export IDS_CANDIDATE_BINDING="$root/bindings/ids-size-$CANDIDATE/rspack.linux-x64-gnu.node"
+          { uname -a; lscpu; node --version; pnpm --version; uptime; free -h; df -h .; sha256sum "$IDS_HEAD_BINDING" "$IDS_CANDIDATE_BINDING"; } > "$root/host-before.txt"
+          python3 tools/deterministic-chunk-ids-size/paired-run.py
+          python3 tools/deterministic-chunk-ids-size/summarize.py
+          { uptime; free -h; df -h .; } > "$root/host-after.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ids-parity-results
+          path: |
+            .spider/scratch/ids-parity/host-*.txt
+            .spider/scratch/ids-parity/logs
+            .spider/scratch/ids-parity/run-*.json
+            .spider/scratch/ids-parity/rss-*.json
+            .spider/scratch/ids-parity/verification-summary.json
+            .spider/scratch/ids-parity/PARITY_SUCCESS
+          retention-days: 14
