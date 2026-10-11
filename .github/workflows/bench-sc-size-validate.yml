@@ -1,0 +1,88 @@
+name: bench SplitChunks size validation
+on:
+  workflow_dispatch:
+    inputs:
+      size_run:
+        description: Workflow run containing changed binding artifacts
+        required: true
+        type: string
+      changed24:
+        required: true
+        type: string
+      changed25:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+      - run: |
+          mkdir -p .spider/scratch/sc-validate/tmp .spider/scratch/sc-validate/results
+          echo "TMPDIR=$PWD/.spider/scratch/sc-validate/tmp" >> "$GITHUB_ENV"
+          pnpm install --frozen-lockfile
+          pnpm run build:js
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: '38096846718'
+          github-token: ${{ github.token }}
+          pattern: sc-size-*
+          path: .spider/scratch/sc-validate/bindings
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.size_run }}
+          github-token: ${{ github.token }}
+          pattern: sc-size-*
+          path: .spider/scratch/sc-validate/bindings
+      - name: Behavior and paired performance
+        env:
+          CHANGED24: ${{ inputs.changed24 }}
+          CHANGED25: ${{ inputs.changed25 }}
+        run: |
+          root="$PWD/.spider/scratch/sc-validate"
+          { uname -a; lscpu; node --version; pnpm --version; uptime; df -h .; } > "$root/results/host.txt"
+          for version in 24 25; do
+            if [[ "$version" == 24 ]]; then
+              original=8b5ea6ac2eb404148499f243226fc631ed16d6a9
+              changed="$CHANGED24"
+            else
+              original=86e4cf5ffebf098b5056b291525e0d3f44556052
+              changed="$CHANGED25"
+            fi
+            for arm in original changed; do
+              ref="$original"; [[ "$arm" == original ]] || ref="$changed"
+              git restore --source="$ref" -- tests/rspack-test/configCases/split-chunks
+              cp "$root/bindings/sc-size-$ref/rspack.linux-x64-gnu.node" crates/node_binding/rspack.linux-x64-gnu.node
+              pnpm --dir tests/rspack-test run test --project base -t 'configCases/split-chunks/' > "$root/results/test-$version-$arm.log" 2>&1
+            done
+            for pair in 0 1 2 3 4 5 6; do
+              arms='original changed'; (( pair % 2 == 0 )) || arms='changed original'
+              for arm in $arms; do
+                ref="$original"; [[ "$arm" == original ]] || ref="$changed"
+                cp "$root/bindings/sc-size-$ref/rspack.linux-x64-gnu.node" crates/node_binding/rspack.linux-x64-gnu.node
+                SC_FIXTURE_ROOT="$root/fixture" SC_RESULT="$root/results/perf-$version-$pair-$arm.json" \
+                  node --expose-gc tools/split-chunks-size/fixture-run.mjs > "$root/results/perf-$version-$pair-$arm.log" 2>&1
+              done
+            done
+          done
+          python3 tools/split-chunks-size/summarize.py "$root/results"
+          # Restore the changed binding before broader JS gates.
+          cp "$root/bindings/sc-size-$CHANGED25/rspack.linux-x64-gnu.node" crates/node_binding/rspack.linux-x64-gnu.node
+          pnpm --dir tests/rspack-test run test:configs > "$root/results/type-configs.log" 2>&1
+          pnpm run test:unit > "$root/results/test-unit.log" 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sc-size-validation
+          path: .spider/scratch/sc-validate/results
+          retention-days: 14
