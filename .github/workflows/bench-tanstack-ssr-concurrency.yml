@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
+        options: [r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
         default: red
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Run public watch fixture
         env:
-          MODE: ${{ inputs.mode || 'r2-final' }}
+          MODE: ${{ inputs.mode || 'r3-red' }}
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
@@ -31,7 +31,8 @@ jobs:
           node --check benchmarks/tanstack-ssr-concurrency/check-rsc.mjs
           node --check benchmarks/tanstack-ssr-concurrency/run.mjs
           node --check benchmarks/tanstack-ssr-concurrency/setup.mjs
-          node benchmarks/tanstack-ssr-concurrency/setup.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
+          node benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

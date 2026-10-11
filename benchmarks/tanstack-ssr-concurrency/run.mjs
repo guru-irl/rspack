@@ -8,6 +8,8 @@ import { tanstackStart } from '@tanstack/react-start/plugin/rsbuild';
 const out = process.env.RESULT_DIR;
 const arm = process.env.ARM;
 const scenario = process.env.SCENARIO || 'correctness';
+const compilerNames=process.env.COMPILER_COUNT==='4'?['client','ssr','aux-a','aux-b']:['client','ssr'];
+const userEdges=process.env.USER_EDGES || '';
 const measuring=scenario.startsWith('warm-')||scenario==='cold-measure';
 fs.mkdirSync(out, { recursive: true });
 const now = () => performance.now();
@@ -121,7 +123,7 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
     responses[route] = { status: response.status, data, leaf, css: [...html.matchAll(/<link[^>]+href="([^"]+\.css[^\"]*)"/g)].map(m => m[1]).sort(), scripts: [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map(m => m[1]).sort() };
     fs.writeFileSync(path.join(out, `${step}-${route.replaceAll('/', '_')}.html`), html);
   }
-  const latest = Object.fromEntries(['client','ssr'].map(name => [name, builds.filter(b => b.name === name).at(-1)]));
+  const latest = Object.fromEntries(compilerNames.map(name => [name, builds.filter(b => b.name === name).at(-1)]));
   assert.ok(latest.ssr && latest.client, `${step}: both output snapshots`);
   for (const [name,b] of Object.entries(latest)) assert.equal(b.errors.length,0,`${step}: ${name} final compile errors`);
   const compiled = measuring ? latest.ssr.generated : Object.entries(latest.ssr.modules).find(([id]) => resolver(id))?.[1];
@@ -148,7 +150,7 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   const es = events.filter(e => e.step === step);
   const starts = es.filter(e => e.kind === 'watchRun');
   const ends = es.filter(e => e.kind === 'done');
-  const timing = { spanMs: Math.max(...ends.map(e => e.t)) - Math.min(...starts.map(e => e.t)), clientMs: builds.filter(b => b.step === step && b.name === 'client').reduce((n,b)=>n+b.ms,0), ssrMs: builds.filter(b=>b.step===step&&b.name==='ssr').reduce((n,b)=>n+b.ms,0), peakRss: peak, postRss: process.memoryUsage().rss };
+  const timing = { spanMs: Math.max(...ends.map(e => e.t)) - Math.min(...starts.map(e => e.t)), ...Object.fromEntries(compilerNames.map(name=>[`${name}Ms`,builds.filter(b=>b.step===step&&b.name===name).reduce((n,b)=>n+b.ms,0)])), clientMs: builds.filter(b => b.step === step && b.name === 'client').reduce((n,b)=>n+b.ms,0), ssrMs: builds.filter(b=>b.step===step&&b.name==='ssr').reduce((n,b)=>n+b.ms,0), peakRss: peak, postRss: process.memoryUsage().rss };
   const overlap = starts.some(c => c.name === 'client' && starts.some(s => s.name === 'ssr' && s.t >= c.t && s.t < ends.find(e => e.name==='client' && e.t > c.t)?.t));
   const snapshots = Object.fromEntries(Object.entries(latest).map(([name,b]) => [name, { modules: b.modules, assets: b.assets }]));
   fs.writeFileSync(path.join(out, `${step}-outputs.json`), JSON.stringify(snapshots, null, 2));
@@ -176,7 +178,7 @@ let readiness;
 let closeRequested=false;
 const started=now();
 try {
-  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
+  const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], environments:compilerNames.length===4?Object.fromEntries(['aux-a','aux-b'].map(name=>[name,{source:{entry:{index:`./aux/${name}.js`}},output:{target:'web',distPath:{root:`dist/${name}`}},html:{templateContent:'<!doctype html><div>Generic auxiliary entry</div>'}}])):undefined, tools:{rspack(config,{environment}) {if(userEdges==='direct'&&environment.name==='ssr')config.dependencies=['client'];if(userEdges==='transitive'){if(environment.name==='ssr')config.dependencies=['aux-a'];if(environment.name==='aux-a')config.dependencies=['client'];}}}, performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   server=await rsbuild.startDevServer();
   if(['r2-close','r2-restart'].includes(scenario)) {
     const deadline=now()+10000;
