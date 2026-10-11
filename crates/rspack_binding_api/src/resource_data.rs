@@ -2,7 +2,7 @@ use std::sync::{Arc, Weak};
 
 use napi::{
   Env, JsValue,
-  bindgen_prelude::{JavaScriptClassExt, JsObjectValue, ToNapiValue},
+  bindgen_prelude::{JavaScriptClassExt, ToNapiValue},
   sys::napi_value,
 };
 use napi_derive::napi;
