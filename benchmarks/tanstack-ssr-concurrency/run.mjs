@@ -182,6 +182,26 @@ try {
     globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("stale resolver") }\n');
     compilers.get('ssr').watching.invalidateWithChangesAndRemovals(new Set([globalThis.__watchVirtualState.serverFnResolverPath]),new Set());
     await waitIdle(1); await sample(base,'Public leaf baseline');
+  } else if(scenario==='red-aba') {
+    step='resolver-aba'; lastEvent=now(); peak=process.memoryUsage().rss;
+    const compiler=compilers.get('ssr');
+    let captured;
+    compiler.hooks.thisCompilation.tap('AbaRebuildBoundary',(compilation)=>{
+      const rebuild=compilation.rebuildModule.bind(compilation);
+      compilation.rebuildModule=(module,callback)=>{
+        if(!resolver(module.identifier()) || captured) return rebuild(module,callback);
+        captured=true;
+        const state=globalThis.__watchVirtualState;
+        const content=state.generateCurrentResolverContent(true);
+        state.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("ABA stale resolver") }\n');
+        return rebuild(module,(err)=>{state.tryUpdateServerFnResolver(content);callback(err);});
+      };
+    });
+    globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("trigger resolver build") }\n');
+    compiler.watching.invalidateWithChangesAndRemovals(new Set([globalThis.__watchVirtualState.serverFnResolverPath]),new Set());
+    await waitIdle(1);
+    assert.ok(captured,'C -> C-prime -> C race exercised across the real resolver rebuild');
+    await sample(base,'Public leaf baseline');
   } else {
     const edits=scenario==='warm'?10:scenario==='red-overlap'?1:2;
     for(let i=1;i<=edits;i++) await edit(`leaf-${i}`,'src/Leaf.tsx',i%2?baselineLeaf.replace('baseline','changed'):baselineLeaf,base,i%2?'Public leaf changed':'Public leaf baseline');
