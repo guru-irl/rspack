@@ -1,7 +1,7 @@
 name: Legacy warm restore IO study
 on:
   push:
-    branches: [bench/warm-restore-io-r2]
+    branches: [bench/warm-restore-io-deciding]
   workflow_dispatch:
 permissions:
   contents: read
@@ -53,14 +53,15 @@ jobs:
           node .github/scripts/warm-restore-io/gen.mjs > results/fixture.json
       - name: Prepare dm-delay device
         run: bash .github/scripts/warm-restore-io/device.sh setup
-      - name: Exploratory interleaved measurements and runner-side summary
+      - name: Deciding paired A vs main and runner-side summary
         env:
           FIXTURE: ${{ github.workspace }}/fixture
           RESULTS: ${{ github.workspace }}/results
           SLOW_ROOT: ${{ github.workspace }}/slow-mount
           RSPACK_CORE: ${{ github.workspace }}/packages/rspack/dist/index.js
           TMPDIR: ${{ github.workspace }}/results/temp
-          REPEATS: '5'
+          REPEATS: '10'
+          ARMS: 'main,A'
           MODULES: '10000'
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
