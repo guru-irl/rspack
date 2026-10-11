@@ -4,9 +4,10 @@ export async function requestGate(source) {
  // Execute the actual added implementation, with hook doubles only for delivery.
  const a=source.indexOf('let clientRequestWindow;');
  const b=source.indexOf('if (rscEnabled) api.onAfterCreateCompiler',a);
+ assert.ok(a>=0&&b>a,'gate implementation present');
  let callback;const calls=[];const taps={};let publish;
  const env={loadBundle:async function(entry){calls.push({entry,self:this===env});return entry;}};
- const ctx={api:{context:{action:'dev'},onBeforeStartDevServer:fn=>callback=fn,onAfterEnvironmentCompile:fn=>publish=fn},getClientBuild:()=>({}),rscEnabled:false,devServerRef:null,concurrentDev:true,RSBUILD_ENVIRONMENT_NAMES:{server:'ssr',client:'client'}};
+ const ctx={api:{context:{action:'dev'},onBeforeStartDevServer:fn=>callback=fn,onAfterEnvironmentCompile:fn=>publish=typeof fn==='function'?fn:fn.handler},getClientBuild:()=>({}),rscEnabled:false,devServerRef:null,concurrentDev:true,RSBUILD_ENVIRONMENT_NAMES:{server:'ssr',client:'client'}};
  vm.runInNewContext(source.slice(a,b),ctx);
  assert.equal(typeof callback,'function','dev hook registered');
  callback({server:{environments:{ssr:env}}});
@@ -35,6 +36,14 @@ export async function requestGate(source) {
  await publish({environment:{name:'client'},stats:{hasErrors:()=>false}});
  await Promise.resolve();assert.equal(calls.length,3,'outdated publication cannot release a newer invalid');
  taps.watchRun();await publish({environment:{name:'client'},stats:{hasErrors:()=>false}});await newer;
+ // A client invalid arriving while Rsbuild itself is awaiting SSR must be
+ // checked again before the loaded bundle is handed to the caller.
+ let finishLoad;const lateEnv={loadBundle:()=>new Promise(resolve=>finishLoad=resolve)};
+ callback({server:{environments:{ssr:lateEnv}}});
+ let lateReady=false;const late=lateEnv.loadBundle('late').then(()=>lateReady=true);
+ await Promise.resolve();taps.invalid();assert.equal(typeof finishLoad,'function');finishLoad('late');
+ await Promise.resolve();await Promise.resolve();assert.equal(lateReady,false,'late client invalid keeps request waiting');
+ taps.watchRun();await publish({environment:{name:'client'},stats:{hasErrors:()=>false}});await late;
  // Compiler completion is independent of loadBundle: its publication releases
  // without awaiting a pending request. This catches a request/compile cycle.
  for(const event of ['errors','failed','watchClose']) {

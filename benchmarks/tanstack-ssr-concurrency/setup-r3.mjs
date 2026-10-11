@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { captureIdentity, functionInventory } from './check-identity.mjs';
+import { requestGate } from './check-request-gate.mjs';
 import { topology } from './check-topology.mjs';
 import { structural, execution } from './check-rsc.mjs';
 import crypto from 'node:crypto';
@@ -51,6 +52,7 @@ assert.ok(structure.passed,'RSC byte equality before syntax, execution, or watch
 fs.writeFileSync(path.join(work,'r2b-execution.json'),JSON.stringify(await execution(originals,candidate,pkg,work),null,2));
 fs.writeFileSync(path.join(work,'r3-topology.json'),JSON.stringify(topology(v3['plugin.js']),null,2));
 functionInventory(originals,v3,work);
+fs.writeFileSync(path.join(work,'r3-request-gate.json'),JSON.stringify(await requestGate(v3['plugin.js']),null,2));
 if(process.env.MODE==='r2b-red') process.exit(0);
 const execute=(arm,scenario,index)=>{
  const result=path.join(work,`${scenario}-${index}-${arm}`); fs.mkdirSync(result,{recursive:true});
@@ -131,7 +133,7 @@ if(mode==='r3-custom-red') {
  for(const arm of ['stock','v2']) {
   const r=execute(arm,'r3-custom-request',arm);
   const evidence=JSON.parse(fs.readFileSync(path.join(r.result,'request-window.json')));
-  outcomes.push({arm,status:r.status,...evidence});
+  outcomes.push({arm,exitStatus:r.status,...evidence});
   if(arm==='v2') {assert.equal(r.status,1,'v2 request window must be RED');assert.notDeepEqual(evidence.css,evidence.newCSS,'v2 omits the new CSS asset');}
  }
  fs.writeFileSync(path.join(work,'r3-custom-red.json'),JSON.stringify({passed:true,outcomes},null,2));process.exit(0);
