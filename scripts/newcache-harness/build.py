@@ -16,7 +16,7 @@ repo=Path.cwd()
 # Resolve from the source worktrees so their pinned Rust toolchain is recorded.
 provenance=dict(harness_sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),patch_sha256=hashlib.sha256((HERE/'idle-completion.patch').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest(),platform=platform.platform(),arms={},tools={})
 for tool,args in [('node',['--version']),('pnpm',['--version'])]:
- provenance['tools'][tool]=subprocess.check_output([tool]+args,text=True).strip()
+ provenance['tools'][tool]=subprocess.check_output((['cmd','/c'] if sys.platform=='win32' and tool=='pnpm' else [])+[tool]+args,text=True).strip()
 cores={}
 for arm,sha in config['arms'].items():
  if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha):raise ValueError('Full source SHA required')
@@ -26,7 +26,7 @@ for arm,sha in config['arms'].items():
  subprocess.run(['git','apply','--check',str(HERE/'idle-completion.patch')],cwd=source,check=True)
  subprocess.run(['git','apply',str(HERE/'idle-completion.patch')],cwd=source,check=True)
  tmp=root/('tmp-'+arm);tmp.mkdir(exist_ok=True)
- env=dict(os.environ,TMPDIR=str(tmp),TMP=str(tmp),TEMP=str(tmp),CARGO_INCREMENTAL='0')
+ env=dict(os.environ,TMPDIR=str(tmp),TMP=str(tmp),TEMP=str(tmp),CARGO_INCREMENTAL='0',CARGO_TARGET_DIR=str(source/'target'))
  provenance['tools']['rustc_'+arm]=subprocess.check_output(['rustc','--version'],cwd=source,text=True).strip()
  # Build on the measuring host. No runtime packaging or artifact transfer.
  for name,command in [('install',['pnpm','install','--frozen-lockfile']),('release',['pnpm','run','build:cli:release'])]:
@@ -39,8 +39,11 @@ for arm,sha in config['arms'].items():
  b=binaries[0]
  provenance['arms'][arm]=dict(source_sha=sha,native_sha256=hashlib.sha256(b.read_bytes()).hexdigest(),native_bytes=b.stat().st_size)
  cores[arm]=str(source/'packages/rspack/dist/index.js')
- # Keep runtime files, delete build caches on runner before building the next arm.
- shutil.rmtree(source/'target')
+ # Remove only this disposable worktree's build artifacts.
+ targets=[source/'target']
+ if env.get('CARGO_TARGET_DIR'): targets.append(Path(env['CARGO_TARGET_DIR']))
+ for target in targets:
+  if target.exists(): shutil.rmtree(target)
  (results/'provenance.json').write_text(json.dumps(provenance,indent=2))
 (root/'cores.json').write_text(json.dumps(cores))
 if sys.platform=='darwin':
