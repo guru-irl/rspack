@@ -103,6 +103,12 @@ const config = {
 };
 const compiler = rspack(config);
 const records = [];
+let doneHookMemory;
+let doneHookNative;
+compiler.hooks.done.tap('PublicSplitChunksDoneMemory', () => {
+  doneHookMemory = process.memoryUsage();
+  doneHookNative = heapMetrics();
+});
 const editedFile = path.join(src, payloadPath(0));
 const original = fs.readFileSync(editedFile, 'utf8');
 const getBaseSum = r => routeImports[r].filter(i => !isCss(i)).reduce((n, i) => n + i % 1000, 0);
@@ -158,7 +164,7 @@ await new Promise((resolve, reject) => {
       const reconstructed = Object.keys(timers).some(key => key.endsWith('/rebuild chunk graph'));
       if (build === 0 && !reconstructed) throw new Error('Initial build did not establish chunk graph timer coverage');
       if (build > 0 && reconstructed) throw new Error(`Topology reconstruction on edit ${build}`);
-      records.push({ doneMemory, doneNative, build, kind: build === 0 ? 'initial' : 'edit', editedValue: build % 2, compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
+      records.push({ doneHookMemory, doneHookNative, doneMemory, doneNative, build, kind: build === 0 ? 'initial' : 'edit', editedValue: build % 2, compilerMs: stats.endTime - stats.startTime, editWallMs: performance.now() - started, timers, selectors: counters, chunks: data.chunks?.length, modules: data.modules?.length, memory: process.memoryUsage(), sampledPeakRss: peakRss, preSplitTopologyReused: build > 0 && !reconstructed, lifetimeMaxRssKiB: process.resourceUsage().maxRSS, outputParity: true, warnings: data.warnings });
       // Drop temporary stats and output references before GC. The compiler stays live.
       data = null; logging = null; lib = null;
       for (const key of Object.keys(require.cache)) if (key.startsWith(path.join(root, 'dist') + path.sep)) delete require.cache[key];
@@ -168,9 +174,18 @@ await new Promise((resolve, reject) => {
       if (forceGc) global.gc();
       records.at(-1).postGcMemory = process.memoryUsage();
       records.at(-1).postGcNative = heapMetrics();
+      records.at(-1).sampledPeakRss = Math.max(records.at(-1).sampledPeakRss, records.at(-1).memory.rss, records.at(-1).postGcMemory.rss);
       fs.writeFileSync(path.join(out, 'builds.json'), JSON.stringify(records, null, 2));
       console.log(JSON.stringify({ build, compilerMs: records.at(-1).compilerMs, processCacheGroupsMs: splitTimer, chunks: records.at(-1).chunks, modules: records.at(-1).modules, selectors: counters, rss: records.at(-1).memory.rss }));
       if (build >= sampleCount) {
+        const terminal = { before: process.memoryUsage(), nativeBefore: heapMetrics() };
+        await new Promise(resolve => setImmediate(resolve));
+        global.gc();
+        await new Promise(resolve => setImmediate(resolve));
+        global.gc();
+        terminal.after = process.memoryUsage();
+        terminal.nativeAfter = heapMetrics();
+        fs.writeFileSync(path.join(out, 'terminal-gc.json'), JSON.stringify(terminal, null, 2));
         clearTimeout(deadline);
         clearInterval(rssTimer);
         watcher.close(closeError => compiler.close(compilerError => closeError || compilerError ? reject(closeError || compilerError) : resolve()));
