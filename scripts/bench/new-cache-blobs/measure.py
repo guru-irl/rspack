@@ -123,6 +123,11 @@ for scenario, filler, churn in (("A", 0, 0), ("B", 1024, 2000)):
                 def read_rows():
                     try:
                         for line in process.stdout:
+                            if line.strip() == "memory-end":
+                                record()
+                                process.stdin.write("sampled\n")
+                                process.stdin.flush()
+                                continue
                             stdout.append(line)
                             if line.startswith("rspack,"):
                                 sample = record()

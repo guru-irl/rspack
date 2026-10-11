@@ -354,5 +354,14 @@ fn main() -> Result<()> {
   verify_huge(&db, &huge_seed, huge_len, args.cycles)?;
   db.shutdown()?;
   eprintln!("read-back passed: every cycle and final reopen");
+  if args.pause_after_row {
+    println!("memory-end");
+    io::stdout().flush()?;
+    let mut ack = String::new();
+    ensure!(
+      io::stdin().read_line(&mut ack)? > 0,
+      "missing final memory acknowledgement"
+    );
+  }
   Ok(())
 }
