@@ -38,13 +38,15 @@ enum MemoryCacheValue {
 struct MemoryCacheEntry {
   value: MemoryCacheValue,
   ttl: AtomicU32,
+  persisted: bool,
 }
 
 impl MemoryCacheEntry {
-  fn new(value: MemoryCacheValue, ttl: u32) -> Self {
+  fn new(value: MemoryCacheValue, ttl: u32, persisted: bool) -> Self {
     Self {
       value,
       ttl: AtomicU32::new(ttl),
+      persisted,
     }
   }
 
@@ -124,11 +126,22 @@ impl MemoryCache {
   }
 
   pub fn store<T: CacheValueData>(&self, key: CacheKey, etag: Option<Etag>, value: CacheValue<T>) {
+    self.store_with_persisted(key, etag, value, false);
+  }
+
+  pub(super) fn store_with_persisted<T: CacheValueData>(
+    &self,
+    key: CacheKey,
+    etag: Option<Etag>,
+    value: CacheValue<T>,
+    persisted: bool,
+  ) {
     self.entries.insert(
       key,
       MemoryCacheEntry::new(
         MemoryCacheValue::Hit(CacheEntry::new(etag, value.erase())),
         self.finite_max_generations(),
+        persisted,
       ),
     );
   }
@@ -136,7 +149,7 @@ impl MemoryCache {
   pub fn store_miss(&self, key: CacheKey) {
     self.entries.insert(
       key,
-      MemoryCacheEntry::new(MemoryCacheValue::Miss, self.finite_max_generations()),
+      MemoryCacheEntry::new(MemoryCacheValue::Miss, self.finite_max_generations(), false),
     );
   }
 
@@ -153,6 +166,25 @@ impl MemoryCache {
 
   pub fn clear(&self) {
     self.entries.clear();
+  }
+
+  pub(super) fn release_persisted(&self, prefix: &str) {
+    self
+      .entries
+      .retain(|key, entry| !(entry.persisted && key.as_str().starts_with(prefix)));
+    self.entries.shrink_to_fit();
+  }
+
+  pub(super) fn release_stored(&self, key: &CacheKey, stored: &CacheEntry) {
+    // A concurrent store may already have replaced this value. Never remove it.
+    self.entries.remove_if(key, |_, entry| match &entry.value {
+      MemoryCacheValue::Hit(entry) => entry.value().ptr_eq(stored.value()),
+      MemoryCacheValue::Miss => false,
+    });
+  }
+
+  pub(super) fn shrink_to_fit(&self) {
+    self.entries.shrink_to_fit();
   }
 
   fn finite_max_generations(&self) -> u32 {

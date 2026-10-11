@@ -259,6 +259,12 @@ impl Resolver {
     }
   }
 
+  pub(crate) fn release_unused_cache_locks(&self) {
+    if let Some(cache) = self.cache.read().as_ref() {
+      cache.release_unused_locks();
+    }
+  }
+
   pub fn inner_fs(&self) -> Arc<dyn ReadableFileSystem> {
     self.inner_fs.clone()
   }

@@ -29,6 +29,10 @@ impl ResolverFactory {
     self.resolver.clear_cache();
   }
 
+  pub(crate) fn release_unused_cache_locks(&self) {
+    self.resolver.release_unused_cache_locks();
+  }
+
   pub fn set_resolver_cache(&self, cache: Option<ResolverCache>) {
     self.resolver.set_resolver_cache(cache);
   }

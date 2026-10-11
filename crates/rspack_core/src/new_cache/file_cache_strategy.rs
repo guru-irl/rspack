@@ -1,16 +1,16 @@
 use std::{
   fmt,
-  sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
+  sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak},
 };
 
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use rspack_error::Result;
 use rspack_paths::{InternedPathSet, Utf8PathBuf};
 use rspack_util::fx_hash::FxDashMap;
 use tokio::sync::Notify;
 
 use super::{
-  CacheKey, Etag,
+  CacheKey, Etag, MemoryCache,
   cache_value::{CacheEntry, CacheValueDecoder, CacheValueEncoder, ErasedCacheValue},
   db::{Database, DatabaseFamily},
   snapshot::FileSystemInfo,
@@ -59,6 +59,7 @@ impl std::fmt::Debug for State {
 /// Filesystem cache implementation scheduled by [`super::IdleFileCache`].
 #[derive(Debug)]
 pub struct FileCacheStrategy {
+  memory_cache: OnceLock<Option<Weak<MemoryCache>>>,
   validator: CacheValidator,
   codec: Arc<CacheCodec>,
   // Unset: initializing; Some: available; None: unavailable.
@@ -78,6 +79,7 @@ impl FileCacheStrategy {
     logger: Arc<InfrastructureLogger>,
   ) -> Self {
     Self {
+      memory_cache: OnceLock::new(),
       validator: CacheValidator::new(
         rspack_pkg_version,
         cache_version,
@@ -91,6 +93,13 @@ impl FileCacheStrategy {
       readonly,
       logger,
     }
+  }
+
+  pub(super) fn set_memory_cache(&self, cache: Option<Weak<MemoryCache>>) {
+    self
+      .memory_cache
+      .set(cache)
+      .expect("memory cache should be configured once");
   }
 
   pub async fn db_init(&self, (base_path, path): (Utf8PathBuf, Utf8PathBuf)) {
@@ -275,14 +284,14 @@ impl FileCacheStrategy {
     key: &CacheKey,
     etag: Option<&Etag>,
     decoder: CacheValueDecoder,
-  ) -> Option<ErasedCacheValue> {
+  ) -> Option<(ErasedCacheValue, bool)> {
     let state_guard = self.read_state();
     let state = state_guard.as_ref()?;
     if let Some(pending) = state.pending_writes.entries.get(key) {
       return pending
         .entry
         .matches(etag)
-        .then(|| pending.entry.value().clone());
+        .then(|| (pending.entry.value().clone(), false));
     }
 
     let result = state.database.get(DatabaseFamily::Cache, key);
@@ -296,7 +305,7 @@ impl FileCacheStrategy {
     };
     let entry = entry?;
     match decoder(&entry, etag, &self.codec) {
-      Ok(decoded) => decoded,
+      Ok(decoded) => decoded.map(|value| (value, true)),
       Err(e) => {
         self
           .logger
@@ -361,19 +370,23 @@ impl FileCacheStrategy {
         None
       };
 
+      let failed_encodes = FxDashMap::<CacheKey, ()>::default();
       let writes = entries
-        .into_par_iter()
-        .filter_map(
-          |(key, pending)| match (pending.encoder)(&pending.entry, codec) {
-            Ok(value) => Some((DatabaseFamily::Cache, key, value)),
+        .par_iter()
+        .filter_map(|pending| {
+          let key = pending.key();
+          let pending = pending.value();
+          match (pending.encoder)(&pending.entry, codec) {
+            Ok(value) => Some((DatabaseFamily::Cache, key.clone(), value)),
             Err(error) => {
+              failed_encodes.insert(key.clone(), ());
               self.logger.warn(format!(
                 "Failed to encode cache entry for key {key}: {error}"
               ));
               None
             }
-          },
-        )
+          }
+        })
         .chain(validator.into_par_iter().map(|validator| {
           (
             DatabaseFamily::Validator,
@@ -389,6 +402,24 @@ impl FileCacheStrategy {
         };
         state.database.write_batch(writes)?
       };
+      // The batch has committed. Until this point the memory tier remains the
+      // restore source even while the pending map has been drained for writing.
+      if cfg!(not(target_family = "wasm"))
+        && let Some(memory_cache) = self
+          .memory_cache
+          .get()
+          .and_then(|cache| cache.as_ref())
+          .and_then(Weak::upgrade)
+      {
+        for pending in &entries {
+          let key = pending.key();
+          let pending = pending.value();
+          if key.as_str().contains("|ResolverCache|") && !failed_encodes.contains_key(key) {
+            memory_cache.release_stored(key, &pending.entry);
+          }
+        }
+        memory_cache.shrink_to_fit();
+      }
       self.logger.time_end(start);
 
       self

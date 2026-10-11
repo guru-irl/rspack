@@ -370,6 +370,9 @@ impl Compiler {
     logger.time_end(start);
 
     if let Some(cache) = &self.compilation.resolver_cache {
+      cache.release_persisted();
+      self.resolver_factory.release_unused_cache_locks();
+      self.loader_resolver_factory.release_unused_cache_locks();
       cache.log(&self.compilation.get_logger("rspack.ResolverCache"));
     }
 

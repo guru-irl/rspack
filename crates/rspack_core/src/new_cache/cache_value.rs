@@ -82,6 +82,10 @@ pub(super) type CacheValueDecoder =
 pub(super) struct ErasedCacheValue(Arc<dyn Any + Send + Sync>);
 
 impl ErasedCacheValue {
+  pub(super) fn ptr_eq(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.0, &other.0)
+  }
+
   fn new<T: Any + Send + Sync>(value: Arc<T>) -> Self {
     Self(value)
   }

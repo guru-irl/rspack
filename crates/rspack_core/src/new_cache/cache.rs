@@ -10,7 +10,7 @@ use super::{
 /// Storage shared by all compiler-scoped cache views.
 #[derive(Debug)]
 struct CacheStorage {
-  memory_cache: Option<MemoryCache>,
+  memory_cache: Option<Arc<MemoryCache>>,
   idle_file_cache: Option<IdleFileCache>,
 }
 
@@ -27,6 +27,10 @@ pub struct Cache {
 impl Cache {
   /// Creates storage from the configured memory and filesystem caches.
   pub fn new(memory_cache: Option<MemoryCache>, idle_file_cache: Option<IdleFileCache>) -> Self {
+    let memory_cache = memory_cache.map(Arc::new);
+    if let Some(file_cache) = &idle_file_cache {
+      file_cache.set_memory_cache(memory_cache.as_ref().map(Arc::downgrade));
+    }
     let storage = if memory_cache.is_some() || idle_file_cache.is_some() {
       Some(CacheStorage {
         memory_cache,
@@ -61,10 +65,10 @@ impl Cache {
       return None;
     };
 
-    match file_cache.restore::<T>(key.clone(), etag.clone()) {
-      Some(value) => {
+    match file_cache.restore_with_persisted::<T>(key.clone(), etag.clone()) {
+      Some((value, persisted)) => {
         if let Some(memory_cache) = &storage.memory_cache {
-          memory_cache.store(key, etag, value.clone());
+          memory_cache.store_with_persisted(key, etag, value.clone(), persisted);
         }
         Some(value)
       }
@@ -86,6 +90,21 @@ impl Cache {
     }
     if let Some(file_cache) = &storage.idle_file_cache {
       file_cache.store(key, etag, value)
+    }
+  }
+
+  pub(super) fn release_persisted(&self, prefix: &str) {
+    let Some(storage) = &self.storage else {
+      return;
+    };
+    // Memory-only caches and unavailable filesystem caches must retain values.
+    if storage
+      .idle_file_cache
+      .as_ref()
+      .is_some_and(|cache| cache.can_release())
+      && let Some(memory_cache) = &storage.memory_cache
+    {
+      memory_cache.release_persisted(prefix);
     }
   }
 

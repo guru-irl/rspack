@@ -15,5 +15,13 @@ pub async fn finish_make_pass(
     .await?;
   logger.time_end(start);
 
+  if let Some(cache) = &compilation.resolver_cache {
+    cache.release_persisted();
+    compilation.resolver_factory.release_unused_cache_locks();
+    compilation
+      .loader_resolver_factory
+      .release_unused_cache_locks();
+  }
+
   Ok(())
 }

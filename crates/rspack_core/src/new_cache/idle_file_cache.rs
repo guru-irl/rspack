@@ -1,6 +1,6 @@
 use std::{
   sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicU64, Ordering},
   },
   thread,
@@ -14,8 +14,7 @@ use tokio::{
 };
 
 use super::{
-  CacheKey, CacheValue, Etag, FileCacheStrategy,
-  cache_value::{CacheValueData, ErasedCacheValue},
+  CacheKey, CacheValue, Etag, FileCacheStrategy, MemoryCache, cache_value::CacheValueData,
 };
 use crate::{InfrastructureLogger, Logger};
 
@@ -212,6 +211,14 @@ impl IdleFileCache {
     }
   }
 
+  pub(super) fn set_memory_cache(&self, cache: Option<Weak<MemoryCache>>) {
+    self.strategy.set_memory_cache(cache);
+  }
+
+  pub(super) fn can_release(&self) -> bool {
+    cfg!(not(target_family = "wasm")) && self.strategy.is_available()
+  }
+
   pub fn store<T: CacheValueData>(&self, key: CacheKey, etag: Option<Etag>, value: CacheValue<T>) {
     self
       .strategy
@@ -223,10 +230,20 @@ impl IdleFileCache {
     key: CacheKey,
     etag: Option<Etag>,
   ) -> Option<CacheValue<T>> {
+    self
+      .restore_with_persisted(key, etag)
+      .map(|(value, _)| value)
+  }
+
+  pub(super) fn restore_with_persisted<T: CacheValueData>(
+    &self,
+    key: CacheKey,
+    etag: Option<Etag>,
+  ) -> Option<(CacheValue<T>, bool)> {
     let restored = self
       .strategy
       .restore(&key, etag.as_ref(), CacheValue::<T>::decoder());
-    restored.and_then(ErasedCacheValue::downcast)
+    restored.and_then(|(value, persisted)| value.downcast().map(|value| (value, persisted)))
   }
 
   pub fn store_build_dependencies(&self, dependencies: InternedPathSet) {

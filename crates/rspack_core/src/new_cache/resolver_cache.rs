@@ -123,6 +123,17 @@ impl ResolverCache {
     (result, dependencies)
   }
 
+  pub(crate) fn release_persisted(&self) {
+    self.cache.release_persisted();
+  }
+
+  pub(crate) fn release_unused_locks(&self) {
+    // entry() and retain() synchronize on the same shard. Every active or queued
+    // request owns an Arc, so no request can observe a second mutex for its key.
+    self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    self.locks.shrink_to_fit();
+  }
+
   pub(crate) fn log(&self, logger: &impl Logger) {
     logger.cache_end(self.counter.as_ref());
   }

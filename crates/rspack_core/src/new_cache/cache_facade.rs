@@ -46,6 +46,10 @@ impl CacheFacade {
     self.cache.store(self.key(identifier), etag, value)
   }
 
+  pub(crate) fn release_persisted(&self) {
+    self.cache.release_persisted(&format!("{}|", self.name));
+  }
+
   fn key(&self, identifier: &str) -> CacheKey {
     CacheKey::from([self.name.as_ref(), identifier].join("|"))
   }
