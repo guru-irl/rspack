@@ -64,8 +64,8 @@ def measure(command, output, env):
     rc = process.wait(); stop.set(); thread.join()
     if handle: kernel.CloseHandle(handle)
     output.with_suffix('.timeline.json').write_text(json.dumps(samples))
-    if anchor_names != ['done','END','post_close']: raise RuntimeError(f'Missing or duplicate anchors: {anchor_names}')
     if rc: raise RuntimeError(f'Command failed with exit {rc}: {command}')
+    if anchor_names != ['done','END','post_close']: raise RuntimeError(f'Missing or duplicate anchors: {anchor_names}')
     if errors: raise RuntimeError(f'Memory sampler failed: {errors}')
     result = json.loads(output.read_text())
     if sys.platform == 'win32':
