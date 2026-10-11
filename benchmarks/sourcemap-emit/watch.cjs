@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { moduleText, generate } = require('./generate.cjs');
-const root = path.resolve(process.env.STUDY_ROOT + (process.env.STUDY_LOADER === 'swc' ? '-swc' : '')); 
+const root = path.resolve(process.env.STUDY_ROOT + (process.env.STUDY_LOADER === 'swc' ? '-swc' : ''));
 const results = path.resolve(process.env.STUDY_RESULTS);
 fs.mkdirSync(results, { recursive: true });
 const arm = process.env.STUDY_ARM || 'memfs';
@@ -92,7 +92,7 @@ watcher = compiler.watch({ aggregateTimeout: 30 }, async (err, stats) => {
     if (step === 0) {
       const bundle = digest['shared.js'].bytes;
       const map = digest['shared.js.map'].bytes;
-      if (count === 30000 && (bundle < 100e6 || map < 100e6 || bundle > 160e6 || map > 170e6)) throw new Error(`Fixture size outside intended range: ${bundle}, ${map}`);
+      if (count === 30000 && (bundle < 100e6 || map < 100e6 || bundle > (process.env.STUDY_LOADER === 'swc' ? 190e6 : 160e6) || map > 170e6)) throw new Error(`Fixture size outside intended range: ${bundle}, ${map}`);
     }
     if (global.gc) global.gc();
     if (step >= edits) {

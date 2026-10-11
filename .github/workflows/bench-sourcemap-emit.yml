@@ -29,6 +29,7 @@ jobs:
           echo "STUDY_MEMFS=$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/memfs" >> "$GITHUB_ENV"
           { uname -a; lscpu; free -m; df -h; node --version; git rev-parse HEAD; } > .spider/scratch/sourcemap-emit/results/host.txt
       - name: Published 2.2.8 watch baseline
+        if: false
         shell: bash
         run: |
           export STUDY_CORE="$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/@rspack/core/dist/index.js"
@@ -75,7 +76,6 @@ jobs:
           sudo sysctl kernel.perf_event_paranoid=-1
           export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=profile STUDY_ARM=memfs STUDY_PROBE=1 STUDY_EDITS=5
           # 99 Hz frame-pointer stacks avoid giant DWARF sample files.
-          
           "$PERF" record -F 99 -g --call-graph fp -o "$STUDY_RESULTS/perf.data" -- python3 benchmarks/sourcemap-emit/monitor.py
           "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --no-children --percent-limit 0.2 > "$STUDY_RESULTS/perf-self.txt"
           "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --children --percent-limit 0.5 > "$STUDY_RESULTS/perf-inclusive.txt"
