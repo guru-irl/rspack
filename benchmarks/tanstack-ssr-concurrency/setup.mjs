@@ -48,10 +48,12 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
-if(mode==='final') {
+if(mode==='r2-red') {
+ for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-done'],['barrier','r2-passes']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
+} else if(mode==='final') {
  for(const [arm,scenario] of [['barrier','no-resolver'],['barrier','red-overlap'],['barrier','red-recovery'],['barrier','red-aba'],['after-make','red-after-make']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 }
-if(mode==='supplement') {for(const arm of ['overlap','after-make','barrier','stock']){const r=execute(arm,'warm',10);if(r.status!==0)failed=true;}
+if(mode==='r2-red') {} else if(mode==='supplement') {for(const arm of ['overlap','after-make','barrier','stock']){const r=execute(arm,'warm',10);if(r.status!==0)failed=true;}
 } else if(mode==='no-resolver') {const r=execute('barrier','no-resolver',0);failed=r.status!==0;
 } else if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0;
 } else if(mode==='aa-route') {for(let i=0;i<2;i++){const r=execute('stock','aa-route',i);if(r.status!==0)failed=true;}
