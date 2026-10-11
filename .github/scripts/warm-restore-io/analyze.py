@@ -50,7 +50,7 @@ def self_check():
     assert exact_hl([1]*10)[1:] == (1,1)
     assert exact_hl(list(range(-5,5)))[1] <= 0 <= exact_hl(list(range(-5,5)))[2]
 
-METRICS = [('buildMs','Warm-start ms',1),('storageMs','Storage load ms',1),('makeRestoreMs','Make restore ms',1),('peakKiB','Peak RSS MiB',1024),('rssEndKiB','END RSS MiB',1024),('anonPeakKiB','Peak anon MiB',1024),('anonEndKiB','END anon MiB',1024)]
+METRICS = [('wallMs','Warm-start wall ms',1),('buildMs','Run ms',1),('storageMs','Storage load ms',1),('makeRestoreMs','Make restore ms',1),('peakKiB','Peak RSS MiB',1024),('rssEndKiB','END RSS MiB',1024),('anonPeakKiB','Peak anon MiB',1024),('anonEndKiB','END anon MiB',1024)]
 def main():
     self_check()
     rows = [json.loads(line) for line in open(sys.argv[1])]
@@ -69,11 +69,11 @@ def main():
         n=len([r for r,a in cell if a=='main'])
         assert all(len([r for r,a in cell if a==arm])==n for arm in arms)
         print(f'## {condition}, {delay} ms read delay, n={n}\n')
-        print('| Arm | Warm-start ms | Storage ms | Make restore ms | Peak RSS MiB | END RSS MiB | Read requests |')
-        print('| --- | ---: | ---: | ---: | ---: | ---: | ---: |')
+        print('| Arm | Warm-start wall ms | Run ms | Storage ms | Make restore ms | Peak RSS MiB | END RSS MiB | Read requests |')
+        print('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
         for arm in arms:
             group=[cell[(r,arm)] for r in range(1,n+1)]
-            values=[statistics.median(row[k] for row in group)/div for k,_,div in METRICS[:5]]
+            values=[statistics.median(row[k] for row in group)/div for k,_,div in METRICS[:6]]
             print('| '+arm+' | '+' | '.join(f'{x:.3f}' for x in values)+f' | {statistics.median(r["readRequests"] for r in group):.0f} |')
         print('\n| Arm - main | Metric | Paired median | HL estimate | Exact HL 95% interval | Bootstrap median 95% | Exact p | Signs -/0/+ |')
         print('| --- | --- | ---: | ---: | --- | --- | ---: | --- |')

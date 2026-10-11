@@ -34,6 +34,7 @@ try {
   const stats = await new Promise((resolve, reject) => compiler.run((error, stats) => error ? reject(error) : resolve(stats)));
   if (stats.hasErrors()) throw new Error(stats.toString({ all: false, errors: true }));
   const buildMs = now() - started;
+  const buildEndUnixMs = Date.now();
   const mem = memory();
   const graph = stats.compilation.modules.size;
   if (phase === 'warm' && (counts.build !== 0 || counts.valid !== graph)) throw new Error(`not a warm hit: ${JSON.stringify({ counts, graph })}`);
@@ -41,11 +42,12 @@ try {
   const hasher = crypto.createHash('sha256');
   for await (const chunk of fs.createReadStream(path.join(path.dirname(root), 'output/main.js'))) hasher.update(chunk);
   const hash = hasher.digest('hex');
-  const makeEntries = Object.values(logs || {}).flatMap(log => log.entries || []).filter(e => e.type === 'time' && String(e.message).startsWith('read make from persistent cache:'));
+  const flatten = entries => entries.flatMap(e => [e, ...flatten(e.children || [])]);
+  const makeEntries = Object.values(logs || {}).flatMap(log => flatten(log.entries || [])).filter(e => e.type === 'time' && String(e.message).startsWith('read make from persistent cache:'));
   const makeMatch = makeEntries[0]?.message.match(/: ([\d.]+) ms/);
   const makeRestoreMs = makeMatch ? Number(makeMatch[1]) : null;
   if (phase === 'warm' && !Number.isFinite(makeRestoreMs)) throw new Error('missing make restore logger timing');
-  const checkpoint = { phase, buildMs, makeRestoreMs, ...mem, graph, counts, hash, logs, events };
+  const checkpoint = { phase, buildMs, buildEndUnixMs, makeRestoreMs, ...mem, graph, counts, hash, logs, events };
   console.log('CHECKPOINT ' + JSON.stringify(checkpoint));
   // Teardown and cache flush are deliberately outside the warm-start timer.
   await close();

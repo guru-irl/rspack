@@ -46,6 +46,7 @@ def run(label, arm, phase):
     err = RESULTS / f'{label}.stderr'
     before = device_stat()
     with out.open('w') as stdout, err.open('w') as stderr:
+        launchUnixMs = time.time_ns() / 1e6
         p = subprocess.Popen(['node', str(SCRIPT), phase], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
         ready = False
         launch = time.monotonic_ns()
@@ -78,6 +79,7 @@ def run(label, arm, phase):
     found = [json.loads(line[7:]) for line in text.splitlines() if line.startswith('RESULT ')]
     if len(found) != 1: raise RuntimeError(f'{label}: no unique RESULT')
     result = found[0]
+    result['wallMs'] = result['buildEndUnixMs'] - launchUnixMs
     after = device_stat()
     storage = re.findall(r'^STORAGE_END (\S+) ([\d.]+) (\d+)', err.read_text(), re.M)
     starts = dict((scope, int(ns)) for scope, ns in re.findall(r'^STORAGE_START (\S+) (\d+)', err.read_text(), re.M))
@@ -134,7 +136,7 @@ def main():
                     assert row['hash']==seed['hash'] and row['counts']['build']==0
                     row.update(condition=condition,delayMs=delay,round=repetition+1,position=position,cacheBytes=resident['bytes'])
                     output.write(json.dumps(row)+'\n'); output.flush()
-                    print(json.dumps({k:row[k] for k in ['label','buildMs','storageMs','peakKiB','rssEndKiB','readRequests']}),flush=True)
+                    print(json.dumps({k:row[k] for k in ['label','wallMs','buildMs','storageMs','peakKiB','rssEndKiB','readRequests']}),flush=True)
     shutil.rmtree(CACHE); shutil.rmtree(SEED)
 
 if __name__=='__main__':
