@@ -491,6 +491,12 @@ impl JsCompiler {
                 print_error_diagnostic(e, compiler.options.stats.colors)
               });
             result?;
+            if compiler.compilation.get_errors().next().is_none() {
+              // Rebuild released the previous compilation after Rust done.
+              // Collect on the same task with no intervening await, before
+              // returning to JavaScript and its public done hook.
+              rspack_allocator::collect();
+            }
             tracing::debug!("rebuild ok");
             Ok(())
           },
