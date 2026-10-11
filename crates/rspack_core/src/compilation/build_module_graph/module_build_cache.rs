@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+  Arc,
+  atomic::{AtomicU64, Ordering},
+};
 
 use rspack_collections::{Identifiable, IdentifierDashMap};
 use rspack_error::{Result, ToStringResultToRspackResultExt};
@@ -18,6 +21,7 @@ pub(crate) struct ModuleBuildCache {
   cache: CacheFacade,
   restore_enabled: bool,
   pending: Arc<IdentifierDashMap<u64>>,
+  pub(crate) counters: Arc<RouteCounters>,
 }
 
 impl ModuleBuildCache {
@@ -26,6 +30,7 @@ impl ModuleBuildCache {
       cache,
       restore_enabled,
       pending: Default::default(),
+      counters: Default::default(),
     }
   }
 
@@ -147,4 +152,58 @@ fn create_cache_entry(
     .module_by_identifier(&module_identifier)
     .expect("pending module should exist in the final module graph");
   source_module.clone()
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RouteCounters {
+  pub(crate) factorize: AtomicU64,
+  pub(crate) lookups: AtomicU64,
+  pub(crate) hits: AtomicU64,
+  pub(crate) owner_miss: AtomicU64,
+  pub(crate) group_miss: AtomicU64,
+  pub(crate) target_absent: AtomicU64,
+  pub(crate) target_unsupported: AtomicU64,
+  pub(crate) target_invalid: AtomicU64,
+  pub(crate) target_decodes: AtomicU64,
+  pub(crate) builds: AtomicU64,
+  pub(crate) records: AtomicU64,
+  pub(crate) route_owners: AtomicU64,
+  pub(crate) route_live_bytes: AtomicU64,
+}
+
+impl RouteCounters {
+  pub(crate) fn print(&self, artifact: &BuildModuleGraphArtifact) {
+    if std::env::var_os("RSPACK_ROUTE_COUNTERS").is_none() {
+      return;
+    }
+    let graph = artifact.get_module_graph();
+    eprintln!(
+      "ROUTE_D_COUNTERS factorize={} lookups={} hits={} owner_miss={} group_miss={} target_absent={} target_unsupported={} target_invalid={} target_decodes={} builds={} records={} modules={} dependencies={} connections={} route_owners={} route_live_bytes={}",
+      self.factorize.load(Ordering::Relaxed),
+      self.lookups.load(Ordering::Relaxed),
+      self.hits.load(Ordering::Relaxed),
+      self.owner_miss.load(Ordering::Relaxed),
+      self.group_miss.load(Ordering::Relaxed),
+      self.target_absent.load(Ordering::Relaxed),
+      self.target_unsupported.load(Ordering::Relaxed),
+      self.target_invalid.load(Ordering::Relaxed),
+      self.target_decodes.load(Ordering::Relaxed),
+      self.builds.load(Ordering::Relaxed),
+      self.records.load(Ordering::Relaxed),
+      graph.modules().count(),
+      graph.dependencies().count(),
+      graph
+        .modules()
+        .map(|(id, _)| graph.get_outgoing_connections(id).count())
+        .sum::<usize>()
+        + graph
+          .dependencies()
+          .filter(|(id, _)| graph
+            .connection_by_dependency_id(id)
+            .is_some_and(|c| c.original_module_identifier.is_none()))
+          .count(),
+      self.route_owners.load(Ordering::Relaxed),
+      self.route_live_bytes.load(Ordering::Relaxed)
+    );
+  }
 }

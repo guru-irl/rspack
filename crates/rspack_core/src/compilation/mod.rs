@@ -495,6 +495,10 @@ impl Compilation {
     }
   }
 
+  pub(crate) fn probe_graph_strategy(&self) -> Option<Arc<crate::new_cache::FileCacheStrategy>> {
+    self.cache.probe_graph_strategy()
+  }
+
   pub fn get_cache(&self, name: &str) -> CacheFacade {
     self.cache.facade(name)
   }

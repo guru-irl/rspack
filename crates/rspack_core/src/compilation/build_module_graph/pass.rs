@@ -33,6 +33,7 @@ impl PassExt for BuildModuleGraphPhasePass {
 
   async fn before_pass(&self, compilation: &mut Compilation, cache: &mut dyn Cache) {
     cache.before_build_module_graph(compilation).await;
+    crate::new_cache::probe_graph::restore(compilation).await;
   }
 
   async fn run_pass(&self, compilation: &mut Compilation) -> Result<()> {
@@ -69,10 +70,16 @@ impl PassExt for BuildModuleGraphPhasePass {
         )
         .await?;
     }
+    if let Some(cache) = &compilation.module_build_cache {
+      cache
+        .counters
+        .print(&compilation.build_module_graph_artifact);
+    }
     for (_, module) in compilation.get_module_graph().modules() {
       module.freeze_build_info();
     }
     cache.after_build_module_graph(compilation).await;
+    crate::new_cache::probe_graph::store(compilation);
     Ok(())
   }
 }

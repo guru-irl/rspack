@@ -58,6 +58,7 @@ pub async fn repair(
             dependencies: vec![dependency],
             resolve_options: None,
             from_unlazy: false,
+            counters: ctx.module_build_cache.as_ref().map(|c| c.counters.clone()),
           }) as Box<dyn Task<TaskContext>>
         })
         .collect::<Vec<_>>()

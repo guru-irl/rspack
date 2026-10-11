@@ -7,6 +7,7 @@ mod etag;
 mod file_cache_strategy;
 mod idle_file_cache;
 mod memory_cache;
+pub(crate) mod probe_graph;
 mod resolver_cache;
 pub(crate) mod snapshot;
 mod validator;

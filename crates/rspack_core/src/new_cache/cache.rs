@@ -25,6 +25,15 @@ pub struct Cache {
 }
 
 impl Cache {
+  pub(crate) fn probe_graph_strategy(&self) -> Option<Arc<super::FileCacheStrategy>> {
+    self
+      .storage
+      .as_ref()?
+      .idle_file_cache
+      .as_ref()
+      .map(IdleFileCache::probe_graph_strategy)
+  }
+
   /// Creates storage from the configured memory and filesystem caches.
   pub fn new(memory_cache: Option<MemoryCache>, idle_file_cache: Option<IdleFileCache>) -> Self {
     let storage = if memory_cache.is_some() || idle_file_cache.is_some() {

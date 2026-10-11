@@ -24,6 +24,7 @@ const VALIDATOR_KEY: &str = "validator";
 struct PendingWrites {
   entries: FxDashMap<CacheKey, PendingWrite>,
   new_build_dependencies: Mutex<Option<InternedPathSet>>,
+  probe_graph: Mutex<Vec<(CacheKey, Vec<u8>)>>,
 }
 
 #[derive(Debug)]
@@ -38,7 +39,9 @@ impl PendingWrites {
   }
 
   fn is_empty(&self) -> bool {
-    self.entries.is_empty() && self.new_build_dependencies().is_none()
+    self.entries.is_empty()
+      && self.new_build_dependencies().is_none()
+      && self.probe_graph.lock().unwrap().is_empty()
   }
 }
 
@@ -232,6 +235,22 @@ impl FileCacheStrategy {
     }
   }
 
+  pub(crate) fn probe_graph_get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+    self
+      .read_state()
+      .as_ref()?
+      .database
+      .get(DatabaseFamily::Cache, key)
+      .unwrap()
+      .map(|value| value.to_vec())
+  }
+
+  pub(crate) fn probe_graph_store(&self, entries: Vec<(CacheKey, Vec<u8>)>) {
+    if let Some(state) = self.read_state().as_ref() {
+      *state.pending_writes.probe_graph.lock().unwrap() = entries;
+    }
+  }
+
   pub(super) fn store(
     &self,
     key: CacheKey,
@@ -343,7 +362,7 @@ impl FileCacheStrategy {
         state.database.prepare_open(&self.logger)?
       };
 
-      let (entries, new_build_dependencies) = {
+      let (entries, new_build_dependencies, probe_graph) = {
         let mut state = self.write_state();
         let Some(state) = state.as_mut() else {
           return Ok(());
@@ -352,6 +371,7 @@ impl FileCacheStrategy {
         (
           std::mem::take(&mut state.pending_writes.entries),
           state.pending_writes.new_build_dependencies().take(),
+          std::mem::take(&mut *state.pending_writes.probe_graph.lock().unwrap()),
         )
       };
 
@@ -381,6 +401,12 @@ impl FileCacheStrategy {
             validator,
           )
         }));
+
+      let writes = writes.chain(
+        probe_graph
+          .into_par_iter()
+          .map(|(key, value)| (DatabaseFamily::Cache, key, value)),
+      );
 
       let writes_len = {
         let state = self.read_state();

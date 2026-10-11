@@ -73,6 +73,7 @@ impl Task<ExecutorTaskContext> for EntryTask {
           dependencies: vec![dep],
           resolve_options: None,
           from_unlazy: false,
+          counters: None,
         })]));
         (*v.insert(dep_id), true)
       }
