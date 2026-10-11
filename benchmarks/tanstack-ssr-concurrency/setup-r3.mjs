@@ -1,3 +1,4 @@
+import { instrumentResponse, instrumentGate } from './instrument-response.mjs';
 import { instrumentCSS } from './instrument-css.mjs';
 import fs from 'node:fs';
 import { captureIdentity, functionInventory } from './check-identity.mjs';
@@ -74,6 +75,7 @@ const execute=(arm,scenario,index)=>{
  // Observation only: preserve the real virtual module object and all decisions.
  let plugin=fs.readFileSync(path.join(dist,'plugin.js'),'utf8');
  plugin=plugin.replace('updateServerFnResolver = virtualModuleState.updateServerFnResolver;','updateServerFnResolver = virtualModuleState.updateServerFnResolver;\n globalThis.__watchVirtualState = virtualModuleState;');
+ if(process.env.MODE==='r3-response-diagnosis')plugin=instrumentGate(plugin);
  fs.writeFileSync(path.join(dist,'plugin.js'),plugin);
  fs.rmSync(path.join(app,'src'),{recursive:true,force:true}); fs.rmSync(path.join(app,'dist'),{recursive:true,force:true});
  fs.cpSync(path.join(root,'benchmarks/tanstack-topology/src'),path.join(app,'src'),{recursive:true});
@@ -91,7 +93,8 @@ const execute=(arm,scenario,index)=>{
   fs.writeFileSync(path.join(app,'aux/new-request.css'),'.generic-new-request { color: rgb(80, 80, 80); }\n');
   fs.writeFileSync(path.join(app,'aux/request.css'),'.generic-request { color: rgb(20, 20, 20); }\n');
   for(const name of ['aux-a','aux-b'])fs.writeFileSync(path.join(app,'aux',`${name}.js`),`document.body.textContent = 'Generic ${name}';\n`);
-  if(process.env.MODE==='r3-css-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentCSS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
+  if(process.env.MODE==='r3-response-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentResponse(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
+   else if(process.env.MODE==='r3-css-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentCSS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
   else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  if(scenario==='production') {
   fs.copyFileSync(path.join(fixture,'run-production.mjs'),path.join(app,'run-production.mjs'));
@@ -101,7 +104,7 @@ const execute=(arm,scenario,index)=>{
   assert.ok(!/\[tss-ssr-concurrency\]/.test(run.stdout+run.stderr),'no production concurrency logs');
   return {result,status:run.status};
  }
- const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,STOCK_REQUEST_EXPECTATION:path.join(work,`stock-request-${process.env.COMPILER_COUNT||'2'}-${scenario}.json`),TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
+ const run=spawnSync(process.env.MODE==='r3-response-diagnosis'?'node':'/usr/bin/time',process.env.MODE==='r3-response-diagnosis'?['run.mjs']:['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,STOCK_REQUEST_EXPECTATION:path.join(work,`stock-request-${process.env.COMPILER_COUNT||'2'}-${scenario}.json`),TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  if(run.status===0 && arm!=='stock' && arm!=='v2') {
@@ -116,6 +119,21 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE;
 if(mode==='r3-checks')process.exit(0);
+if(mode==='r3-response-diagnosis') {
+ process.env.COMPILER_COUNT='4';
+ const results=[];
+ for(const pagePath of ['middleware','custom-server']) {
+  process.env.DIAGNOSTIC_PAGE_PATH=pagePath;
+  for(const arm of ['stock','gate-only','barrier']) {
+   const r=execute(arm,'correctness','response-'+pagePath);
+   results.push({arm,pagePath,status:r.status,result:path.basename(r.result)});
+   fs.writeFileSync(path.join(work,'response-diagnosis-runs.json'),JSON.stringify({diagnosticOnly:true,results},null,2));
+   assert.equal(r.status,0,`${arm} ${pagePath}: diagnostic collection completed`);
+   assert.equal(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).length,22,'all edit checkpoints captured');
+  }
+ }
+ process.exit(0);
+}
 if(mode==='r3-css-diagnosis') {
  process.env.COMPILER_COUNT='4';
  const results=[];

@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [r3-css-diagnosis, r3-checks, r3-custom-green, r3-production, r3-custom-red,r3-request-red, r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
+        options: [r3-response-diagnosis, r3-css-diagnosis, r3-checks, r3-custom-green, r3-production, r3-custom-red,r3-request-red, r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
         default: red
 permissions:
   contents: read
@@ -36,7 +36,10 @@ jobs:
           git fetch --no-tags origin 67fd504fa122769f2ad5939e1204971335d1d376
           node --check benchmarks/tanstack-ssr-concurrency/check-rsc.mjs
           node --check benchmarks/tanstack-ssr-concurrency/instrument-css.mjs
+          node --check benchmarks/tanstack-ssr-concurrency/instrument-response.mjs
           node --check benchmarks/tanstack-ssr-concurrency/run.mjs
+          node --input-type=module -e "import fs from 'node:fs'; import { instrumentResponse } from './benchmarks/tanstack-ssr-concurrency/instrument-response.mjs'; fs.writeFileSync(process.env.WORK_DIR+'/response-observed-source.mjs',instrumentResponse(fs.readFileSync('benchmarks/tanstack-ssr-concurrency/run.mjs','utf8')));"
+          node --check "$WORK_DIR/response-observed-source.mjs"
           node --check benchmarks/tanstack-ssr-concurrency/setup.mjs
           node --check benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
           node --check benchmarks/tanstack-ssr-concurrency/check-identity.mjs
