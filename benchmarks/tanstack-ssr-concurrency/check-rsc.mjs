@@ -18,7 +18,7 @@ export function structural(pristine,patched) {
  const envStart='\t\t\tapi.onAfterEnvironmentCompile';
  const envEnd='\t\t\tif (api.context.action === "build")';
  let env=between(patched['plugin.js'],envStart,envEnd);
- const nonRscFollowUp=between(env,'\t\t\t\t\tif (concurrentDev) {','\t\t\t\t}\n');
+ const nonRscFollowUp=between(env,'\t\t\t\t\tif (concurrentDev) {','\n\t\t\t\t}\n')+'\n';
  env=env.replace(nonRscFollowUp,'').replace('\t\t\t\tif (clientBuild) {\n\t\t\t\t\tvirtualModuleState.updateManifest(clientBuild);\n\t\t\t\t}\n','\t\t\t\tif (clientBuild) virtualModuleState.updateManifest(clientBuild);\n');
  check('plugin.js','RSC client publication call sites (non-RSC guard excluded)',between(pristine['plugin.js'],envStart,envEnd),env);
  let v=patched['virtual-modules.js'];
