@@ -12,10 +12,8 @@ fs.writeFileSync(
   JSON.stringify(metadata['dist-tags'], null, 2),
 );
 const versions = ['2.2.8'];
-const canaries = Object.keys(metadata.versions)
-  .filter((v) => v.includes('canary'))
-  .sort((a, b) => Date.parse(metadata.time[b]) - Date.parse(metadata.time[a]));
-if (canaries.length) versions.push(canaries[0]);
+const canary = metadata['dist-tags'].canary;
+if (canary && canary !== versions[0]) versions.push(canary);
 fs.writeFileSync(
   path.join(out, 'selected-versions.json'),
   JSON.stringify(versions),
@@ -37,9 +35,9 @@ for (const version of versions) {
     private: true,
     type: 'module',
     dependencies: {
-      '@rsbuild/core': 'latest',
-      '@rsbuild/plugin-react': 'latest',
-      '@tanstack/react-start': 'latest',
+      '@rsbuild/core': '2.2.12',
+      '@rsbuild/plugin-react': '2.1.1',
+      '@tanstack/react-start': '1.168.61',
       '@tanstack/react-router': 'latest',
       react: 'latest',
       'react-dom': 'latest',
@@ -93,7 +91,7 @@ for (const version of versions) {
     }
   };
   walk(path.join(dir, 'node_modules/@tanstack/start-plugin-core'));
-  for (const variant of ['baseline', 'skip-identical-resolver-rebuild']) {
+  for (const variant of ['baseline']) {
     fs.cpSync(
       path.join(root, 'benchmarks/tanstack-topology/run.mjs'),
       path.join(dir, 'run.mjs'),

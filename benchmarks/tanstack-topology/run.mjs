@@ -17,7 +17,7 @@ let waiting;
 let editStart;
 let edited = 0;
 let finished = 0;
-const seen = new Map();
+
 const log = (item) => {
   fs.appendFileSync(
     path.join(out, 'events.jsonl'),
@@ -76,33 +76,6 @@ const probe = {
                   id,
                   stack: new Error().stack,
                 });
-                // Diagnostic control: preserve normal rebuilds unless an exact source
-                // comparison proves this finishMake resolver rebuild is redundant.
-                if (
-                  process.env.VARIANT === 'skip-identical-resolver-rebuild' &&
-                  target(id)
-                ) {
-                  let input;
-                  try {
-                    input = compiler.inputFileSystem.readFileSync(
-                      module.resource ?? id.split('!').at(-1),
-                      'utf8',
-                    );
-                  } catch {}
-                  const previous = seen.get(name + id);
-                  if (typeof input === 'string' && previous === input) {
-                    log({
-                      kind: 'skipped-identical-rebuild',
-                      name,
-                      index,
-                      id,
-                      hash: hash(input),
-                    });
-                    callback(null, module);
-                    return;
-                  }
-                  if (typeof input === 'string') seen.set(name + id, input);
-                }
                 return rebuild(module, callback);
               };
               compilation.hooks.buildModule.tap(
@@ -123,24 +96,6 @@ const probe = {
                     id: module.identifier(),
                     loaders: ctx.loaders.map((l) => l.path),
                   });
-                  for (const method of [
-                    'addDependency',
-                    'addContextDependency',
-                    'addMissingDependency',
-                    'cacheable',
-                  ]) {
-                    const original = ctx[method].bind(ctx);
-                    ctx[method] = (...args) => {
-                      log({
-                        kind: method,
-                        name,
-                        index,
-                        id: module.identifier(),
-                        args,
-                      });
-                      return original(...args);
-                    };
-                  }
                 },
               );
               compilation.hooks.finishModules.tap(
@@ -155,6 +110,7 @@ const probe = {
                         id: m.identifier(),
                         source,
                         hash: hash(source),
+                        buildInfo: m.buildInfo,
                         ...dependencies(m, compilation),
                       };
                     });
