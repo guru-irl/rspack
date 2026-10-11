@@ -39,7 +39,7 @@ const execute=(arm,scenario,index)=>{
  fs.writeFileSync(path.join(app,'src/Page.tsx'),`import { useLoaderData } from '@tanstack/react-router';\nimport { Leaf } from './Leaf';\nexport function Page({title}) { const data=useLoaderData({strict:false}); return <main><h1>{title}</h1><Leaf /><pre>{JSON.stringify(data)}</pre></main>; }\n`);
  fs.writeFileSync(path.join(app,'src/extra.css'),'.generic-extra { color: rgb(20, 20, 20); }\n');
  fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
- const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'node','run.mjs'],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':'0'},encoding:'utf8',timeout:900000});
+ const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':'0'},encoding:'utf8',timeout:900000});
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  console.log(scenario,index,arm,run.status,(run.stdout+run.stderr).slice(-2500));
@@ -52,7 +52,7 @@ if(mode==='regression') {
 } else if(mode==='red') {
  for(const [arm,scenario] of [['stock','red-overlap'],['v2','red-recovery']]) { const r=execute(arm,scenario,0); if(r.status!==0) failed=true; }
 } else {
- const reps=mode==='measure'?5:1;
+ const reps=mode==='measure'?10:1;
  for(let i=0;i<reps;i++) {
   const arms=i%2?['overlap','barrier','stock']:['stock','barrier','overlap'];
   const results=arms.map(arm=>({...execute(arm,mode==='measure'?'warm':'correctness',i),arm}));

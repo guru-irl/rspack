@@ -23,7 +23,7 @@ const checks = [];
 const current = new Map();
 const compilers = new Map();
 const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
-const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, ...extra }); };
+const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
 const probe = { name: 'watch-observer', setup(api) {
   api.modifyRspackConfig((config, { environment }) => {
@@ -141,13 +141,28 @@ const edit = async (name, file, content, expected, leaf='Public leaf baseline', 
   await sample(expected, leaf, removed, addedRoute);
 };
 let server;
+let readyTime;
+let readiness;
 const started=now();
 try {
   const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   server=await rsbuild.startDevServer();
+  readiness=(async()=>{
+    const deadline=now()+120000;
+    while(now()<deadline) {
+      try {
+        const r=await fetch('http://localhost:3100/');
+        const html=await r.text();
+        if(r.status===200 && html.includes('alpha-public') && html.includes('beta-public') && html.includes('gamma-public')) {readyTime=now();return;}
+      } catch {}
+      await pause(25);
+    }
+    throw new Error('cold SSR request readiness timeout');
+  })();
   await waitIdle(2);
+  await readiness;
   await sample(base,'Public leaf baseline');
-  const cold={ ssrReadyMs: events.find(e=>e.name==='ssr'&&e.kind==='done').t-started, finalReadyMs: events.filter(e=>e.kind==='done').at(-1).t-started, peakRss:peak, arm };
+  const cold={ ssrReadyMs: readyTime-started, firstSsrDoneMs:events.find(e=>e.name==='ssr'&&e.kind==='done').t-started, finalReadyMs: events.filter(e=>e.kind==='done').at(-1).t-started, peakRss:peak, arm };
   fs.writeFileSync(path.join(out,'cold.json'),JSON.stringify(cold,null,2));
   if (scenario==='cold') {}
   else if (scenario==='red-recovery') {
