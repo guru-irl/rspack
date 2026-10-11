@@ -48,7 +48,10 @@ pub(crate) struct ModuleNames {
 impl ModuleNames {
   pub(super) fn new(module_count: usize, cache_groups: &[CacheGroup]) -> Self {
     let needs_names = cache_groups.iter().any(|group| {
-      matches!(group.test, CacheGroupTest::String(_) | CacheGroupTest::RegExp(_))
+      matches!(
+        group.test,
+        CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
+      )
     });
     Self {
       names: if needs_names {
