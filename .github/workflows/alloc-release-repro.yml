@@ -80,5 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: alloc-release-${{ runner.os }}-${{ inputs.package || '2.2.8' }}-${{ inputs.arm || 'baseline' }}-${{ github.run_id }}
-          path: .spider/scratch/alloc-release/results
+          path: |
+            .spider/scratch/alloc-release/results
+            !.spider/scratch/alloc-release/results/**/output/**
           retention-days: 30

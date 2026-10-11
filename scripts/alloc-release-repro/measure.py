@@ -62,6 +62,8 @@ for launch in range(1, a.launches + 1):
                         if line.startswith(('RssAnon:', 'RssFile:', 'RssShmem:', 'VmSwap:')):
                             key, value, *_ = line.split()
                             sample[key[:-1]] = int(value) * 1024
+                    if 'RssAnon' not in sample:
+                        continue  # process became a zombie while sampling
                     threads = {}
                     for task in Path(f'/proc/{child.pid}/task').iterdir():
                         try:
