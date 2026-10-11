@@ -1,0 +1,9 @@
+{
+  "name": "public-split-chunks-reuse-opportunity",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@rspack/core": "2.2.8",
+    "@rspack/binding": "2.2.8"
+  }
+}

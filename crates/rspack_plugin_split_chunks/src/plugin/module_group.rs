@@ -984,6 +984,7 @@ impl SplitChunksPlugin {
     module_chunks: &[SsoHashSet<ChunkUkey>],
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
   ) -> Result<ModuleGroupMap> {
+    let names_probe = super::stage0::Names::default();
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
     let batch_getters = self.batch_getters.as_deref();
@@ -1084,7 +1085,7 @@ impl SplitChunksPlugin {
             cache_group.test,
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
           ) {
-            module.name_for_condition()
+            names_probe.get(module, module_identifier)
           } else {
             None
           };
@@ -1182,6 +1183,7 @@ impl SplitChunksPlugin {
     };
 
     if !native_positions.is_empty() {
+      let _timer = super::stage0::Span::new(compilation, "stage0 matching native");
       if let Some(candidates) = &candidates {
         if candidates.count_ones(..) < NATIVE_SEQUENTIAL_MODULES {
           for index in candidates.ones() {
@@ -1210,6 +1212,7 @@ impl SplitChunksPlugin {
       }
     }
     if !use_native_preparation {
+      let _timer = super::stage0::Span::new(compilation, "stage0 matching JS-bearing");
       callback::prepare_callback_groups(
         callback::Stage {
           plugin: self,
@@ -1227,6 +1230,8 @@ impl SplitChunksPlugin {
       .await?;
     }
 
+    names_probe.report(compilation);
+    let _assembly_timer = super::stage0::Span::new(compilation, "stage0 matching assembly");
     let module_group_count = module_group_map.len();
     let mut result = Vec::with_capacity(module_group_count);
     result.extend(module_group_map);
