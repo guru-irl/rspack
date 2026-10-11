@@ -211,7 +211,16 @@ try {
   else await sample(base,'Public leaf baseline');
   const cold={ ssrReadyMs: readyTime-started, firstSsrDoneMs:events.find(e=>e.name==='ssr'&&e.kind==='done').t-started, finalReadyMs: events.filter(e=>e.kind==='done').at(-1).t-started, peakRss:peak, arm };
   fs.writeFileSync(path.join(out,'cold.json'),JSON.stringify(cold,null,2));
-  if(scenario==='no-resolver') {
+  if(scenario==='r2b-delete') {
+    const route=`import { createFileRoute } from '@tanstack/react-router';\nimport * as functions from '../functions';\nimport { Page } from '../Page';\nexport const Route = createFileRoute('/extra')({ loader:async()=>Object.fromEntries(await Promise.all(Object.entries(functions).sort(([a],[b])=>a.localeCompare(b)).map(async([name,fn])=>[name,await fn()]))), component: () => <Page title="Extra route" /> });\n`;
+    for(let i=1;i<=3;i++) {
+      await edit(`add-delete-${i}`,'src/routes/extra.tsx',route,base,undefined,[],undefined,true);
+      step=`delete-${i}`;lastEvent=now();fs.unlinkSync('src/routes/extra.tsx');
+      await waitIdle(2);await sample(base,'Public leaf baseline');
+      await Promise.all(pendingDeletionRequests);
+    }
+    fs.writeFileSync(path.join(out,'deletion-requests.json'),JSON.stringify({arm,deletions:3,requests:deletionRequests,errorPasses:builds.filter(b=>b.step.startsWith('delete-')&&b.errors.length).map(b=>({step:b.step,name:b.name,errors:b.errors.map(e=>e.message)}))},null,2));
+  } else if(scenario==='no-resolver') {
     const file='src/no-resolver.ts';
     const empty=fs.readFileSync(file,'utf8');
     const imported="import {getServerFnById} from '#tanstack-start-server-fn-resolver';\nexport default {fetch:async()=>new Response(String(getServerFnById))};\n";
