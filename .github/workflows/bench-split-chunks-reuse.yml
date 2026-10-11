@@ -15,10 +15,10 @@ jobs:
       matrix:
         include:
           - arm: main
-            ref: 36673eac938cb793891eb890d26d7e8e893b0149
+            ref: 83982099a25fa136de939cf6e3adbfd316b947cb
             base: f2903b6482cb7a0fcdca912d23062bd94d3d5636
           - arm: batch
-            ref: e864108e96ffdcd2d0c4734b6d4cf990984f53d0
+            ref: 2e71aeb6b7ee402571fb72a380cadbeaf3457d2d
             base: 8b5ea6ac2e
     env:
       CARGO_INCREMENTAL: '0'
