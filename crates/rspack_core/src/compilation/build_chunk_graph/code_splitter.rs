@@ -493,6 +493,7 @@ impl CodeSplitter {
       .unwrap_or_default();
 
     if current_blocks != cached_blocks {
+      eprintln!("BARREL_DIAG blocks module={module} current={current_blocks:?} cached={cached_blocks:?}");
       return false;
     }
 
@@ -562,6 +563,7 @@ impl CodeSplitter {
           .map(DependenciesBlockIdentifier::AsyncDependenciesBlock),
       ) {
         let Some(cached_modules) = block_modules.get(&block) else {
+          eprintln!("BARREL_DIAG missing block module={module} block={block:?} runtime={runtime:?}");
           return false;
         };
         found_cached_root |= block == module_block;
@@ -571,6 +573,7 @@ impl CodeSplitter {
           .map(Vec::as_slice)
           .unwrap_or_default();
         if current_connections.len() != cached_modules.len() {
+          eprintln!("BARREL_DIAG length module={module} block={block:?} runtime={runtime:?} current={current_connections:?} cached={cached_modules:?}");
           return false;
         }
 
@@ -587,12 +590,16 @@ impl CodeSplitter {
               exports_info_artifact,
             ) != *cached_state
           {
+            eprintln!("BARREL_DIAG connection module={module} block={block:?} runtime={runtime:?} current={current:?} current_state={:?} cached_module={cached_module} cached_state={cached_state:?} cached_all={cached_modules:?}", get_active_state_of_connections(&current.connections, runtime.as_deref(), module_graph, module_graph_cache, side_effects_state_artifact, exports_info_artifact));
             return false;
           }
         }
       }
     }
 
+    if !found_cached_root {
+      eprintln!("BARREL_DIAG root module={module} current={current_connections_by_block:?} chunks={} cached_runtimes={:?} prepared={:?}", compilation.build_chunk_graph_artifact.chunk_graph.get_number_of_module_chunks(module), self.block_modules_runtime_map.keys().collect::<Vec<_>>(), self.prepared_connection_map.get(&module));
+    }
     found_cached_root
   }
 

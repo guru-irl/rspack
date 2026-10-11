@@ -1,0 +1,52 @@
+name: Chunk graph barrel investigation
+on:
+  push:
+    branches: ['bench/chunk-graph-barrel']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_DEV_DEBUG: 0
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 24
+      - name: Scratch and environment
+        run: |
+          mkdir -p .spider/scratch/chunk-graph-barrel/{tmp,diagnostic}
+          echo "TMPDIR=$PWD/.spider/scratch/chunk-graph-barrel/tmp" >> "$GITHUB_ENV"
+          echo "RSPACK_CORE_PATH=$PWD/packages/rspack/dist/index.js" >> "$GITHUB_ENV"
+          git rev-parse HEAD > .spider/scratch/chunk-graph-barrel/diagnostic/source.txt
+          df -h > .spider/scratch/chunk-graph-barrel/diagnostic/disk.txt
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-graph-barrel-dev
+          use-cache: true
+          save-if: true
+      - name: Build dev binding and JavaScript
+        run: |
+          set -euo pipefail
+          cargo codegen
+          pnpm run build:binding:dev
+          pnpm run build:js
+      - name: Minimal barrel watch reproduction
+        run: |
+          set -euo pipefail
+          SMOKE=1 BODY_ONLY=1 FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/diagnostic" node scripts/bench/chunk-graph-barrel/run.mjs > .spider/scratch/chunk-graph-barrel/diagnostic/stdout.log 2> .spider/scratch/chunk-graph-barrel/diagnostic/stderr.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: barrel-diagnostic
+          path: .spider/scratch/chunk-graph-barrel/diagnostic
+          if-no-files-found: error
