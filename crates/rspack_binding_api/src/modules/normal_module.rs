@@ -18,7 +18,8 @@ use crate::{
   shared_properties::get_shared_properties,
 };
 
-type NormalModuleInstaller<'a> = Function<'a,
+type NormalModuleInstaller<'a> = Function<
+  'a,
   FnArgs<(
     Object<'a>,
     napi::JsString<'a>,
@@ -100,16 +101,17 @@ impl NormalModule {
     let derived = Self::shared_properties(env)?;
     let base_descriptors: Object = base.get_named_property("descriptors")?;
     let derived_descriptors: Object = derived.get_named_property("descriptors")?;
-    let install: NormalModuleInstaller<'_> = match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
-      Some(_) => derived.get_named_property("install")?,
-      None => {
-        let install: Function<napi::Unknown, ()> =
-          env.run_script(include_str!("normal_module_install.js"))?;
-        let mut derived = derived;
-        derived.set_named_property("install", install)?;
-        derived.get_named_property("install")?
-      }
-    };
+    let install: NormalModuleInstaller<'_> =
+      match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
+        Some(_) => derived.get_named_property("install")?,
+        None => {
+          let install: Function<napi::Unknown, ()> =
+            env.run_script(include_str!("normal_module_install.js"))?;
+          let mut derived = derived;
+          derived.set_named_property("install", install)?;
+          derived.get_named_property("install")?
+        }
+      };
     let instance = self.into_instance(env)?;
     MODULE_IDENTIFIER_SYMBOL.with(|symbol| {
       #[allow(clippy::unwrap_used)]
