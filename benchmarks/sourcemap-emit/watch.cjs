@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { moduleText, generate } = require('./generate.cjs');
-const root = path.resolve(process.env.STUDY_ROOT);
+const root = path.resolve(process.env.STUDY_ROOT + (process.env.STUDY_LOADER === 'swc' ? '-swc' : '')); 
 const results = path.resolve(process.env.STUDY_RESULTS);
 fs.mkdirSync(results, { recursive: true });
 const arm = process.env.STUDY_ARM || 'memfs';
@@ -14,12 +14,13 @@ const count = Number(process.env.STUDY_MODULES || 30000);
 const { rspack } = require(process.env.STUDY_CORE);
 const { Volume, createFsFromVolume } = require(process.env.STUDY_MEMFS);
 if (!fs.existsSync(path.join(root, 'entry.js'))) generate(root, count);
-const edited = path.join(root, 'modules', 'm15000.js');
+const edited = path.join(root, 'modules', process.env.STUDY_LOADER === 'swc' ? 'm15000.tsx' : 'm15000.js');
 fs.writeFileSync(edited, moduleText(15000, 0));
 const output = path.join(root, 'dist');
 const ofs = arm === 'memfs' ? createFsFromVolume(new Volume()) : Object.create(fs);
 ofs.join = path.join.bind(path);
 let row;
+let snapshots = new Map();
 for (const op of ['writeFile', 'readFile', 'stat', 'mkdir', 'unlink', 'rmdir']) {
   const fn = ofs[op].bind(ofs);
   ofs[op] = (...args) => {
@@ -33,7 +34,7 @@ for (const op of ['writeFile', 'readFile', 'stat', 'mkdir', 'unlink', 'rmdir']) 
   };
 }
 const plugin = { apply(compiler) {
-  compiler.hooks.compile.tap('Study', () => { row = { label, arm, edit: -1, fs: [], content: [], stage: {}, start: performance.now() }; console.log('STUDY_BEGIN ' + process.hrtime.bigint()); });
+  compiler.hooks.compile.tap('Study', () => { snapshots = new Map(); row = { label, arm, edit: -1, fs: [], content: [], stage: {}, start: performance.now() }; console.log('STUDY_BEGIN ' + process.hrtime.bigint()); });
   compiler.hooks.thisCompilation.tap('Study', compilation => {
     for (const [name, stage] of [['begin', -10000], ['beforeMap', 499], ['afterMap', 501], ['end', 10000]]) {
       compilation.hooks.processAssets.tap({ name: `Study:${name}`, stage }, () => { row.stage[name] = performance.now(); });
@@ -47,12 +48,14 @@ const plugin = { apply(compiler) {
     if (process.env.STUDY_LISTENER !== 'metadata') {
       const content = info.content;
       row.content.push({ file, bytes: content.length, ms: performance.now() - start });
+      if (process.env.STUDY_SNAPSHOT_PARITY === '1') snapshots.set(file, content);
     }
   });
 } };
 const compiler = rspack({
   context: root, mode: 'development', target: 'node', devtool: 'cheap-module-source-map',
   entry: { app: './entry.js' },
+  module: process.env.STUDY_LOADER === 'swc' ? { rules: [{ test: /\.tsx$/, use: [{ loader: 'builtin:swc-loader', options: { sourceMaps: true, jsc: { target: 'es2020', parser: { syntax: 'typescript', tsx: true }, transform: { react: { runtime: 'classic', pragma: 'h', pragmaFrag: 'h' } } } } }] }] } : undefined,
   output: { path: output, filename: '[name].js', chunkFilename: '[name].js', library: { type: 'commonjs' }, clean: false },
   optimization: { minimize: false, concatenateModules: false, runtimeChunk: 'single', splitChunks: { chunks: 'all', cacheGroups: { default: false, defaultVendors: false, shared: { test: /[\\/]modules[\\/]/, name: 'shared', enforce: true, chunks: 'all' } } } },
   plugins: [plugin], infrastructureLogging: { level: 'error' }, stats: 'errors-warnings',
@@ -80,7 +83,9 @@ watcher = compiler.watch({ aggregateTimeout: 30 }, async (err, stats) => {
     for (const name of ofs.readdirSync(output).sort()) {
       const bytes = ofs.readFileSync(path.join(output, name));
       digest[name] = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+      if (snapshots.has(name) && !snapshots.get(name).equals(bytes)) throw new Error(`Content getter mismatch: ${name}`);
     }
+    snapshots.clear();
     hashes.push({ edit: step, files: digest });
     fs.appendFileSync(path.join(results, `${label}-${arm}.jsonl`), JSON.stringify(row) + '\n');
     fs.writeFileSync(path.join(results, `${label}-${arm}-hashes.json`), JSON.stringify(hashes, null, 2));

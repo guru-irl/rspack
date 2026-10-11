@@ -12,6 +12,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: '4'
       RUST_TARGET: x86_64-unknown-linux-gnu
+      RUSTFLAGS: '-Cforce-frame-pointers=yes -Cforce-unwind-tables=yes'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/pnpm/setup
@@ -43,6 +44,7 @@ jobs:
         run: |
           cargo codegen
           python3 benchmarks/sourcemap-emit/instrument.py
+          python3 benchmarks/sourcemap-emit/cache-probe.py
       - name: Build profiling binding and JavaScript
         run: |
           pnpm run build:binding:profiling
@@ -54,7 +56,15 @@ jobs:
           export STUDY_LABEL=source
           export STUDY_PROBE=1
           for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+      - name: TSX SWC loader maps baseline
+        shell: bash
+        run: |
+          export STUDY_LOADER=swc STUDY_CORE="$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/@rspack/core/dist/index.js" STUDY_LABEL=published-swc
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=source-swc STUDY_PROBE=1 STUDY_CACHE_PROBE=1
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
       - name: Perf profile
+        timeout-minutes: 15
         shell: bash
         run: |
           sudo apt-get update -qq
@@ -64,7 +74,9 @@ jobs:
           echo "$PERF" > "$STUDY_RESULTS/perf-tool.txt"
           sudo sysctl kernel.perf_event_paranoid=-1
           export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=profile STUDY_ARM=memfs STUDY_PROBE=1 STUDY_EDITS=5
-          "$PERF" record -F 199 -g --call-graph dwarf,8192 -o "$STUDY_RESULTS/perf.data" -- python3 benchmarks/sourcemap-emit/monitor.py
+          # 99 Hz frame-pointer stacks avoid giant DWARF sample files.
+          
+          "$PERF" record -F 99 -g --call-graph fp -o "$STUDY_RESULTS/perf.data" -- python3 benchmarks/sourcemap-emit/monitor.py
           "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --no-children --percent-limit 0.2 > "$STUDY_RESULTS/perf-self.txt"
           "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --children --percent-limit 0.5 > "$STUDY_RESULTS/perf-inclusive.txt"
           "$PERF" script -i "$STUDY_RESULTS/perf.data" -F comm,pid,tid,time,event,ip,sym,dso | python3 benchmarks/sourcemap-emit/profile-summary.py "$STUDY_RESULTS"
@@ -79,6 +91,10 @@ jobs:
           export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=buffer STUDY_PROBE=1
           for STUDY_ARM in memfs disk; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
           cp crates/node_binding/rspack.linux-x64-gnu.node "$STUDY_RESULTS/buffer.node"
+          export STUDY_LABEL=buffer-snapshot STUDY_ARM=memfs STUDY_SNAPSHOT_PARITY=1
+          python3 benchmarks/sourcemap-emit/monitor.py
+          export STUDY_SNAPSHOT_PARITY=0 STUDY_LOADER=swc STUDY_LABEL=buffer-swc STUDY_CACHE_PROBE=1
+          for STUDY_ARM in memfs disk; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
       - name: Paired parallel JSON prototype
         shell: bash
         run: |
@@ -86,12 +102,17 @@ jobs:
           pnpm run build:binding:profiling
           export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=buffer-json STUDY_PROBE=1
           for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+          export STUDY_LOADER=swc STUDY_LABEL=buffer-json-swc STUDY_CACHE_PROBE=1
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
           python3 - <<'PY'
           import json, os, pathlib
           root = pathlib.Path(os.environ['STUDY_RESULTS'])
           baseline = json.loads((root / 'source-disk-hashes.json').read_text())
           for name in ['source-memfs', 'buffer-disk', 'buffer-memfs', 'buffer-json-disk', 'buffer-json-memfs']:
             assert json.loads((root / (name + '-hashes.json')).read_text()) == baseline, name
+          swc = json.loads((root / 'source-swc-disk-hashes.json').read_text())
+          for name in ['source-swc-memfs', 'published-swc-disk', 'published-swc-memfs', 'buffer-swc-disk', 'buffer-swc-memfs', 'buffer-json-swc-disk', 'buffer-json-swc-memfs']:
+            assert json.loads((root / (name + '-hashes.json')).read_text()) == swc, name
           (root / 'parity.txt').write_text('Byte-identical bundles and maps across all baseline and prototype edits.\n')
           PY
           rm "$STUDY_RESULTS/baseline.node" "$STUDY_RESULTS/buffer.node"
