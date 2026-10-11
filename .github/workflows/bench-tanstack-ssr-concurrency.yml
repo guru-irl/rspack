@@ -1,0 +1,40 @@
+name: Bench TanStack SSR concurrency
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [red, correctness, measure]
+        default: red
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Run public watch fixture
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
+          export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
+          node benchmarks/tanstack-ssr-concurrency/setup.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tanstack-ssr-concurrency-${{ github.run_id }}
+          path: |
+            bench-results/tanstack-ssr-concurrency/*/*.json
+            bench-results/tanstack-ssr-concurrency/*/*.log
+            bench-results/tanstack-ssr-concurrency/*/*.html
+            bench-results/tanstack-ssr-concurrency/*/process-time.txt
+            bench-results/tanstack-ssr-concurrency/*.json
+            bench-results/tanstack-ssr-concurrency/*.log
+          retention-days: 14
