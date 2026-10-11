@@ -1,0 +1,75 @@
+name: Public sourcemap emit study
+on:
+  push:
+    branches: ['bench/sourcemap-emit-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '4'
+      RUST_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '22'
+      - name: Runner scratch and public dependencies
+        shell: bash
+        run: |
+          mkdir -p .spider/scratch/sourcemap-emit/{results,published,tmp}
+          echo "TMPDIR=$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/tmp" >> "$GITHUB_ENV"
+          echo "STUDY_ROOT=$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/fixture" >> "$GITHUB_ENV"
+          echo "STUDY_RESULTS=$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/results" >> "$GITHUB_ENV"
+          npm install --prefix .spider/scratch/sourcemap-emit/published --registry https://registry.npmjs.org --no-audit --no-fund @rspack/core@2.2.8 memfs@4.17.0
+          echo "STUDY_MEMFS=$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/memfs" >> "$GITHUB_ENV"
+          { uname -a; lscpu; free -m; df -h; node --version; git rev-parse HEAD; } > .spider/scratch/sourcemap-emit/results/host.txt
+      - name: Published 2.2.8 watch baseline
+        shell: bash
+        run: |
+          export STUDY_CORE="$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/@rspack/core"
+          export STUDY_LABEL=published
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: sourcemap-emit-profiling-v1
+          save-if: true
+      - name: Generate binding inputs and add profiling-only probes
+        run: |
+          cargo codegen
+          python3 benchmarks/sourcemap-emit/instrument.py
+      - name: Build profiling binding and JavaScript
+        run: |
+          pnpm run build:binding:profiling
+          pnpm run build:js
+      - name: Source-built baseline watch
+        shell: bash
+        run: |
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js"
+          export STUDY_LABEL=source
+          export STUDY_PROBE=1
+          for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
+      - name: Perf profile
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y linux-tools-common linux-tools-generic
+          PERF=$(find /usr/lib/linux-tools -name perf -type f | sort | tail -1)
+          echo "$PERF" > "$STUDY_RESULTS/perf-tool.txt"
+          sudo sysctl kernel.perf_event_paranoid=-1
+          export STUDY_CORE="$GITHUB_WORKSPACE/packages/rspack/dist/index.js" STUDY_LABEL=profile STUDY_ARM=memfs STUDY_PROBE=1 STUDY_EDITS=5
+          "$PERF" record -F 199 -g --call-graph dwarf,8192 -o "$STUDY_RESULTS/perf.data" -- python3 benchmarks/sourcemap-emit/monitor.py
+          "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --no-children --percent-limit 0.2 > "$STUDY_RESULTS/perf-self.txt"
+          "$PERF" report -i "$STUDY_RESULTS/perf.data" --stdio --children --percent-limit 0.5 > "$STUDY_RESULTS/perf-inclusive.txt"
+          rm "$STUDY_RESULTS/perf.data"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sourcemap-emit-${{ github.run_id }}
+          path: .spider/scratch/sourcemap-emit/results
+          retention-days: 14
