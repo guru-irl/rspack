@@ -59,11 +59,17 @@ def read(arm,index):
     assert len(warm)>=10
     initialEnd=max(e['wallMs'] for e in events if e['step']=='initial' and e['kind']=='done')
     cold['peakMiB']=max(s['VmRSS'] for s in samples if s['wallMs']<=initialEnd+750 and 'VmRSS' in s)/2**20
+    for env in ['client','ssr']:
+        es=[e for e in events if e['step']=='initial' and e['name']==env]
+        for begin,end,label in [('make','finishMake','MakeMs'),('seal','afterSeal','SealMs')]:
+            starts=[e['t'] for e in es if e['kind']==begin];ends=[e['t'] for e in es if e['kind']==end]
+            assert len(starts)==len(ends)
+            cold[env+label]=sum(b-a for a,b in zip(starts,ends))
     return {'warm':{m:statistics.median([w[m] for w in warm]) for m in ['spanMs','clientMs','ssrMs','peakMiB','postMiB']},'cold':cold}
-data={arm:[read(arm,i) for i in range(10)] for arm in ['stock','barrier','overlap']}
+data={arm:[read(arm,i) for i in range(10)] for arm in ['stock','barrier','after-make','overlap']}
 result={'method':'10 independent process triplets, 10 edits per process; warm process-median pairs. Exact two-sided Wilcoxon sign enumeration with averaged tie ranks and omitted zeros; 95% inversion interval; HL median Walsh averages.','comparisons':[]}
-for mode,metrics in [('warm',['spanMs','clientMs','ssrMs','peakMiB','postMiB']),('cold',['ssrReadyMs','finalReadyMs','peakMiB'])]:
-    for a,b in [('stock','barrier'),('stock','overlap'),('barrier','overlap')]:
+for mode,metrics in [('warm',['spanMs','clientMs','ssrMs','peakMiB','postMiB']),('cold',['ssrReadyMs','finalReadyMs','peakMiB','clientMakeMs','clientSealMs','ssrMakeMs','ssrSealMs'])]:
+    for a,b in [('stock','barrier'),('stock','after-make'),('stock','overlap'),('barrier','after-make'),('barrier','overlap'),('after-make','overlap')]:
         for metric in metrics:
             before=[v[mode][metric] for v in data[a]];after=[v[mode][metric] for v in data[b]]
             deltas=[y-x for x,y in zip(before,after)]
