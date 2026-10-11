@@ -107,6 +107,29 @@ impl<'a> PhaseMemo<'a> {
   }
 }
 
+// Both ordinary rounds and failed memo retries use the same filtering future.
+// Only iteration differs; keep the transport and buffered streams monomorphic.
+enum FilterCombinations<'a, 'b> {
+  Pending {
+    entries: &'b [MemoEntry<'a>],
+    indices: std::slice::Iter<'b, usize>,
+  },
+  Retry(Option<&'a ChunkCombination>),
+}
+
+impl<'a> Iterator for FilterCombinations<'a, '_> {
+  type Item = &'a ChunkCombination;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    match self {
+      Self::Pending { entries, indices } => {
+        indices.next().map(|index| entries[*index].combination)
+      }
+      Self::Retry(combination) => combination.take(),
+    }
+  }
+}
+
 struct RoundItem<'a> {
   module: u32,
   combination: &'a ChunkCombination,
@@ -442,10 +465,10 @@ impl<'a> Phase<'a> {
     let group = self.indexed.cache_group;
     self
       .filter_combinations(
-        scratch
-          .pending
-          .iter()
-          .map(|index| memo.entries[*index].combination),
+        FilterCombinations::Pending {
+          entries: &memo.entries,
+          indices: scratch.pending.iter(),
+        },
         scratch.pending.len(),
         &mut scratch.chunk_refs,
         &mut scratch.owners,
@@ -484,7 +507,7 @@ impl<'a> Phase<'a> {
             // retries independently, matching the previous OnceCell path.
             self
               .filter_combinations(
-                std::iter::once(item.combination),
+                FilterCombinations::Retry(Some(item.combination)),
                 1,
                 &mut scratch.chunk_refs,
                 &mut scratch.owners,
@@ -677,7 +700,7 @@ impl<'a> Phase<'a> {
   // moves into the memo, which the base also held for each distinct combination.
   async fn filter_combinations(
     &self,
-    combinations: impl Iterator<Item = &'a ChunkCombination>,
+    combinations: FilterCombinations<'a, '_>,
     count: usize,
     chunks: &mut Vec<ChunkUkey>,
     owners: &mut Vec<u32>,
