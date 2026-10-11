@@ -1,0 +1,110 @@
+--- a/dist/esm/rsbuild/plugin.js
++++ b/dist/esm/rsbuild/plugin.js
+@@ -38,6 +38,29 @@
+ 	let devServerRef = null;
+ 	const serverFnsById = {};
+ 	let updateServerFnResolver;
++	let concurrentDev = false;
++	let ssrCompiler;
++	let firstClientManifest;
++	let releaseFirstClientManifest;
++	let rejectFirstClientManifest;
++	let clientManifestPublished = false;
++	let resolverContent;
++	let resolverRevision = 0;
++	let manifestContent;
++	let manifestRevision = 0;
++	let clientResolverRevision = 0;
++	let ssrResolverRevision = -1;
++	let ssrManifestRevision = -1;
++	let followUpQueued = false;
++	const coldOverlap = process.env.TSS_SSR_COLD_OVERLAP === "1";
++	const invalidateSsr = () => {
++		if (!concurrentDev || followUpQueued) return;
++		followUpQueued = true;
++		setImmediate(() => {
++			followUpQueued = false;
++			ssrCompiler?.watching?.invalidate();
++		});
++	};
+ 	return {
+ 		name: "tanstack-start-rsbuild",
+ 		setup(api) {
+@@ -155,6 +178,13 @@
+ 				serverFnsById,
+ 				onServerFnsByIdChange: () => {
+ 					updateServerFnResolver?.();
++					if (concurrentDev) {
++						const content = virtualModuleState.generateCurrentResolverContent(true);
++						if (content !== resolverContent) {
++							resolverContent = content;
++							resolverRevision++;
++						}
++					}
+ 				}
+ 			});
+ 			registerImportProtection(api, {
+@@ -182,6 +212,7 @@
+ 						stage: -10
+ 					}, async (compilation) => {
+ 						virtualModuleState.updateServerFnResolver();
++						if (concurrentDev && compilation.compiler === ssrCompiler) ssrResolverRevision = resolverRevision;
+ 						await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
+ 					});
+ 				} });
+@@ -273,6 +304,31 @@
+ 				});
+ 			}
+ 			if (!rscEnabled) api.onAfterCreateCompiler(({ compiler }) => {
++				if (api.context.action === "dev" && ssrIsProvider && serverFnProviderEnv === RSBUILD_ENVIRONMENT_NAMES.server && "compilers" in compiler && compiler.compilers.length === 2) {
++					const clientCompiler = compiler.compilers.find((c) => c.name === RSBUILD_ENVIRONMENT_NAMES.client);
++					const serverCompiler = compiler.compilers.find((c) => c.name === RSBUILD_ENVIRONMENT_NAMES.server);
++					const hasDependencies = (c) => (compiler.dependencies?.get(c)?.length ?? 0) > 0 || (c.options.dependencies?.length ?? 0) > 0;
++					if (clientCompiler && serverCompiler && !hasDependencies(clientCompiler) && !hasDependencies(serverCompiler)) {
++						concurrentDev = true;
++						ssrCompiler = serverCompiler;
++						resolverContent = virtualModuleState.generateCurrentResolverContent(true);
++						firstClientManifest = new Promise((resolve, reject) => {
++							releaseFirstClientManifest = resolve;
++							rejectFirstClientManifest = reject;
++						});
++						// Overlap mode has no consumer for this promise; avoid an unhandled rejection.
++						firstClientManifest.catch(() => {});
++						clientCompiler.hooks.failed.tap("TanStackStartClientManifestBarrier", (error) => rejectFirstClientManifest(error));
++						serverCompiler.hooks.watchRun.tapPromise({ name: "TanStackStartClientManifestBarrier", stage: -100 }, async () => {
++							if (!coldOverlap && !clientManifestPublished) await firstClientManifest;
++							ssrManifestRevision = manifestRevision;
++						});
++						serverCompiler.hooks.done.tap({ name: "TanStackStartSsrRevisionCheck", stage: 1000 }, () => {
++							if (ssrResolverRevision !== resolverRevision || ssrManifestRevision !== manifestRevision) invalidateSsr();
++						});
++						return;
++					}
++				}
+ 				if ("compilers" in compiler) for (const environmentName of startCompilerServerEnvironmentNames) {
+ 					const serverCompiler = compiler.compilers.find((c) => c.name === environmentName);
+ 					if (serverCompiler) {
+@@ -317,7 +373,22 @@
+ 				if (environment.name !== RSBUILD_ENVIRONMENT_NAMES.client) return;
+ 				virtualModuleState.updateServerFnResolver();
+ 				const clientBuild = getClientBuild();
+-				if (clientBuild) virtualModuleState.updateManifest(clientBuild);
++				if (clientBuild) {
++					virtualModuleState.updateManifest(clientBuild);
++					if (concurrentDev) {
++						const content = virtualModuleState.generateManifestValueLiteral(clientBuild);
++						const changed = content !== manifestContent || resolverRevision !== clientResolverRevision;
++						if (content !== manifestContent) {
++							manifestContent = content;
++							manifestRevision++;
++						}
++						clientResolverRevision = resolverRevision;
++						const first = !clientManifestPublished;
++						clientManifestPublished = true;
++						releaseFirstClientManifest();
++						if (changed && (!first || coldOverlap)) invalidateSsr();
++					}
++				}
+ 			});
+ 			if (api.context.action === "build") api.onAfterBuild(async () => {
+ 				const { startConfig } = getConfig();

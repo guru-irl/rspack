@@ -47,7 +47,9 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
-if(mode==='red') {
+if(mode==='regression') {
+ for(const scenario of ['red-overlap','red-recovery']) {const r=execute('barrier',scenario,0); if(r.status!==0) failed=true;}
+} else if(mode==='red') {
  for(const [arm,scenario] of [['stock','red-overlap'],['v2','red-recovery']]) { const r=execute(arm,scenario,0); if(r.status!==0) failed=true; }
 } else {
  const reps=mode==='measure'?5:1;

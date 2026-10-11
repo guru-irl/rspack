@@ -16,7 +16,7 @@ const resolver = id => id.includes('_tanstack-start-server-fn-resolver.js');
 let step = 'initial';
 let lastEvent = now();
 let peak = process.memoryUsage().rss;
-let active = 0;
+const active = new Set();
 const builds = [];
 const events = [];
 const checks = [];
@@ -31,7 +31,7 @@ const probe = { name: 'watch-observer', setup(api) {
     config.plugins.push({ apply(compiler) {
       compilers.set(environment.name,compiler);
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
-        active++; event(environment.name, 'watchRun');
+        active.add(environment.name); event(environment.name, 'watchRun');
       });
       compiler.hooks.thisCompilation.tap('WatchObserver', compilation => {
         const record = { step, name: environment.name, rebuilt: [], built: [], errors: [], modules: {}, assets: [] };
@@ -54,7 +54,7 @@ const probe = { name: 'watch-observer', setup(api) {
         record.ms = stats.endTime - stats.startTime;
         record.errors = stats.toJson({ all: false, errors: true }).errors;
         record.generated = normalize(globalThis.__watchVirtualState?.generateCurrentResolverContent(true) ?? '');
-        builds.push(record); active--; event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
+        builds.push(record); active.delete(environment.name); event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
       });
       compiler.hooks.failed.tap('WatchObserver', error => { event(environment.name, 'failed', { error: String(error) }); });
     } });
@@ -64,10 +64,10 @@ const waitIdle = async (minimum = 0) => {
   const start = now();
   while (now() - start < 120000) {
     const relevant = events.filter(e => e.step === step);
-    if (!active && relevant.filter(e => e.kind === 'done').length >= minimum && now() - lastEvent > 800) return;
+    if (!active.size && relevant.filter(e => e.kind === 'done').length >= minimum && now() - lastEvent > 800) return;
     await pause(25);
   }
-  throw new Error(`watch never settled: ${step}, active=${active}`);
+  throw new Error(`watch never settled: ${step}, active=${[...active]}`);
 };
 const baselineFns = fs.readFileSync('src/functions.ts', 'utf8');
 const baselineLeaf = fs.readFileSync('src/Leaf.tsx', 'utf8');
