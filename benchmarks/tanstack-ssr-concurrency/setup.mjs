@@ -23,7 +23,11 @@ const execute=(arm,scenario,index)=>{
   const apply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',patchFile],{cwd:pkg,encoding:'utf8'});
   fs.writeFileSync(path.join(result,'patch-apply.log'),apply.stdout+apply.stderr); assert.equal(apply.status,0,'pristine dist patch applies');
  }
- fs.copyFileSync(path.join(dist,'plugin.js'),path.join(result,'unobserved-plugin.js'));
+ for(const file of ['plugin.js','virtual-modules.js']) {
+  const checked=spawnSync('node',['--check',path.join(dist,file)],{encoding:'utf8'});
+  fs.writeFileSync(path.join(result,`${file}-syntax.log`),checked.stdout+checked.stderr);assert.equal(checked.status,0,`${file}: syntax`);
+  fs.copyFileSync(path.join(dist,file),path.join(result,`unobserved-${file}`));
+ }
  // Observation only: preserve the real virtual module object and all decisions.
  let plugin=fs.readFileSync(path.join(dist,'plugin.js'),'utf8');
  plugin=plugin.replace('updateServerFnResolver = virtualModuleState.updateServerFnResolver;','updateServerFnResolver = virtualModuleState.updateServerFnResolver;\n globalThis.__watchVirtualState = virtualModuleState;');
@@ -48,12 +52,14 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
-if(mode==='r2-red') {
+if(mode==='r2-green') {
+ for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes'],['barrier','red-recovery'],['barrier','red-aba'],['barrier','no-resolver']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
+} else if(mode==='r2-red') {
  for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 } else if(mode==='final') {
  for(const [arm,scenario] of [['barrier','no-resolver'],['barrier','red-overlap'],['barrier','red-recovery'],['barrier','red-aba'],['after-make','red-after-make']]) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}
 }
-if(mode==='r2-red') {} else if(mode==='supplement') {for(const arm of ['overlap','after-make','barrier','stock']){const r=execute(arm,'warm',10);if(r.status!==0)failed=true;}
+if(mode==='r2-red'||mode==='r2-green') {} else if(mode==='supplement') {for(const arm of ['overlap','after-make','barrier','stock']){const r=execute(arm,'warm',10);if(r.status!==0)failed=true;}
 } else if(mode==='no-resolver') {const r=execute('barrier','no-resolver',0);failed=r.status!==0;
 } else if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0;
 } else if(mode==='aa-route') {for(let i=0;i<2;i++){const r=execute('stock','aa-route',i);if(r.status!==0)failed=true;}

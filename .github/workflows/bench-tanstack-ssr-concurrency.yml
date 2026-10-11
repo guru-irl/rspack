@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
+        options: [r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
         default: red
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Run public watch fixture
         env:
-          MODE: ${{ inputs.mode || 'r2-red' }}
+          MODE: ${{ inputs.mode || 'r2-green' }}
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
@@ -35,6 +35,7 @@ jobs:
         with:
           name: tanstack-ssr-concurrency-${{ github.run_id }}
           path: |
+            bench-results/tanstack-ssr-concurrency/*/unobserved-*.js
             bench-results/tanstack-ssr-concurrency/*/*.json
             bench-results/tanstack-ssr-concurrency/*/*.log
             bench-results/tanstack-ssr-concurrency/*/*.html
