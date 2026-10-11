@@ -13,7 +13,7 @@ on:
         type: string
       candidate:
         required: true
-        default: '3894dd6c984167ea7ef138b1902e30b01e43c2b4'
+        default: '6d60eda3595aae8b8101e7fef94bd6044add0553'
         type: string
 permissions:
   contents: read
