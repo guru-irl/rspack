@@ -58,6 +58,8 @@ jobs:
           cp -R ../full/results ../results/full
           SAMPLES=30 FULL_STATS=0 FIXTURE_ROOT="$GITHUB_WORKSPACE/.spider/scratch/drop-prev-compilation/minimal" node --expose-gc fixture.mjs > ../results/minimal-stdout.log 2> ../results/minimal-stderr.log
           cp -R ../minimal/results ../results/minimal
+          SAMPLES=35 FULL_STATS=1 FORCE_GC=0 FIXTURE_ROOT="$GITHUB_WORKSPACE/.spider/scratch/drop-prev-compilation/no-gc" node --expose-gc fixture.mjs > ../results/no-gc-stdout.log 2> ../results/no-gc-stderr.log
+          cp -R ../no-gc/results ../results/no-gc
       - uses: ./.github/actions/rustup
         if: env.PHASE != 'published'
         with:

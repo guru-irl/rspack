@@ -31,6 +31,7 @@ if (!global.gc) throw new Error('Run with --expose-gc');
 const native = require('@rspack/binding');
 const heapMetrics = () => native.debugHeapMetrics?.() ?? null;
 const fullStats = process.env.FULL_STATS !== '0';
+const forceGc = process.env.FORCE_GC !== '0';
 const isCss = i => i % groupCount >= groupCount - cssCount;
 const payloadPath = i => `payload/g${String(i % groupCount).padStart(3, '0')}/m${i}.${isCss(i) ? 'css' : 'js'}`;
 for (let g = 0; g < groupCount; g++) fs.mkdirSync(path.join(src, `payload/g${String(g).padStart(3, '0')}`), { recursive: true });
@@ -79,7 +80,7 @@ const nameSize = measured('name-size-band', m => `size-band-${Math.floor(m.size(
 const cacheGroups = { default: false, defaultVendors: false };
 for (let g = 0; g < groupCount; g++) {
   const group = {
-    test: g < 6 ? tests[g] : new RegExp(`[\\/]g${String(g).padStart(3, '0')}[\\/]`),
+    test: g < 6 ? tests[g] : new RegExp(String.raw`[\\/]g${String(g).padStart(3, '0')}[\\/]`),
     priority: g < 6 ? priorityCount - 1 : g % priorityCount,
     ...(g < enforceCount ? { enforce: true } : {}),
     ...(g < minSizeCount ? { minSize: g < nonzeroMinSizeCount ? 256 : 0 } : {}),
@@ -127,11 +128,11 @@ const manifest = {
   fixture: { moduleCount, routeCount, payloadCount, moduleChunkEdges: payloadCount * 3 + routeCount + 1, groups: groupCount, priorities: [...new Set(Object.values(cacheGroups).filter(Boolean).map(g => g.priority))].length, enforced: enforceCount, reuse: reuseCount, cssGroups: cssCount, minSizeGroups: minSizeCount, nonzeroMinSizeGroups: nonzeroMinSizeCount, minChunksGroups: minChunksCount, testFunctions: 6, chunksFunctions: 1, nameFunctions: 2 },
   system: { node: process.version, platform: process.platform, arch: process.arch, cpus: os.cpus(), memory: os.totalmem(), release: os.release(), runnerImage: process.env.ImageVersion, commit: process.env.GITHUB_SHA, run: process.env.GITHUB_RUN_ID },
   versions: { core: require('@rspack/core/package.json').version, binding: require('@rspack/binding/package.json').version },
-  selectorsInstrumented: true, samples: sampleCount,
+  selectorsInstrumented: true, samples: sampleCount, forceGc, fullStats,
 };
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 const nativePackage = '@rspack/binding-linux-x64-gnu';
-try { const binary = require.resolve(nativePackage); manifest.nativeSha256 = crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex'); }
+try { const binary = process.env.NAPI_RS_NATIVE_LIBRARY_PATH || require.resolve(nativePackage); manifest.nativeSha256 = crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex'); }
 catch (e) { manifest.nativeHashError = String(e); }
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 await new Promise((resolve, reject) => {
@@ -162,9 +163,9 @@ await new Promise((resolve, reject) => {
       data = null; logging = null; lib = null;
       for (const key of Object.keys(require.cache)) if (key.startsWith(path.join(root, 'dist') + path.sep)) delete require.cache[key];
       await new Promise(resolve => setImmediate(resolve));
-      global.gc();
+      if (forceGc) global.gc();
       await new Promise(resolve => setImmediate(resolve));
-      global.gc();
+      if (forceGc) global.gc();
       records.at(-1).postGcMemory = process.memoryUsage();
       records.at(-1).postGcNative = heapMetrics();
       fs.writeFileSync(path.join(out, 'builds.json'), JSON.stringify(records, null, 2));
