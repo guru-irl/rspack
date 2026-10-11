@@ -1,0 +1,78 @@
+name: Bench previous compilation memory
+on:
+  push:
+    branches: ['bench/drop-prev-compilation']
+    paths: ['.github/workflows/bench-split-chunks-reuse.yml', 'benchmarks/drop-prev-compilation/**']
+  workflow_dispatch:
+    inputs:
+      phase:
+        type: choice
+        options: [published, paired, diagnostic]
+        default: published
+      runners:
+        type: string
+        default: '["ubuntu-24.04"]'
+      prototype:
+        type: string
+        default: perf-drop-previous-compilation
+permissions:
+  contents: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(inputs.runners || '["ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      PHASE: ${{ inputs.phase || 'published' }}
+      PROTOTYPE: ${{ inputs.prototype || 'perf-drop-previous-compilation' }}
+      NODE_OPTIONS: '--max-old-space-size=8192'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '22'
+      - name: Durable scratch
+        run: |
+          mkdir -p .spider/scratch/drop-prev-compilation/{results,tmp}
+          echo "TMPDIR=$PWD/.spider/scratch/drop-prev-compilation/tmp" >> "$GITHUB_ENV"
+          echo "TMP=$PWD/.spider/scratch/drop-prev-compilation/tmp" >> "$GITHUB_ENV"
+          echo "TEMP=$PWD/.spider/scratch/drop-prev-compilation/tmp" >> "$GITHUB_ENV"
+          cp -R benchmarks/drop-prev-compilation .spider/scratch/drop-prev-compilation/tools
+          git rev-parse HEAD > .spider/scratch/drop-prev-compilation/results/bench-head.txt
+      - name: Published baseline
+        if: env.PHASE == 'published'
+        run: |
+          cd .spider/scratch/drop-prev-compilation/tools
+          npm install --ignore-scripts --registry=https://registry.npmjs.org
+          SAMPLES=30 FULL_STATS=1 FIXTURE_ROOT="$GITHUB_WORKSPACE/.spider/scratch/drop-prev-compilation/full" node --expose-gc fixture.mjs > ../results/full-stdout.log 2> ../results/full-stderr.log
+          cp -R ../full/results ../results/full
+          SAMPLES=30 FULL_STATS=0 FIXTURE_ROOT="$GITHUB_WORKSPACE/.spider/scratch/drop-prev-compilation/minimal" node --expose-gc fixture.mjs > ../results/minimal-stdout.log 2> ../results/minimal-stderr.log
+          cp -R ../minimal/results ../results/minimal
+      - uses: ./.github/actions/rustup
+        if: env.PHASE != 'published'
+        with:
+          key: drop-prev-compilation-${{ matrix.runner }}
+          use-cache: true
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        if: env.PHASE != 'published' && runner.os == 'Linux'
+        with:
+          tool-cache: false
+      - name: Build identical baseline and prototype bindings
+        if: env.PHASE != 'published'
+        run: bash .spider/scratch/drop-prev-compilation/tools/source-paired.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drop-prev-${{ env.PHASE }}-${{ matrix.runner }}-${{ github.run_id }}
+          path: .spider/scratch/drop-prev-compilation/results
+          retention-days: 14
