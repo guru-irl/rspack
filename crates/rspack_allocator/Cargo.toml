@@ -10,6 +10,7 @@ version.workspace = true
 system-allocator = []
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+libmimalloc-sys = { workspace = true, features = ["extended"] }
 sftrace-setup = { workspace = true, optional = true }
 tracy-client  = { workspace = true, optional = true }
 

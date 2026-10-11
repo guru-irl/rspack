@@ -33,13 +33,9 @@ pub fn collect() {
     any(not(feature = "tracy-client"), feature = "sftrace-setup")
   ))]
   {
-    // Sftrace wraps MiMalloc; Tracy alone wraps System. Link to the same
-    // mimalloc instance as GLOBAL, without requiring its extended API feature.
-    unsafe extern "C" {
-      fn mi_collect(force: bool);
-    }
+    // Sftrace wraps MiMalloc; Tracy alone wraps System.
     // SAFETY: mi_collect has no preconditions. It collects only the calling
     // thread's heap plus arena purges, not every worker's thread-local heap.
-    unsafe { mi_collect(true) };
+    unsafe { libmimalloc_sys::mi_collect(true) };
   }
 }
