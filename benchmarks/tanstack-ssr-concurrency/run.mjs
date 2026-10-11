@@ -93,7 +93,7 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   }
   const latest = Object.fromEntries(['client','ssr'].map(name => [name, builds.filter(b => b.name === name).at(-1)]));
   assert.ok(latest.ssr && latest.client, `${step}: both output snapshots`);
-  for (const b of builds.filter(b => b.step === step)) assert.equal(b.errors.length, 0, `${step}: ${b.name} compile errors`);
+  for (const [name,b] of Object.entries(latest)) assert.equal(b.errors.length,0,`${step}: ${name} final compile errors`);
   const compiled = Object.entries(latest.ssr.modules).find(([id]) => resolver(id))?.[1];
   assert.equal(compiled, latest.ssr.generated, `${step}: compiled resolver matches final shared resolver`);
   const ids = {};
