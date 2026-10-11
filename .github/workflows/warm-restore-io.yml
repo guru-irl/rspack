@@ -1,0 +1,100 @@
+name: Legacy warm restore IO study
+on:
+  push:
+    branches: [bench/warm-restore-io]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  issues: write
+jobs:
+  main:
+    if: github.repository == 'guru-irl/rspack'
+    uses: ./.github/workflows/reusable-build-build.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      runner: '["ubuntu-24.04"]'
+      ref: ff0cd64adc06db77c3138a9797db327fa0adfcf5
+      profile: ci
+      binding_postfix: -warm-main
+  prototype:
+    if: github.repository == 'guru-irl/rspack'
+    uses: ./.github/workflows/reusable-build-build.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      runner: '["ubuntu-24.04"]'
+      ref: bd6aff036f0d1dbb6ed5ac56b665d259694c8b4f
+      profile: ci
+      binding_postfix: -warm-prototype
+  measure:
+    needs: [main, prototype]
+    if: github.repository == 'guru-irl/rspack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:js
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings-x86_64-unknown-linux-gnu-warm-main
+          path: artifacts/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings-x86_64-unknown-linux-gnu-warm-prototype
+          path: artifacts/prototype
+      - name: Validate harness and fixture
+        env:
+          FIXTURE: ${{ github.workspace }}/fixture
+          MODULES: '10000'
+          SOURCE_BYTES: '120000'
+        run: |
+          set -euo pipefail
+          mkdir -p results results/temp slow-mount
+          export PYTHONDONTWRITEBYTECODE=1
+          node --check .github/scripts/warm-restore-io/gen.mjs
+          node --check .github/scripts/warm-restore-io/run.mjs
+          python3 -c "import sys; sys.path.insert(0,'.github/scripts/warm-restore-io'); from analyze import self_check; self_check()"
+          cp "$(find artifacts/main -name 'rspack.linux-x64-gnu.node')" artifacts/main.node
+          cp "$(find artifacts/prototype -name 'rspack.linux-x64-gnu.node')" artifacts/prototype.node
+          sha256sum artifacts/main.node artifacts/prototype.node > results/bindings.sha256
+          git rev-parse HEAD > results/harness-sha.txt
+          printf '%s\n' ff0cd64adc06db77c3138a9797db327fa0adfcf5 bd6aff036f0d1dbb6ed5ac56b665d259694c8b4f > results/source-shas.txt
+          node .github/scripts/warm-restore-io/gen.mjs > results/fixture.json
+      - name: Prepare dm-delay device
+        run: bash .github/scripts/warm-restore-io/device.sh setup
+      - name: Exploratory interleaved measurements and runner-side summary
+        env:
+          FIXTURE: ${{ github.workspace }}/fixture
+          RESULTS: ${{ github.workspace }}/results
+          SLOW_ROOT: ${{ github.workspace }}/slow-mount
+          RSPACK_CORE: ${{ github.workspace }}/packages/rspack/dist/index.js
+          TMPDIR: ${{ github.workspace }}/results/temp
+          REPEATS: '5'
+          MODULES: '10000'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/warm-restore-io/measure.py
+          python3 .github/scripts/warm-restore-io/analyze.py results/runs.jsonl > results/summary.md
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve partial-series summary
+        if: failure()
+        run: |
+          if test -s results/runs.jsonl; then
+            python3 .github/scripts/warm-restore-io/analyze.py results/runs.jsonl > results/partial-summary.md || true
+          fi
+      - name: Final device record and cleanup
+        if: always()
+        run: bash .github/scripts/warm-restore-io/device.sh cleanup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: warm-restore-io-results
+          path: results/
+          retention-days: 14
