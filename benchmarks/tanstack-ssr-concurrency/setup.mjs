@@ -37,6 +37,7 @@ const execute=(arm,scenario,index)=>{
  for(let i=1;i<=60;i++){const n=String(i).padStart(3,'0');fs.writeFileSync(path.join(app,`src/routes/page-${n}.tsx`),route(`/page-${n}`,`Page ${n}`));}
  // The added route shares the same working loader/component contract.
  fs.writeFileSync(path.join(app,'src/Page.tsx'),`import { useLoaderData } from '@tanstack/react-router';\nimport { Leaf } from './Leaf';\nexport function Page({title}) { const data=useLoaderData({strict:false}); return <main><h1>{title}</h1><Leaf /><pre>{JSON.stringify(data)}</pre></main>; }\n`);
+ fs.writeFileSync(path.join(app,'src/no-resolver.ts'),'export default {fetch:async()=>new Response("generic custom entry")};\n');
  fs.writeFileSync(path.join(app,'src/extra.css'),'.generic-extra { color: rgb(20, 20, 20); }\n');
  fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  const run=spawnSync('/usr/bin/time',['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':'0'},encoding:'utf8',timeout:900000});
@@ -47,7 +48,8 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
-if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0;
+if(mode==='no-resolver') {const r=execute('barrier','no-resolver',0);failed=r.status!==0;
+} else if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0;
 } else if(mode==='aa-route') {for(let i=0;i<2;i++){const r=execute('stock','aa-route',i);if(r.status!==0)failed=true;}
 } else if(mode==='red-after-make') { const r=execute('after-make','red-after-make',0);failed=r.status!==0;
 } else if(mode==='regression') {

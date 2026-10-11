@@ -28,6 +28,7 @@ const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/'
 const probe = { name: 'watch-observer', setup(api) {
   api.modifyRspackConfig((config, { environment }) => {
     config.devtool = false;
+    if(scenario==='no-resolver' && environment.name==='ssr') {config.entry={index:{import:['./src/no-resolver.ts']}};}
     config.plugins.push({ apply(compiler) {
       compilers.set(environment.name,compiler);
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
@@ -154,6 +155,7 @@ try {
   const rsbuild = await createRsbuild({ config: { plugins:[pluginReact(),tanstackStart(),probe], performance:{buildCache:false}, server:{port:3100,strictPort:true,open:false} } });
   server=await rsbuild.startDevServer();
   readiness=(async()=>{
+    if(scenario==='no-resolver') {readyTime=now();return;}
     const deadline=now()+120000;
     while(now()<deadline) {
       try {
@@ -167,10 +169,11 @@ try {
   })();
   await waitIdle(2);
   await readiness;
-  await sample(base,'Public leaf baseline');
+  if(scenario==='no-resolver') {assert.ok(builds.filter(b=>b.name==='ssr').every(b=>!Object.keys(b.modules).some(resolver)),'custom SSR entry has no resolver');}
+  else await sample(base,'Public leaf baseline');
   const cold={ ssrReadyMs: readyTime-started, firstSsrDoneMs:events.find(e=>e.name==='ssr'&&e.kind==='done').t-started, finalReadyMs: events.filter(e=>e.kind==='done').at(-1).t-started, peakRss:peak, arm };
   fs.writeFileSync(path.join(out,'cold.json'),JSON.stringify(cold,null,2));
-  if (scenario==='red-after-make') {
+  if(scenario==='no-resolver') {} else if (scenario==='red-after-make') {
     const e=events.filter(e=>e.step==='initial');
     const clientFinish=e.find(x=>x.name==='client'&&x.kind==='finishMake').t;
     const clientDone=e.find(x=>x.name==='client'&&x.kind==='done').t;
