@@ -1,5 +1,6 @@
 [workspace]
 members  = ["crates/*", "xtask/benchmark", "xtask"]
+exclude  = ["vendor/rspack-turbo-persistence"]
 resolver = "2"                                      # See https://doc.rust-lang.org/cargo/reference/resolver.html#feature-resolver-version-2
 
 [workspace.package]
@@ -632,3 +633,6 @@ regex_creation_in_loops = "warn"
 # regex
 invalid_regex = "warn"
 trivial_regex = "warn"
+
+[patch.crates-io]
+rspack-turbo-persistence = { path = "vendor/rspack-turbo-persistence" }

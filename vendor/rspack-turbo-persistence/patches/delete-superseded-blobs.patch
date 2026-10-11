@@ -1,0 +1,449 @@
+Retire superseded SingleValue blobs at commit, using the existing durable deletion record.
+
+Only incoming blob puts look up the key's visible predecessor. The lookup reads entry types
+and blob sequence numbers and never reads or decompresses values. A lookup error is logged
+and skips retirement for that key; the commit still proceeds.
+
+The normal small and medium put path, merge behavior and on-disk format are unchanged.
+Missing blob files are tolerated only during cleanup.
+
+Not reclaimed by this patch: a blob overwritten by a non-blob (small, medium or inline)
+value, explicit deletes, MultiValue blobs, and blobs orphaned before the patch. Those keep
+relying on compaction.
+
+A read-only process that opened the database before a commit can fail to read an overwritten
+huge key right after that commit, not only after a compaction. Each commit that replaces a
+blob writes one .del file; these accumulate until the next open, as compaction deletes do
+today. On Windows, a failed unlink falls back to the existing deferred retry.
+
+diff --git a/src/db.rs b/src/db.rs
+index 014a37a..2d682d6 100644
+--- a/src/db.rs
++++ b/src/db.rs
+@@ -783,6 +783,7 @@ impl<S: ParallelScheduler, const FAMILIES: usize> TurboPersistence<S, FAMILIES>
+             new_meta_files,
+             new_sst_files,
+             new_blob_files,
++            blob_keys,
+             keys_written,
+         } = write_batch.finish(|family| {
+             let inner = self.inner.read();
+@@ -810,12 +811,48 @@ impl<S: ParallelScheduler, const FAMILIES: usize> TurboPersistence<S, FAMILIES>
+             });
+             amqf
+         })?;
++        let mut blob_seq_numbers_to_delete = Vec::new();
++        if !blob_keys.is_empty() {
++            // The write-operation guard excludes other commits and compactions. Only committed
++            // metas are searched, so this cannot retire a blob created by the current batch.
++            // Read only the entry type and blob sequence, never the predecessor's value.
++            let inner = self.inner.read();
++            for (family, key) in blob_keys {
++                let hash = hash_key(&key);
++                for meta in inner.meta_files.iter().rev() {
++                    let result = meta.lookup::<_, false, false>(
++                        family,
++                        hash,
++                        &key,
++                        self.key_block_cache(),
++                        self.value_block_cache(),
++                    );
++                    match result {
++                        Ok(MetaLookupResult::SstLookup(SstLookupResult::Found(values))) => {
++                            if let Some(LookupValue::Blob { sequence_number }) = values.first() {
++                                blob_seq_numbers_to_delete.push(*sequence_number);
++                            }
++                            break;
++                        }
++                        Ok(_) => {}
++                        Err(e) => {
++                            eprintln!(
++                                "turbo-persistence: skipping blob retirement in family {family}: {e:#}"
++                            );
++                            break;
++                        }
++                    }
++                }
++            }
++            blob_seq_numbers_to_delete.sort_unstable();
++            blob_seq_numbers_to_delete.dedup();
++        }
+         let stats = self.commit(CommitOptions {
+             new_meta_files,
+             new_sst_files,
+             new_blob_files,
+             sst_files_to_delete: vec![],
+-            blob_seq_numbers_to_delete: vec![],
++            blob_seq_numbers_to_delete,
+             sequence_number,
+             keys_written,
+         })?;
+@@ -1901,7 +1938,7 @@ impl<S: ParallelScheduler, const FAMILIES: usize> TurboPersistence<S, FAMILIES>
+         let mut size = 0;
+ 
+         for meta in inner.meta_files.iter().rev() {
+-            match meta.lookup::<K, FIND_ALL>(
++            match meta.lookup::<K, FIND_ALL, true>(
+                 family as u32,
+                 hash,
+                 key,
+@@ -2178,9 +2215,10 @@ impl<S: ParallelScheduler, const FAMILIES: usize> TurboPersistence<S, FAMILIES>
+         seqs: &'a [u32],
+         ext: &'a str,
+     ) -> impl Iterator<Item = u32> + 'a {
+-        seqs.iter()
+-            .copied()
+-            .filter(move |&seq| fs::remove_file(dir.join(format!("{seq:08}.{ext}"))).is_err())
++        seqs.iter().copied().filter(move |&seq| {
++            fs::remove_file(dir.join(format!("{seq:08}.{ext}")))
++                .is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
++        })
+     }
+ 
+     /// Retries deletion of files that previously failed (typically due to open memory maps on
+@@ -2196,7 +2234,8 @@ impl<S: ParallelScheduler, const FAMILIES: usize> TurboPersistence<S, FAMILIES>
+                 DeferredDeletion::Blob(seq) => (seq, "blob"),
+             };
+             // Keep the entry only if deletion still fails.
+-            fs::remove_file(self.path.join(format!("{seq:08}.{ext}"))).is_err()
++            fs::remove_file(self.path.join(format!("{seq:08}.{ext}")))
++                .is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
+         });
+     }
+ }
+diff --git a/src/meta_file.rs b/src/meta_file.rs
+index dbde553..a7aeafa 100644
+--- a/src/meta_file.rs
++++ b/src/meta_file.rs
+@@ -441,7 +441,7 @@ impl MetaFile {
+     /// If `FIND_ALL` is false, returns after finding the first match.
+     /// If `FIND_ALL` is true, returns all entries with the same key from all SST files
+     /// (useful for keyspaces where keys are hashes and collisions are possible).
+-    pub fn lookup<K: QueryKey, const FIND_ALL: bool>(
++    pub fn lookup<K: QueryKey, const FIND_ALL: bool, const READ_VALUE: bool>(
+         &self,
+         key_family: u32,
+         key_hash: u64,
+@@ -464,7 +464,7 @@ impl MetaFile {
+                 continue;
+             }
+ 
+-            let result = entry.sst(self)?.lookup::<K, FIND_ALL>(
++            let result = entry.sst(self)?.lookup::<K, FIND_ALL, READ_VALUE>(
+                 key_hash,
+                 key,
+                 key_block_cache,
+@@ -573,7 +573,7 @@ impl MetaFile {
+                     }
+                     continue;
+                 }
+-                let sst_result = entry.sst(self)?.lookup::<_, false>(
++                let sst_result = entry.sst(self)?.lookup::<_, false, true>(
+                     *hash,
+                     &keys[*index],
+                     key_block_cache,
+diff --git a/src/static_sorted_file.rs b/src/static_sorted_file.rs
+index 4bd1a23..adaef1e 100644
+--- a/src/static_sorted_file.rs
++++ b/src/static_sorted_file.rs
+@@ -246,11 +246,13 @@ impl StaticSortedFile {
+     }
+ 
+     /// Looks up a key in this file.
++    /// With `READ_VALUE` false, only blob references are resolved; other matches return Deleted.
++    /// This mode is only used with `FIND_ALL` false to stop at the visible predecessor.
+     ///
+     /// If `FIND_ALL` is false, returns after finding the first match.
+     /// If `FIND_ALL` is true, returns all entries with the same key (useful for
+     /// keyspaces where keys are hashes and collisions are possible).
+-    pub fn lookup<K: QueryKey, const FIND_ALL: bool>(
++    pub fn lookup<K: QueryKey, const FIND_ALL: bool, const READ_VALUE: bool>(
+         &self,
+         key_hash: u64,
+         key: &K,
+@@ -284,12 +286,18 @@ impl StaticSortedFile {
+         match block_type {
+             BLOCK_TYPE_KEY_WITH_HASH | BLOCK_TYPE_KEY_NO_HASH => {
+                 let has_hash = block_type == BLOCK_TYPE_KEY_WITH_HASH;
+-                self.lookup_key_block::<K, FIND_ALL>(key_block_arc, key_hash, key, has_hash, reader)
++                self.lookup_key_block::<K, FIND_ALL, READ_VALUE>(
++                    key_block_arc,
++                    key_hash,
++                    key,
++                    has_hash,
++                    reader,
++                )
+             }
+ 
+             BLOCK_TYPE_FIXED_KEY_WITH_HASH | BLOCK_TYPE_FIXED_KEY_NO_HASH => {
+                 let has_hash = block_type == BLOCK_TYPE_FIXED_KEY_WITH_HASH;
+-                self.lookup_fixed_key_block::<K, FIND_ALL>(
++                self.lookup_fixed_key_block::<K, FIND_ALL, READ_VALUE>(
+                     key_block_arc,
+                     key_hash,
+                     key,
+@@ -329,7 +337,7 @@ impl StaticSortedFile {
+     ///
+     /// If `FIND_ALL` is false, returns after finding the first match.
+     /// If `FIND_ALL` is true, collects all entries with the same key.
+-    fn lookup_key_block<K: QueryKey, const FIND_ALL: bool>(
++    fn lookup_key_block<K: QueryKey, const FIND_ALL: bool, const READ_VALUE: bool>(
+         &self,
+         block: ArcBytes,
+         key_hash: u64,
+@@ -348,16 +356,21 @@ impl StaticSortedFile {
+         let offsets = &data[..entry_count * 4];
+         let entries = &data[entry_count * 4..];
+ 
+-        self.lookup_block_inner::<K, FIND_ALL>(&block, entry_count, key_hash, key, reader, |i| {
+-            get_key_entry(offsets, entries, entry_count, i, hash_len)
+-        })
++        self.lookup_block_inner::<K, FIND_ALL, READ_VALUE>(
++            &block,
++            entry_count,
++            key_hash,
++            key,
++            reader,
++            |i| get_key_entry(offsets, entries, entry_count, i, hash_len),
++        )
+     }
+ 
+     /// Looks up a key in a fixed-size key block.
+     ///
+     /// Fixed-size key blocks store entries at predictable offsets (no offset table),
+     /// enabling direct indexing during binary search.
+-    fn lookup_fixed_key_block<K: QueryKey, const FIND_ALL: bool>(
++    fn lookup_fixed_key_block<K: QueryKey, const FIND_ALL: bool, const READ_VALUE: bool>(
+         &self,
+         block: ArcBytes,
+         key_hash: u64,
+@@ -378,18 +391,25 @@ impl StaticSortedFile {
+             "fixed key block for {entry_count} entries must is the wrong size"
+         );
+ 
+-        self.lookup_block_inner::<K, FIND_ALL>(&block, entry_count, key_hash, key, reader, |i| {
+-            Ok(get_fixed_key_entry(
+-                entries, i, hash_len, key_size, value_type, stride,
+-            ))
+-        })
++        self.lookup_block_inner::<K, FIND_ALL, READ_VALUE>(
++            &block,
++            entry_count,
++            key_hash,
++            key,
++            reader,
++            |i| {
++                Ok(get_fixed_key_entry(
++                    entries, i, hash_len, key_size, value_type, stride,
++                ))
++            },
++        )
+     }
+ 
+     /// Shared binary search + collection logic for both key block variants.
+     ///
+     /// The `get_entry` closure abstracts over the difference between variable-size
+     /// key blocks (offset table lookup) and fixed-size key blocks (stride-based indexing).
+-    fn lookup_block_inner<'a, K: QueryKey, const FIND_ALL: bool>(
++    fn lookup_block_inner<'a, K: QueryKey, const FIND_ALL: bool, const READ_VALUE: bool>(
+         &self,
+         block: &ArcBytes,
+         entry_count: usize,
+@@ -418,7 +438,16 @@ impl StaticSortedFile {
+                     if !FIND_ALL {
+                         // SingleValue mode: each key has exactly one entry
+                         // this is enforced when writing
+-                        let result = self.handle_key_match(ty, val, block, reader)?;
++                        let result = if READ_VALUE {
++                            self.handle_key_match(ty, val, block, reader)?
++                        } else if ty == KEY_BLOCK_ENTRY_TYPE_BLOB {
++                            LookupValue::Blob {
++                                sequence_number: be::read_u32(val),
++                            }
++                        } else {
++                            // Any non-blob match shadows older blobs without reading its value.
++                            LookupValue::Deleted
++                        };
+                         return Ok(SstLookupResult::Found(SmallVec::from_buf([result])));
+                     }
+                     // FIND_ALL (MultiValue) mode: collect all values for this key.
+diff --git a/src/static_sorted_file_builder.rs b/src/static_sorted_file_builder.rs
+index 66be275..6309983 100644
+--- a/src/static_sorted_file_builder.rs
++++ b/src/static_sorted_file_builder.rs
+@@ -1383,7 +1383,7 @@ mod tests {
+         kc: &BlockCache,
+         vc: &BlockCache,
+     ) -> Result<()> {
+-        let result = sst.lookup::<_, false>(entry.hash, &entry.key, kc, vc)?;
++        let result = sst.lookup::<_, false, true>(entry.hash, &entry.key, kc, vc)?;
+         match (&entry.value_kind, result) {
+             (_, SstLookupResult::Found(values))
+                 if values.len() == 1 && matches!(values[0], LookupValue::Slice { .. }) =>
+@@ -1692,8 +1692,8 @@ mod tests {
+         let vc = make_cache();
+ 
+         for entry in &entries {
+-            let r1 = sst1.lookup::<_, false>(entry.hash, &entry.key, &kc, &vc)?;
+-            let r2 = sst2.lookup::<_, false>(entry.hash, &entry.key, &kc, &vc)?;
++            let r1 = sst1.lookup::<_, false, true>(entry.hash, &entry.key, &kc, &vc)?;
++            let r2 = sst2.lookup::<_, false, true>(entry.hash, &entry.key, &kc, &vc)?;
+             match (&r1, &r2) {
+                 (SstLookupResult::Found(v1), SstLookupResult::Found(v2))
+                     if v1.len() == 1 && v2.len() == 1 =>
+@@ -1818,7 +1818,7 @@ mod tests {
+         let sst = open_sst(dir, seq, meta).unwrap();
+         let kc = make_cache();
+         let vc = make_cache();
+-        match sst.lookup::<_, false>(entries[0].hash, &entries[0].key, &kc, &vc) {
++        match sst.lookup::<_, false, true>(entries[0].hash, &entries[0].key, &kc, &vc) {
+             Err(err) => {
+                 let msg = format!("{err}");
+                 assert!(
+diff --git a/src/tests.rs b/src/tests.rs
+index 81dd762..61966f8 100644
+--- a/src/tests.rs
++++ b/src/tests.rs
+@@ -1979,6 +1979,52 @@ fn count_blob_files(dir: &Path) -> usize {
+         .count()
+ }
+ 
++#[test]
++fn commit_deletes_superseded_blob() -> Result<()> {
++    let tempdir = tempfile::tempdir()?;
++    let path = tempdir.path();
++    let key = vec![1u8];
++    let replacement = vec![43u8; MAX_MEDIUM_VALUE_SIZE + 1];
++
++    {
++        let db = TurboPersistence::<_, 1>::open_with_parallel_scheduler(
++            path.to_path_buf(),
++            RayonParallelScheduler,
++        )?;
++
++        // A medium predecessor must not be mistaken for a blob.
++        let batch = db.write_batch()?;
++        batch.put(0, key.clone(), vec![41u8; MAX_MEDIUM_VALUE_SIZE - 1].into())?;
++        db.commit_write_batch(batch)?;
++        assert_eq!(count_blob_files(path), 0);
++
++        let batch = db.write_batch()?;
++        batch.put(0, key.clone(), vec![42u8; MAX_MEDIUM_VALUE_SIZE + 1].into())?;
++        db.commit_write_batch(batch)?;
++        assert_eq!(count_blob_files(path), 1);
++        assert_eq!(
++            db.get(0, &key)?.as_deref(),
++            Some(&vec![42u8; MAX_MEDIUM_VALUE_SIZE + 1][..])
++        );
++
++        let batch = db.write_batch()?;
++        batch.put(0, key.clone(), replacement.clone().into())?;
++        db.commit_write_batch(batch)?;
++        assert_eq!(count_blob_files(path), 1, "Commit must retire the old blob");
++        assert_eq!(db.get(0, &key)?.as_deref(), Some(&replacement[..]));
++        db.shutdown()?;
++    }
++
++    let db = TurboPersistence::<_, 1>::open_with_parallel_scheduler(
++        path.to_path_buf(),
++        RayonParallelScheduler,
++    )?;
++    assert_eq!(count_blob_files(path), 1);
++    assert_eq!(db.get(0, &key)?.as_deref(), Some(&replacement[..]));
++    db.shutdown()?;
++    Ok(())
++}
++
+ /// Test that compaction deletes blob files when their entries are superseded
+ /// by newer values (SingleValue family).
+ #[test]
+diff --git a/src/write_batch.rs b/src/write_batch.rs
+index 2f313b6..83541f0 100644
+--- a/src/write_batch.rs
++++ b/src/write_batch.rs
+@@ -15,7 +15,7 @@ use smallvec::SmallVec;
+ use thread_local::ThreadLocal;
+ 
+ use crate::{
+-    FamilyConfig, ValueBuffer,
++    FamilyConfig, FamilyKind, ValueBuffer,
+     collector::Collector,
+     collector_entry::CollectorEntry,
+     compression::{checksum_block, compress_into_buffer},
+@@ -47,6 +47,8 @@ struct ThreadLocalState<K: StoreKey + Send, const FAMILIES: usize> {
+     collectors: [Option<Collector<K, THREAD_LOCAL_SIZE_SHIFT>>; FAMILIES],
+     /// The list of new blob files that have been created.
+     new_blob_files: Vec<NewFile>,
++    /// SingleValue keys receiving blobs, for retiring their committed predecessors.
++    blob_keys: Vec<(u32, Vec<u8>)>,
+ }
+ 
+ const COLLECTOR_SHARDS: usize = 4;
+@@ -59,6 +61,7 @@ pub(crate) struct FinishResult {
+     pub(crate) new_meta_files: Vec<NewFile>,
+     pub(crate) new_sst_files: Vec<NewFile>,
+     pub(crate) new_blob_files: Vec<NewFile>,
++    pub(crate) blob_keys: Vec<(u32, Vec<u8>)>,
+     /// Number of keys written in this batch.
+     pub(crate) keys_written: u64,
+ }
+@@ -137,6 +140,7 @@ impl<'db, K: StoreKey + Send + Sync, S: ParallelScheduler, const FAMILIES: usize
+             SyncUnsafeCell::new(ThreadLocalState {
+                 collectors: [const { None }; FAMILIES],
+                 new_blob_files: Vec::new(),
++                blob_keys: Vec::new(),
+             })
+         });
+         // Safety: We know that the cell is only accessed from the current thread.
+@@ -239,7 +243,18 @@ impl<'db, K: StoreKey + Send + Sync, S: ParallelScheduler, const FAMILIES: usize
+             collector.put(key, value);
+         } else {
+             let blob = self.create_blob(&value)?;
++            let blob_key =
++                if self.family_configs[usize_from_u32(family)].kind == FamilyKind::SingleValue {
++                    let mut bytes = Vec::with_capacity(key.len());
++                    key.write_to(&mut bytes);
++                    Some(bytes)
++                } else {
++                    None
++                };
+             collector.put_blob(key, blob.seq);
++            if let Some(key) = blob_key {
++                state.blob_keys.push((family, key));
++            }
+             state.new_blob_files.push(blob);
+         }
+         Ok(())
+@@ -327,6 +342,7 @@ impl<'db, K: StoreKey + Send + Sync, S: ParallelScheduler, const FAMILIES: usize
+         get_accessed_key_hashes: impl Fn(u32) -> qfilter::Filter + Send + Sync,
+     ) -> Result<FinishResult> {
+         let mut new_blob_files = Vec::new();
++        let mut blob_keys = Vec::new();
+ 
+         // First, we flush all thread local collectors to the global collectors.
+         {
+@@ -335,6 +351,7 @@ impl<'db, K: StoreKey + Send + Sync, S: ParallelScheduler, const FAMILIES: usize
+             for cell in self.thread_locals.iter_mut() {
+                 let state = cell.get_mut();
+                 new_blob_files.append(&mut state.new_blob_files);
++                blob_keys.append(&mut state.blob_keys);
+                 for (family, thread_local_collector) in state.collectors.iter_mut().enumerate() {
+                     if let Some(collector) = thread_local_collector.take()
+                         && !collector.is_empty()
+@@ -441,6 +458,7 @@ impl<'db, K: StoreKey + Send + Sync, S: ParallelScheduler, const FAMILIES: usize
+             new_meta_files,
+             new_sst_files,
+             new_blob_files,
++            blob_keys,
+             keys_written: keys_written.into_inner(),
+         })
+     }
+@@ -523,7 +541,7 @@ impl<'db, K: StoreKey + Send + Sync, S: ParallelScheduler, const FAMILIES: usize
+             for entry in entries {
+                 entry.write_key_to(&mut key_buf);
+                 let result = sst
+-                    .lookup::<_, true>(hash_key(&key_buf), &key_buf, &cache2, &cache3)
++                    .lookup::<_, true, true>(hash_key(&key_buf), &key_buf, &cache2, &cache3)
+                     .expect("key found");
+                 key_buf.clear();
+                 match result {

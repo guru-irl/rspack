@@ -3953,8 +3953,6 @@ dependencies = [
 [[package]]
 name = "rspack-turbo-persistence"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be5bb8d1b648815f264b0503bbfdb6b763e8011f6636d45418c5446f7538635d"
 dependencies = [
  "anyhow",
  "bitfield",

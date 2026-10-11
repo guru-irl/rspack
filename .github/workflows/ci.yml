@@ -29,6 +29,10 @@ permissions:
   pull-requests: write
 
 jobs:
+  blob-regression:
+    name: New Cache Blob Tests
+    uses: ./.github/workflows/new-cache-blobs.yml
+
   check-changed:
     runs-on: ${{ fromJSON(vars.CI_LINUX_MINI_RUNNER || '"ubuntu-latest"') }}
     name: Check Source Changed
@@ -218,6 +222,7 @@ jobs:
     name: Test Required Check
     needs:
       [
+        blob-regression,
         build-linux,
         build-website-for-fork,
         test-linux,
@@ -239,6 +244,7 @@ jobs:
       - name: Test check
         if: >-
           ${{
+            needs.blob-regression.result != 'success' ||
             needs.check-changed.result != 'success' ||
             (needs.check-changed.outputs.code_changed == 'true' &&
               (needs.build-linux.result != 'success' ||

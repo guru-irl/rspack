@@ -4,6 +4,8 @@
 
 [files]
 extend-exclude = [
+  # Preserve imported third-party sources.
+  "vendor/**",
   "**/*.{css,map,json,txt,snap,bak,diff,html}",
   "**/tests/**",
   "**/mock/**",

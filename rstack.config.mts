@@ -4,6 +4,8 @@ import skillsLock from './skills-lock.json' with { type: 'json' };
 define.fmt({
   singleQuote: true,
   ignorePatterns: [
+    // Preserve imported third-party sources and manifests.
+    'vendor/**',
     // Tests
     'tests/rspack-test/**/*',
     '!tests/rspack-test/**/',
