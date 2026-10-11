@@ -976,7 +976,10 @@ impl SplitChunksPlugin {
             group.test,
             CacheGroupTest::String(_) | CacheGroupTest::RegExp(_)
           ) {
-            module_names.get(chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB + index, module)
+            module_names.get(
+              chunk_index * NATIVE_PRECOMPUTE_MODULES_PER_JOB + index,
+              module,
+            )
           } else {
             None
           };
