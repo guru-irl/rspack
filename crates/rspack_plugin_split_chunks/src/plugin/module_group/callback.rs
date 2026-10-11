@@ -230,6 +230,8 @@ impl<'a> Phase<'a> {
     matched: &mut Vec<u32>,
   ) -> Result<()> {
     let group = self.indexed.cache_group;
+    let _timer = super::super::stage0::Span::new(self.stage.compilation,
+      if matches!(group.test, CacheGroupTest::Fn(_)) || self.getters.test.is_some() { "stage0 JS test phase" } else { "stage0 native test phase" });
     let getters = self.getters;
     matched.clear();
     if let Some(get_test) = &getters.test {
@@ -549,6 +551,8 @@ impl<'a> Phase<'a> {
 
   async fn run_names(&self, scratch: &mut RoundScratch<'a>, failures: &mut Failures) -> Result<()> {
     let group = self.indexed.cache_group;
+    let _timer = super::super::stage0::Span::new(self.stage.compilation,
+      if matches!(group.name, ChunkNameGetter::Fn(_)) || self.getters.name.is_some() { "stage0 JS name phase" } else { "stage0 native name phase" });
     scratch.names.clear();
     scratch.names.resize_with(scratch.ready.len(), || None);
     if let Some(get_name) = &self.getters.name {
@@ -683,6 +687,7 @@ impl<'a> Phase<'a> {
     owners: &mut Vec<u32>,
     selected: &mut Vec<Result<FxHashSet<ChunkUkey>>>,
   ) -> Result<()> {
+    let _timer = super::super::stage0::Span::new(self.stage.compilation, "stage0 JS chunks phase");
     selected.clear();
     selected.resize_with(count, || Ok(FxHashSet::default()));
     let mut references = combinations.enumerate().flat_map(|(owner, combination)| {
