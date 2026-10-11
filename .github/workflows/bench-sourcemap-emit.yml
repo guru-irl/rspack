@@ -30,7 +30,7 @@ jobs:
       - name: Published 2.2.8 watch baseline
         shell: bash
         run: |
-          export STUDY_CORE="$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/@rspack/core"
+          export STUDY_CORE="$GITHUB_WORKSPACE/.spider/scratch/sourcemap-emit/published/node_modules/@rspack/core/dist/index.js"
           export STUDY_LABEL=published
           for STUDY_ARM in disk memfs; do export STUDY_ARM; python3 benchmarks/sourcemap-emit/monitor.py; done
       - name: Install workspace dependencies
