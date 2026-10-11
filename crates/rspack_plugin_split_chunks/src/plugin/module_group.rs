@@ -911,10 +911,8 @@ impl SplitChunksPlugin {
         }
 
         let is_match = match &cache_group.test {
-          CacheGroupTest::String(test) => names_probe.get(module, module_identifier)
-            .is_some_and(|name| name.starts_with(test)),
-          CacheGroupTest::RegExp(test) => names_probe.get(module, module_identifier)
-            .is_some_and(|name| test.test(&name)),
+          CacheGroupTest::String(test) => names_probe.test(module, module_identifier, |name| name.starts_with(test)),
+          CacheGroupTest::RegExp(test) => names_probe.test(module, module_identifier, |name| test.test(&name)),
           CacheGroupTest::Fn(_) => unreachable!("native group should not have a test callback"),
           CacheGroupTest::Enabled => true,
         };
