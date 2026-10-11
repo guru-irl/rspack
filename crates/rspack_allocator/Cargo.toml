@@ -11,8 +11,8 @@ system-allocator = []
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 libmimalloc-sys = { workspace = true, features = ["extended"] }
-sftrace-setup = { workspace = true, optional = true }
-tracy-client  = { workspace = true, optional = true }
+sftrace-setup   = { workspace = true, optional = true }
+tracy-client    = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Turned on `local_dynamic_tls` to avoid issue: https://github.com/microsoft/mimalloc/issues/147
