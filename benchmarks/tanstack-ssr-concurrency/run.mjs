@@ -71,6 +71,7 @@ const waitIdle = async (minimum = 0) => {
   const start = now();
   while (now() - start < 120000) {
     const relevant = events.filter(e => e.step === step);
+    if(scenario==='no-resolver') assert.ok(relevant.filter(e=>e.kind==='done').length<20,`${step}: no repeated resolver invalidation loop`);
     if (!active.size && relevant.filter(e => e.kind === 'done').length >= minimum && now() - lastEvent > 800) return;
     await pause(25);
   }
@@ -173,7 +174,25 @@ try {
   else await sample(base,'Public leaf baseline');
   const cold={ ssrReadyMs: readyTime-started, firstSsrDoneMs:events.find(e=>e.name==='ssr'&&e.kind==='done').t-started, finalReadyMs: events.filter(e=>e.kind==='done').at(-1).t-started, peakRss:peak, arm };
   fs.writeFileSync(path.join(out,'cold.json'),JSON.stringify(cold,null,2));
-  if(scenario==='no-resolver') {} else if (scenario==='red-after-make') {
+  if(scenario==='no-resolver') {
+    const file='src/no-resolver.ts';
+    const empty=fs.readFileSync(file,'utf8');
+    const imported="import {getServerFnById} from '#tanstack-start-server-fn-resolver';\nexport default {fetch:async()=>new Response(String(getServerFnById))};\n";
+    const checkResolver=(present,extra=false)=>{
+      const last=builds.filter(b=>b.name==='ssr').at(-1);
+      const compiled=Object.entries(last.modules).find(([id])=>resolver(id))?.[1];
+      assert.equal(compiled!==undefined,present,`${step}: resolver import presence`);
+      assert.equal(last.errors.length,0,`${step}: SSR compile errors`);
+      if(present) {assert.equal(compiled,last.generated,`${step}: current compiled resolver`);if(extra)assert.ok(compiled.includes('delta_createServerFn_handler'),'re-added resolver includes current function discovery');}
+    };
+    const saveEntry=async(name,text,present)=>{step=name;lastEvent=now();fs.writeFileSync(file,text);await waitIdle(1);checkResolver(present);};
+    await saveEntry('resolver-first-import',imported,true);
+    await saveEntry('resolver-stop-import',empty,false);
+    step='resolver-absent-function-edit';lastEvent=now();
+    fs.writeFileSync('src/functions.ts',baselineFns+"\nexport const delta=createServerFn({method:'GET'}).handler(async()=> 'delta-public');\n");
+    await waitIdle(2);checkResolver(false);
+    await saveEntry('resolver-readd-import',imported,true);checkResolver(true,true);
+  } else if (scenario==='red-after-make') {
     const e=events.filter(e=>e.step==='initial');
     const clientFinish=e.find(x=>x.name==='client'&&x.kind==='finishMake').t;
     const clientDone=e.find(x=>x.name==='client'&&x.kind==='done').t;
