@@ -1,6 +1,6 @@
 --- a/dist/esm/rsbuild/plugin.js
 +++ b/dist/esm/rsbuild/plugin.js
-@@ -38,6 +38,29 @@
+@@ -38,6 +38,34 @@
  	let devServerRef = null;
  	const serverFnsById = {};
  	let updateServerFnResolver;
@@ -18,7 +18,12 @@
 +	let ssrResolverRevision = -1;
 +	let ssrManifestRevision = -1;
 +	let followUpQueued = false;
-+	const coldOverlap = process.env.TSS_SSR_COLD_OVERLAP === "1";
++	const coldOverlapMode = process.env.TSS_SSR_COLD_OVERLAP;
++	const coldOverlap = coldOverlapMode === "1";
++	const coldAfterMake = coldOverlapMode === "after-make";
++	let releaseFirstClientMake;
++	let firstClientMake;
++	let clientMakeComplete = false;
 +	const invalidateSsr = () => {
 +		if (!concurrentDev || followUpQueued) return;
 +		followUpQueued = true;
@@ -30,7 +35,7 @@
  	return {
  		name: "tanstack-start-rsbuild",
  		setup(api) {
-@@ -155,6 +178,13 @@
+@@ -155,6 +183,13 @@
  				serverFnsById,
  				onServerFnsByIdChange: () => {
  					updateServerFnResolver?.();
@@ -44,7 +49,7 @@
  				}
  			});
  			registerImportProtection(api, {
-@@ -177,12 +207,25 @@
+@@ -177,12 +212,25 @@
  			if (!rscEnabled) api.modifyRspackConfig((config, utils) => {
  				if (!startCompilerServerEnvironmentNames.includes(utils.environment.name)) return;
  				config.plugins.push({ apply(compiler) {
@@ -71,7 +76,7 @@
  					});
  				} });
  			});
-@@ -243,13 +286,24 @@
+@@ -243,13 +291,24 @@
  							}
  						}));
  						config.plugins.push({ apply(compiler) {
@@ -97,7 +102,7 @@
  							});
  						} });
  						if (api.context.action !== "dev") config.plugins.push({ apply(compiler) {
-@@ -273,6 +327,31 @@
+@@ -273,6 +332,37 @@
  				});
  			}
  			if (!rscEnabled) api.onAfterCreateCompiler(({ compiler }) => {
@@ -115,9 +120,15 @@
 +						});
 +						// Overlap mode has no consumer for this promise; avoid an unhandled rejection.
 +						firstClientManifest.catch(() => {});
++						firstClientMake = new Promise((resolve) => { releaseFirstClientMake = resolve; });
++						clientCompiler.hooks.finishMake.tap({ name: "TanStackStartClientMakeBarrier", stage: 1000 }, () => {
++							clientMakeComplete = true;
++							releaseFirstClientMake();
++						});
 +						clientCompiler.hooks.failed.tap("TanStackStartClientManifestBarrier", (error) => rejectFirstClientManifest(error));
 +						serverCompiler.hooks.watchRun.tapPromise({ name: "TanStackStartClientManifestBarrier", stage: -100 }, async () => {
-+							if (!coldOverlap && !clientManifestPublished) await firstClientManifest;
++							if (coldAfterMake && !clientMakeComplete) await Promise.race([firstClientMake, firstClientManifest]);
++							else if (!coldOverlap && !coldAfterMake && !clientManifestPublished) await firstClientManifest;
 +							ssrManifestRevision = manifestRevision;
 +						});
 +						serverCompiler.hooks.done.tap({ name: "TanStackStartSsrRevisionCheck", stage: 1000 }, () => {
@@ -129,7 +140,7 @@
  				if ("compilers" in compiler) for (const environmentName of startCompilerServerEnvironmentNames) {
  					const serverCompiler = compiler.compilers.find((c) => c.name === environmentName);
  					if (serverCompiler) {
-@@ -317,7 +396,22 @@
+@@ -317,7 +407,22 @@
  				if (environment.name !== RSBUILD_ENVIRONMENT_NAMES.client) return;
  				virtualModuleState.updateServerFnResolver();
  				const clientBuild = getClientBuild();
@@ -147,7 +158,7 @@
 +						const first = !clientManifestPublished;
 +						clientManifestPublished = true;
 +						releaseFirstClientManifest();
-+						if (changed && (!first || coldOverlap)) invalidateSsr();
++						if (changed && (!first || coldOverlap || coldAfterMake)) invalidateSsr();
 +					}
 +				}
  			});

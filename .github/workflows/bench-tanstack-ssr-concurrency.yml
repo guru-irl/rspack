@@ -23,7 +23,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Run public watch fixture
         env:
-          MODE: ${{ inputs.mode || 'red-after-make' }}
+          MODE: ${{ inputs.mode || 'correctness' }}
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"

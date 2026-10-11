@@ -55,7 +55,7 @@ if(mode==='red-after-make') { const r=execute('after-make','red-after-make',0);f
 } else {
  const reps=mode==='measure'?10:1;
  for(let i=0;i<reps;i++) {
-  const arms=i%2?['overlap','barrier','stock']:['stock','barrier','overlap'];
+  const arms=i%2?['overlap','after-make','barrier','stock']:['stock','barrier','after-make','overlap'];
   const results=arms.map(arm=>({...execute(arm,mode==='measure'?'warm':'correctness',i),arm}));
   if(results.some(r=>r.status!==0)) {failed=true;break;}
   if(mode!=='measure') {
@@ -66,7 +66,7 @@ if(mode==='red-after-make') { const r=execute('after-make','red-after-make',0);f
     for(const check of visible(stock)) {
      const output=r=>JSON.parse(fs.readFileSync(path.join(r.result,`${check.step}-outputs.json`)));
      const a=output(stock), b=output(r);
-     for(const env of ['client','ssr']) assert.deepEqual(b[env].modules,a[env].modules,`${r.arm} ${check.step}: ${env} final module-output parity`);
+     for(const env of ['client','ssr']) {assert.deepEqual(b[env].modules,a[env].modules,`${r.arm} ${check.step}: ${env} final module-output parity`);assert.deepEqual(b[env].assets,a[env].assets,`${r.arm} ${check.step}: ${env} emitted asset hash parity`);}
     }
    }
    fs.writeFileSync(path.join(work,'parity.json'),JSON.stringify({passed:true,steps:visible(stock).length}));
