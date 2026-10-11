@@ -29,6 +29,8 @@ for sha in config['arms'].values():
     if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha): raise ValueError('Full source SHA required')
 records = []
 host_samples = []
+protocol=dict(post_done_gc=False,done_gc=False,completed_idle_gc=True,post_close_gc=True,actual_checkpoint_offsets=True,post_done_ms=config.get('post_done_ms',[100,500]),idle_timeout_ms=config.get('idle_timeout_ms',3000),run_sha256=hashlib.sha256((HERE/'run.mjs').read_bytes()).hexdigest(),generator_sha256=hashlib.sha256((HERE/'gen.mjs').read_bytes()).hexdigest())
+(results/'measurement-protocol.json').write_text(json.dumps(protocol,indent=2))
 
 def run(arm, phase, name):
     info=dict(sample=name,at=time.time(),cpu_count=os.cpu_count())
@@ -128,7 +130,7 @@ for phase in phases:
     if value['worst']>noise:
       row=dict(phase=phase,metric=metric,median=value['median'],worst=value['worst'],aa_max_abs=noise)
       (time_increases if metric.endswith('ms') else increases).append(row)
-summary.update(memory_increases=increases,time_increases=time_increases,config=config,platform=platform.platform(),node=subprocess.check_output(['node','--version'],text=True).strip())
+summary.update(memory_increases=increases,time_increases=time_increases,protocol=protocol,config=config,platform=platform.platform(),node=subprocess.check_output(['node','--version'],text=True).strip())
 with (results/'paired-deltas.csv').open('w',newline='') as f:
     writer=csv.writer(f);writer.writerow(['phase','comparison','metric','pair','delta'])
     for phase in phases:

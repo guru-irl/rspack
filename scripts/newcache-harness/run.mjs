@@ -194,7 +194,7 @@ async function postDone() {
   const doneAt = start + done.wall_ms;
   for (const offset of postDoneMs) {
     await delay(Math.max(0, doneAt + offset - performance.now()));
-    const a = await anchor(`post_done_${offset}ms`, true);
+    const a = await anchor(`post_done_${offset}ms`);
     a.actual_after_done_ms = a.wall_ms - done.wall_ms;
     if (a.idle_complete || a.actual_after_done_ms >= idleTimeoutMs)
       throw new Error('Pre-timeout checkpoint ran too late');
