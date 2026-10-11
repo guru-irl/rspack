@@ -59,6 +59,19 @@ const execute=(arm,scenario,index)=>{
 };
 const mode=process.env.MODE || 'red';
 let failed=false;
+if(mode==='r2-measure') {
+ const orders=[];
+ for(let i=1;i<=10;i++) {
+  for(const scenario of ['cold-measure','warm-leaf','warm-body']) {
+   const forward=scenario==='cold-measure'?['stock','gate-only','barrier','after-make']:['stock','gate-only','barrier'];
+   const arms=i%2?forward:[...forward].reverse();orders.push({index:i,scenario,arms});
+   for(const arm of arms) {const r=execute(arm,scenario,i);assert.equal(r.status,0,'failed command is not a measurement sample');}
+  }
+ }
+ fs.writeFileSync(path.join(work,'arm-orders.json'),JSON.stringify(orders,null,2));
+ process.exit(0);
+}
+
 if(mode==='r2-matrix') {
  for(const arm of ['barrier','after-make','gate-only','overlap']) {
   for(const scenario of ['red-recovery','red-aba','no-resolver']) {const r=execute(arm,scenario,0);if(r.status!==0)failed=true;}

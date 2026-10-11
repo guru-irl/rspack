@@ -8,6 +8,7 @@ import { tanstackStart } from '@tanstack/react-start/plugin/rsbuild';
 const out = process.env.RESULT_DIR;
 const arm = process.env.ARM;
 const scenario = process.env.SCENARIO || 'correctness';
+const measuring=scenario.startsWith('warm-')||scenario==='cold-measure';
 fs.mkdirSync(out, { recursive: true });
 const now = () => performance.now();
 const pause = ms => new Promise(r => setTimeout(r, ms));
@@ -22,7 +23,7 @@ const events = [];
 const checks = [];
 const current = new Map();
 const compilers = new Map();
-const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
+const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
 const probe = { name: 'watch-observer', setup(api) {
@@ -52,14 +53,14 @@ const probe = { name: 'watch-observer', setup(api) {
         current.set(environment.name, record);
         const original = compilation.rebuildModule.bind(compilation);
         compilation.rebuildModule = (mod, cb) => { record.rebuilt.push(normalize(mod.identifier())); return original(mod, cb); };
-        compilation.hooks.succeedModule.tap('WatchObserver', mod => record.built.push(normalize(mod.identifier())));
-        compilation.hooks.finishModules.tap({ name: 'WatchObserver', stage: 10000 }, modules => {
+        if(!measuring) compilation.hooks.succeedModule.tap('WatchObserver', mod => record.built.push(normalize(mod.identifier())));
+        if(!measuring) compilation.hooks.finishModules.tap({ name: 'WatchObserver', stage: 10000 }, modules => {
           for (const mod of modules) {
             const id = normalize(mod.identifier());
             if (id.includes('<APP>/src/') || resolver(id)) record.modules[id] = normalize(String(mod.originalSource()?.source() ?? ''));
           }
         });
-        compilation.hooks.processAssets.tap({ name: 'WatchObserver', stage: 6000 }, () => {
+        if(!measuring) compilation.hooks.processAssets.tap({ name: 'WatchObserver', stage: 6000 }, () => {
           for(const asset of compilation.getAssets()) {if(asset.name==='assets/js/index.js') fs.writeFileSync(path.join(out,`${step}-client-entry.txt`),String(asset.source.source()));}
           record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => ({ name: a.name, bytes: a.source.size(), hash:hash(String(a.source.source())), normalizedHash:hash(String(a.source.source()).replace(/(__webpack_require__\.h = \(\) => \(")[0-9a-f]+("\))/g,'$1<FULL_HASH>$2')) })).sort((a,b) => a.name.localeCompare(b.name));
         });
@@ -68,7 +69,7 @@ const probe = { name: 'watch-observer', setup(api) {
         const record = current.get(environment.name);
         record.ms = stats.endTime - stats.startTime;
         record.hash=stats.hash;
-        record.errors = stats.toJson({ all: false, errors: true }).errors;
+        record.errors = measuring ? (stats.hasErrors()?['compilation failed']:[]) : stats.toJson({ all: false, errors: true }).errors;
         record.generated = normalize(globalThis.__watchVirtualState?.generateCurrentResolverContent(true) ?? '');
         builds.push(record); active.delete(environment.name); event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
       });
@@ -97,7 +98,7 @@ const rpc = async id => {
 };
 const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   const responses = {};
-  for (const route of ['/', '/page-001', '/page-025', '/page-060', ...(addedRoute ? ['/extra'] : [])]) {
+  for (const route of measuring?['/']:['/', '/page-001', '/page-025', '/page-060', ...(addedRoute ? ['/extra'] : [])]) {
     const response = await fetch(`http://localhost:3100${route}`);
     const html = await response.text();
     assert.equal(response.status, 200, `${step} ${route}: SSR HTTP status, ${html.slice(0,300)}`);
@@ -111,12 +112,12 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   const latest = Object.fromEntries(['client','ssr'].map(name => [name, builds.filter(b => b.name === name).at(-1)]));
   assert.ok(latest.ssr && latest.client, `${step}: both output snapshots`);
   for (const [name,b] of Object.entries(latest)) assert.equal(b.errors.length,0,`${step}: ${name} final compile errors`);
-  const compiled = Object.entries(latest.ssr.modules).find(([id]) => resolver(id))?.[1];
+  const compiled = measuring ? latest.ssr.generated : Object.entries(latest.ssr.modules).find(([id]) => resolver(id))?.[1];
   assert.equal(compiled, latest.ssr.generated, `${step}: compiled resolver matches final shared resolver`);
   const ids = {};
   for (const match of compiled.matchAll(/'([^']+)': \{\s*functionName: '([^']+)'/g)) ids[match[2].replace('_createServerFn_handler', '')] = match[1];
   const calls = {};
-  for (const [name, value] of Object.entries(expected)) {
+  for (const [name, value] of measuring?[]:Object.entries(expected)) {
     assert.ok(ids[name], `${step}: ${name} id exists`);
     const result = await rpc(ids[name]);
     assert.equal(result.status, 200, `${step}: ${name} RPC status, ${result.response}`);
@@ -237,7 +238,7 @@ try {
     assert.equal(builds.filter(b=>b.name==='ssr'&&b.step==='body-single').length,1,'server-function body edit has one SSR pass');
     await edit('add-single','src/functions.ts',baselineFns+"\nexport const delta=createServerFn({method:'GET'}).handler(async()=> 'delta-public');\n",{...base,delta:'delta-public'});
     assert.equal(builds.filter(b=>b.name==='ssr'&&b.step==='add-single').length,1,'server-function add has one SSR pass');
-  } else if (scenario==='cold') {}
+  } else if (scenario==='cold'||scenario==='cold-measure') {}
   else if (scenario==='red-recovery') {
     step='resolver-recovery'; peak=process.memoryUsage().rss; lastEvent=now();
     globalThis.__watchVirtualState.tryUpdateServerFnResolver('export async function getServerFnById() { throw new Error("stale resolver") }\n');
@@ -264,8 +265,11 @@ try {
     assert.ok(captured,'C -> C-prime -> C race exercised across the real resolver rebuild');
     await sample(base,'Public leaf baseline');
   } else {
-    const edits=scenario==='warm'?10:scenario==='red-overlap'?1:2;
-    for(let i=1;i<=edits;i++) await edit(`leaf-${i}`,'src/Leaf.tsx',i%2?baselineLeaf.replace('baseline','changed'):baselineLeaf,base,i%2?'Public leaf changed':'Public leaf baseline');
+    const edits=scenario==='warm'||measuring?10:scenario==='red-overlap'?1:2;
+    for(let i=1;i<=edits;i++) {
+      if(scenario==='warm-body') await edit(`body-${i}`,'src/functions.ts',i%2?baselineFns.replace('alpha-public','alpha-updated'):baselineFns,i%2?{...base,alpha:'alpha-updated'}:base);
+      else await edit(`leaf-${i}`,'src/Leaf.tsx',i%2?baselineLeaf.replace('baseline','changed'):baselineLeaf,base,i%2?'Public leaf changed':'Public leaf baseline');
+    }
     if(scenario==='correctness' || scenario==='aa-route') {
       const route=`import { createFileRoute } from '@tanstack/react-router';\nimport * as functions from '../functions';\nimport { Page } from '../Page';\nexport const Route = createFileRoute('/extra')({ loader:async()=>Object.fromEntries(await Promise.all(Object.entries(functions).sort(([a],[b])=>a.localeCompare(b)).map(async([name,fn])=>[name,await fn()]))), component: () => <Page title="Extra route" /> });\n`;
       await edit('lazy-route','src/routes/extra.tsx',route,base,undefined,[],undefined,true);
