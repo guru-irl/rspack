@@ -1,5 +1,7 @@
 name: Bench TanStack SSR concurrency
 on:
+  push:
+    branches: [bench/tanstack-ssr-concurrency]
   workflow_dispatch:
     inputs:
       mode:
@@ -21,7 +23,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Run public watch fixture
         env:
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ inputs.mode || 'red' }}
         run: |
           mkdir -p "$PWD/bench-results/tanstack-ssr-concurrency/tmp"
           export TMPDIR="$PWD/bench-results/tanstack-ssr-concurrency/tmp"
