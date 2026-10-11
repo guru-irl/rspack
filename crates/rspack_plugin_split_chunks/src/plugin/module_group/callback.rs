@@ -150,6 +150,7 @@ pub(super) struct Stage<'a> {
   pub(super) plugin: &'a SplitChunksPlugin,
   pub(super) combinator: &'a Combinator,
   pub(super) all_modules: &'a [ModuleIdentifier],
+  pub(super) module_names: &'a ModuleNames,
   pub(super) compilation: &'a Compilation,
   pub(super) module_chunks: &'a [SsoHashSet<ChunkUkey>],
   pub(super) module_group_map: &'a FxDashMap<ModuleGroupKey, ModuleGroup>,
