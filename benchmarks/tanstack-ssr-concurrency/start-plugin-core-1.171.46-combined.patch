@@ -49,7 +49,7 @@
  				}
  			});
  			registerImportProtection(api, {
-@@ -177,12 +212,30 @@
+@@ -177,12 +212,31 @@
  			if (!rscEnabled) api.modifyRspackConfig((config, utils) => {
  				if (!startCompilerServerEnvironmentNames.includes(utils.environment.name)) return;
  				config.plugins.push({ apply(compiler) {
@@ -75,13 +75,14 @@
 -						await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
 +						if (concurrentDev && compilation.compiler === ssrCompiler) ssrResolverRevision = resolverRevision;
 +						if (compilation.compiler !== compiler || lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) {
-+							await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++							const rebuilt = await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++							if (compilation.compiler === compiler && !rebuilt) lastBuiltResolverRevision = -1;
 +							// The buildModule snapshot, not the post-await revision, records what was read.
 +						}
  					});
  				} });
  			});
-@@ -243,13 +296,29 @@
+@@ -243,13 +297,30 @@
  							}
  						}));
  						config.plugins.push({ apply(compiler) {
@@ -106,13 +107,14 @@
  								virtualModuleState.tryUpdateServerFnResolver(resolverContent);
 -								await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
 +								if (compilation.compiler !== compiler || lastBuiltResolverRevision !== virtualModuleState.getResolverWriteRevision(utils.environment.name)) {
-+									await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++									const rebuilt = await rebuildModulesContaining(compilation, virtualModuleState.serverFnResolverPath);
++									if (compilation.compiler === compiler && !rebuilt) lastBuiltResolverRevision = -1;
 +									// The buildModule snapshot, not the post-await revision, records what was read.
 +								}
  							});
  						} });
  						if (api.context.action !== "dev") config.plugins.push({ apply(compiler) {
-@@ -273,6 +342,37 @@
+@@ -273,6 +344,37 @@
  				});
  			}
  			if (!rscEnabled) api.onAfterCreateCompiler(({ compiler }) => {
@@ -150,7 +152,7 @@
  				if ("compilers" in compiler) for (const environmentName of startCompilerServerEnvironmentNames) {
  					const serverCompiler = compiler.compilers.find((c) => c.name === environmentName);
  					if (serverCompiler) {
-@@ -317,7 +417,22 @@
+@@ -317,7 +419,22 @@
  				if (environment.name !== RSBUILD_ENVIRONMENT_NAMES.client) return;
  				virtualModuleState.updateServerFnResolver();
  				const clientBuild = getClientBuild();
@@ -174,6 +176,15 @@
  			});
  			if (api.context.action === "build") api.onAfterBuild(async () => {
  				const { startConfig } = getConfig();
+@@ -345,7 +462,7 @@
+ 			});
+ 		}));
+ 	}
+-	return rebuilds.length === 0 ? Promise.resolve() : Promise.all(rebuilds).then(() => void 0);
++	return rebuilds.length === 0 ? Promise.resolve(false) : Promise.all(rebuilds).then(() => true);
+ }
+ /**
+ * Return the realpath of every packages/<name>/dist directory in the
 --- a/dist/esm/rsbuild/virtual-modules.js
 +++ b/dist/esm/rsbuild/virtual-modules.js
 @@ -138,6 +138,7 @@
