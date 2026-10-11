@@ -48,6 +48,15 @@ jobs:
           python3 tools/deterministic-chunk-ids-size/paired-run.py
           python3 tools/deterministic-chunk-ids-size/summarize.py
           { uptime; free -h; df -h .; } > "$root/host-after.txt"
+      - name: Focused deterministic and ids cases
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          root="$PWD/.spider/scratch/ids-parity"
+          cp "$root/bindings/ids-size-$CANDIDATE/rspack.linux-x64-gnu.node" crates/node_binding/rspack.linux-x64-gnu.node
+          for filter in configCases/chunk-ids configCases/ids watchCases/chunk-ids configCases/hash-length/deterministic-module-ids configCases/optimization/compact-hashed-chunk-ids serialCases/container/deterministic-consume-shared; do
+            pnpm --dir tests/rspack-test run test --project base -t "$filter" > "$root/logs/focused-${filter//\//-}.log" 2>&1
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
