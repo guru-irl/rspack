@@ -38,16 +38,16 @@ jobs:
         run: |
           set -euo pipefail
           cargo codegen
-          pnpm run build:binding:dev
+          pnpm run build:binding:dev 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/build.log
           pnpm run build:js
       - name: Minimal barrel watch reproduction
         run: |
           set -euo pipefail
           SMOKE=1 BODY_ONLY=1 FIXTURE_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/fixture" RESULT_ROOT="$PWD/.spider/scratch/chunk-graph-barrel/diagnostic" node scripts/bench/chunk-graph-barrel/run.mjs > .spider/scratch/chunk-graph-barrel/diagnostic/stdout.log 2> .spider/scratch/chunk-graph-barrel/diagnostic/stderr.log
-      - name: Watch regression against baseline
+      - name: Watch regression with candidate fix
         run: |
           set -o pipefail
-          pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/bypassed-barrel-body-edit' 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/red.log
+          pnpm --dir tests/rspack-test run test:base -t 'watchCases/build-chunk-graph/bypassed-barrel-body-edit' 2>&1 | tee .spider/scratch/chunk-graph-barrel/diagnostic/green.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
