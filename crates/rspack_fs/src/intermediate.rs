@@ -12,6 +12,7 @@ pub trait IntermediateFileSystem:
 
 #[async_trait::async_trait]
 pub trait IntermediateFileSystemExtras: Debug + Send + Sync {
+  async fn prefetch(&self, _file: &Utf8Path) {}
   async fn rename(&self, from: &Utf8Path, to: &Utf8Path) -> Result<()>;
   async fn create_read_stream(&self, file: &Utf8Path) -> Result<Box<dyn ReadStream>>;
   async fn create_write_stream(&self, file: &Utf8Path) -> Result<Box<dyn WriteStream>>;

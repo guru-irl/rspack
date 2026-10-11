@@ -356,6 +356,25 @@ impl ReadableFileSystem for NativeFileSystem {
 
 #[async_trait::async_trait]
 impl IntermediateFileSystemExtras for NativeFileSystem {
+  async fn prefetch(&self, path: &Utf8Path) {
+    #[cfg(target_os = "linux")]
+    {
+      use std::os::fd::AsRawFd;
+      unsafe extern "C" {
+        fn posix_fadvise(fd: std::ffi::c_int, offset: i64, len: i64, advice: std::ffi::c_int) -> std::ffi::c_int;
+      }
+      let Ok(file) = std::fs::File::open(path) else { return; };
+      let Ok(meta) = file.metadata() else { return; };
+      let Ok(length) = i64::try_from(meta.len()) else { return; };
+      let mut offset = 0;
+      while offset < length {
+        let range = (length - offset).min(128 * 1024);
+        // SAFETY: the live file descriptor and checked range use no pointers.
+        if unsafe { posix_fadvise(file.as_raw_fd(), offset, range, 3) } != 0 { break; }
+        offset += range;
+      }
+    }
+  }
   #[instrument(skip(self), level = "debug")]
   async fn rename(&self, from: &Utf8Path, to: &Utf8Path) -> Result<()> {
     fs::rename(from, to).to_fs_result()
@@ -380,7 +399,8 @@ pub struct NativeReadStream(BufReader<File>);
 impl NativeReadStream {
   pub fn try_new(file: &Utf8Path) -> Result<Self> {
     let file = File::open(file).to_fs_result()?;
-    Ok(Self(BufReader::new(file)))
+    let capacity = if std::env::var_os("BENCH_STORAGE_IO").is_some() { 128 * 1024 } else { 8 * 1024 };
+    Ok(Self(BufReader::with_capacity(capacity, file)))
   }
 }
 

@@ -57,6 +57,56 @@ impl Bucket {
   pub async fn load_all(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut result = self.hot_pack.clone().data();
 
+    if std::env::var_os("BENCH_STORAGE_PREFETCH").is_some() {
+      for pack_id in self.meta.cold_pack_indexes().keys() {
+        self.fs.prefetch(pack_id.pack_name()).await;
+      }
+    }
+    if std::env::var_os("BENCH_STORAGE_IO").is_some() && !self.meta.cold_pack_indexes().is_empty() {
+      let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(16)
+        .max_blocking_threads(1)
+        .thread_stack_size(256 * 1024)
+        .thread_name("storage-io")
+        .enable_all()
+        .build()
+        .expect("create measurement IO runtime");
+      let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+      let queue = std::sync::Arc::new(std::sync::Mutex::new(
+        self.meta.cold_pack_indexes().iter().map(|(id, index)| (*id, index.content_hash())).collect::<Vec<_>>().into_iter()
+      ));
+      let mut handles = Vec::new();
+      for _ in 0..16 {
+        let tx = tx.clone();
+        let queue = queue.clone();
+        let fs = self.fs.clone();
+        handles.push(runtime.spawn(async move {
+          loop {
+            let item = queue.lock().expect("IO work queue").next();
+            let Some((id, expected)) = item else { break; };
+            let pack = match Pack::load(&fs, id).await {
+              Ok((pack, hash)) if hash == expected => Ok(pack),
+              Ok((_, hash)) => Err(Error::CorruptedData(format!("Pack '{}' content hash mismatch: expected {}, got {}", id.pack_name(), expected, hash))),
+              Err(error) => Err(error),
+            };
+            if tx.send(pack).await.is_err() { break; }
+          }
+        }));
+      }
+      drop(tx);
+      let mut error = None;
+      while let Some(pack) = rx.recv().await {
+        match pack {
+          Ok(pack) if error.is_none() => result.extend(pack.data()),
+          Err(e) if error.is_none() => { error = Some(e); rx.close(); },
+          _ => {},
+        }
+      }
+      for handle in handles { handle.await.expect("measurement IO worker"); }
+      runtime.shutdown_background();
+      if let Some(error) = error { return Err(error); }
+      return Ok(result);
+    }
     // Load and verify all cold packs
     self
       .meta

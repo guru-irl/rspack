@@ -133,6 +133,10 @@ impl ScopeFileSystem {
     Ok(data)
   }
 
+  pub async fn prefetch(&self, relative_path: impl AsRef<Utf8Path>) {
+    self.fs.prefetch(&self.workspace.join(relative_path)).await;
+  }
+
   /// Creates a file read stream (for large files)
   pub async fn stream_read(&self, relative_path: impl AsRef<Utf8Path>) -> Result<Reader> {
     let path = self.workspace.join(relative_path);
