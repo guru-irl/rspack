@@ -1,0 +1,159 @@
+name: New Cache Value Compression Checks
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact production commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [main, branch]
+        host: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.host }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_PROFILE_RELEASE_STRIP: none
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || inputs.source_ref }}
+          path: source
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: source/package.json
+      - name: Build exact source release binding
+        working-directory: source
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.host == 'ubuntu-24.04' && 'x86_64-unknown-linux-gnu' || 'aarch64-apple-darwin' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp bundle
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          elif [[ "$(readlink "$HOME/.cargo/bin/rustup" || true)" == */rustup-init ]]; then
+            rustup-init -y --default-toolchain none
+          fi
+          pnpm install --frozen-lockfile
+          rustup component add rust-src
+          cargo codegen
+          pnpm run build:binding:release
+          if [[ "$RUNNER_OS" == Linux ]]; then strip --strip-all crates/node_binding/*.node; else strip -x crates/node_binding/*.node; fi
+          pnpm --filter @rspack/core run build
+          python3 ../harness/scripts/newcache-value-compression/package.py
+          cargo tree -p rspack_core -e features > bundle/dependencies.txt
+          git diff --exit-code
+          tar -czf bundle/runtime.tar.gz packages/rspack/dist packages/rspack/compiled packages/rspack/package.json packages/rspack/hot crates/node_binding/binding.js crates/node_binding/package.json crates/node_binding/*.node
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binding-${{ matrix.host }}-${{ matrix.arm }}
+          path: source/bundle
+          if-no-files-found: error
+  measure:
+    needs: build
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binding-${{ matrix.host }}-*
+          path: artifacts
+      - name: Prepare source runtimes and footprint helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spider/scratch/tmp results
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          for arm in main branch; do
+            mkdir -p "runtime/$arm/node_modules/@rspack" "runtime/$arm/packages/rspack/node_modules/@rspack"
+            tar -xzf "artifacts/binding-${{ matrix.host }}-$arm/runtime.tar.gz" -C "runtime/$arm"
+            ln -s "$PWD/runtime/$arm/crates/node_binding" "runtime/$arm/node_modules/@rspack/binding"
+            ln -s "$PWD/runtime/$arm/crates/node_binding" "runtime/$arm/packages/rspack/node_modules/@rspack/binding"
+          done
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            curl -fsSL "https://nodejs.org/dist/$(node -p process.version)/node-$(node -p process.version)-headers.tar.gz" -o .spider/scratch/headers.tar.gz
+            tar -xzf .spider/scratch/headers.tar.gz -C .spider/scratch
+            clang -O2 -shared -undefined dynamic_lookup -I".spider/scratch/node-$(node -p process.version)/include/node" scripts/newcache-value-compression/memory.c -o scripts/newcache-value-compression/memory.node
+          fi
+      - name: Cross-build decode failures are misses
+        shell: bash
+        run: TMPDIR="$PWD/.spider/scratch/tmp" python3 scripts/newcache-value-compression/cross-build.py
+      - name: Warm-start sanity, five interleaved pairs
+        shell: bash
+        run: |
+          TMPDIR="$PWD/.spider/scratch/tmp" python3 scripts/newcache-value-compression/series.py
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sanity-${{ matrix.host }}
+          path: |
+            results
+            cross-build-results
+          if-no-files-found: error
+  size-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [main, branch]
+    uses: ./.github/workflows/reusable-build-build.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      runner: '"ubuntu-24.04"'
+      profile: ci
+      ref: ${{ matrix.arm == 'main' && 'f2903b6482cb7a0fcdca912d23062bd94d3d5636' || inputs.source_ref }}
+      binding_postfix: -${{ matrix.arm }}
+  size-limit:
+    name: Binary Size Limit
+    needs: size-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bindings-x86_64-unknown-linux-gnu-*
+          path: artifacts
+      - name: Strip and enforce 51,200-byte growth limit against exact merge base
+        shell: bash
+        run: |
+          set -euo pipefail
+          strip artifacts/*/*.node
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          a = next(Path('artifacts/bindings-x86_64-unknown-linux-gnu-main').glob('*.node')).stat().st_size
+          b = next(Path('artifacts/bindings-x86_64-unknown-linux-gnu-branch').glob('*.node')).stat().st_size
+          result = {'base': 'f2903b6482cb7a0fcdca912d23062bd94d3d5636', 'head': '${{ inputs.source_ref }}', 'main_bytes': a, 'branch_bytes': b, 'growth_bytes': b-a, 'limit_bytes': 51200, 'passed': b-a <= 51200}
+          Path('size.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result))
+          if not result['passed']: raise SystemExit('Binary Size Limit exceeded')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binary-size
+          path: size.json
