@@ -597,6 +597,15 @@ impl CodeSplitter {
       return true;
     }
 
+    if module.to_string().contains("/controls/") {
+      eprintln!("CONTROL_DIAG module={module} chunks={} prepared_equal={}", compilation.build_chunk_graph_artifact.chunk_graph.get_number_of_module_chunks(module), self.prepared_connection_map.get(&module).is_some_and(|cached| current_connections_by_block.get(&module_block) == Some(cached)));
+      for (runtime, block_modules) in &self.block_modules_runtime_map {
+        for connection in module_graph.get_incoming_connections(&module) {
+          eprintln!("CONTROL_DIAG parent={:?} state={:?} cached_parent={}", connection.original_module_identifier, connection.active_state(module_graph, runtime.as_deref(), module_graph_cache, side_effects_state_artifact, exports_info_artifact), connection.original_module_identifier.is_some_and(|parent| block_modules.contains_key(&DependenciesBlockIdentifier::Module(parent))));
+        }
+      }
+    }
+
     // Side-effect optimization can bypass a barrel entirely. Preparation still
     // records its connections, but chunk traversal never caches a runtime root.
     // Reuse only unchanged, synchronous outgoings with no active incoming from
