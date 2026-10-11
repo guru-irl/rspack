@@ -51,7 +51,7 @@ const probe = { name: 'watch-observer', setup(api) {
         });
         compilation.hooks.processAssets.tap({ name: 'WatchObserver', stage: 6000 }, () => {
           for(const asset of compilation.getAssets()) {if(asset.name==='assets/js/index.js') fs.writeFileSync(path.join(out,`${step}-client-entry.txt`),String(asset.source.source()));}
-          record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => ({ name: a.name, bytes: a.source.size(), hash: hash(String(a.source.source())) })).sort((a,b) => a.name.localeCompare(b.name));
+          record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => ({ name: a.name, bytes: a.source.size(), hash:hash(String(a.source.source())), normalizedHash:hash(String(a.source.source()).replace(/(__webpack_require__\.h = \(\) => \(")[0-9a-f]+("\))/g,'$1<FULL_HASH>$2')) })).sort((a,b) => a.name.localeCompare(b.name));
         });
       });
       compiler.hooks.done.tap({ name: 'WatchObserver', stage: 10000 }, stats => {

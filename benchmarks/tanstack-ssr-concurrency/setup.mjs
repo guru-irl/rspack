@@ -68,7 +68,7 @@ if(mode==='red-aba') {const r=execute('barrier','red-aba',0);failed=r.status!==0
     for(const check of visible(stock)) {
      const output=r=>JSON.parse(fs.readFileSync(path.join(r.result,`${check.step}-outputs.json`)));
      const a=output(stock), b=output(r);
-     for(const env of ['client','ssr']) {assert.deepEqual(b[env].modules,a[env].modules,`${r.arm} ${check.step}: ${env} final module-output parity`);assert.deepEqual(b[env].assets,a[env].assets,`${r.arm} ${check.step}: ${env} emitted asset hash parity`);}
+     for(const env of ['client','ssr']) {assert.deepEqual(b[env].modules,a[env].modules,`${r.arm} ${check.step}: ${env} final module-output parity`);const stable=assets=>assets.map(({hash,...rest})=>rest);assert.deepEqual(stable(b[env].assets),stable(a[env].assets),`${r.arm} ${check.step}: ${env} emitted asset parity after full-hash normalization`);}
     }
    }
    fs.writeFileSync(path.join(work,'parity.json'),JSON.stringify({passed:true,steps:visible(stock).length}));
