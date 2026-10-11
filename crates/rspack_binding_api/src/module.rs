@@ -31,7 +31,7 @@ use crate::{
   define_symbols,
   dependency::DependencyWrapper,
   modules::{ConcatenatedModule, ContextModule, ExternalModule, NormalModule},
-  shared_properties::define_shared_properties,
+  shared_properties::{define_shared_properties, get_shared_properties},
   source::{JsSourceFromJs, JsSourceToJs},
 };
 
@@ -204,21 +204,8 @@ fn module_build_info_setter(ctx: CallContext) -> napi::Result<()> {
   Ok(())
 }
 
-pub(crate) fn define_module_properties(
-  env: &Env,
-  instance: &mut impl DerivedModule,
-  object: &mut Object,
-  properties: &mut Vec<Property>,
-) -> napi::Result<()> {
-  instance.as_module().with_ref(|_, module| {
-    properties.push(
-      Property::new()
-        .with_utf8_name("type")?
-        .with_value(&env.create_string(module.module_type().as_str())?),
-    );
-    object.define_properties(properties)?;
-    properties.clear();
-    define_shared_properties::<Module>(env, *object, || {
+pub(crate) fn module_shared_properties(env: &Env) -> napi::Result<Object<'_>> {
+  get_shared_properties::<Module>(env, || {
       Ok(vec![
         Property::new()
           .with_utf8_name("context")?
@@ -241,7 +228,29 @@ pub(crate) fn define_module_properties(
           .with_getter(module_build_info_getter)
           .with_setter(module_build_info_setter),
       ])
-    })?;
+  })
+
+}
+
+pub(crate) fn define_module_properties(
+  env: &Env,
+  instance: &mut impl DerivedModule,
+  object: &mut Object,
+  properties: &mut Vec<Property>,
+) -> napi::Result<()> {
+  instance.as_module().with_ref(|_, module| {
+    properties.push(
+      Property::new()
+        .with_utf8_name("type")?
+        .with_value(&env.create_string(module.module_type().as_str())?),
+    );
+    object.define_properties(properties)?;
+    properties.clear();
+    let shared = module_shared_properties(env)?;
+    let define: Function<FnArgs<(Object, Object)>, Object> =
+      shared.get_named_property("defineProperties")?;
+    let descriptors: Object = shared.get_named_property("descriptors")?;
+    define.call((*object, descriptors).into())?;
     properties.push(
       Property::new()
         .with_utf8_name("buildMeta")?

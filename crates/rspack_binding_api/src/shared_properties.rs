@@ -20,6 +20,19 @@ pub(crate) fn define_shared_properties<T: 'static>(
   object: Object<'_>,
   create: impl FnOnce() -> napi::Result<Vec<Property>>,
 ) -> napi::Result<()> {
+  let shared = get_shared_properties::<T>(env, create)?;
+  // Release the cache borrow before entering JavaScript.
+  let define_properties: Function<FnArgs<(Object, Object)>, Object> =
+    shared.get_named_property("defineProperties")?;
+  let descriptors: Object = shared.get_named_property("descriptors")?;
+  define_properties.call((object, descriptors).into())?;
+  Ok(())
+}
+
+pub(crate) fn get_shared_properties<T: 'static>(
+  env: &Env,
+  create: impl FnOnce() -> napi::Result<Vec<Property>>,
+) -> napi::Result<Object<'_>> {
   let key = (env.raw(), TypeId::of::<T>());
   let cached = SHARED_PROPERTIES.with_borrow(|cache| {
     cache
@@ -62,10 +75,5 @@ pub(crate) fn define_shared_properties<T: 'static>(
       shared
     }
   };
-  // Release the cache borrow before entering JavaScript.
-  let define_properties: Function<FnArgs<(Object, Object)>, Object> =
-    shared.get_named_property("defineProperties")?;
-  let descriptors: Object = shared.get_named_property("descriptors")?;
-  define_properties.call((object, descriptors).into())?;
-  Ok(())
+  Ok(shared)
 }

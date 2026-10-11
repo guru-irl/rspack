@@ -1,6 +1,6 @@
 use napi::{
   CallContext, Either, JsObject, JsString, NapiRaw,
-  bindgen_prelude::{FromNapiMutRef, Object, ToNapiValue},
+  bindgen_prelude::{FnArgs, FromNapiValue, FromNapiMutRef, Function, JavaScriptClassExt, JsObjectValue, Object, ToNapiValue},
 };
 use rspack_core::{ResourceData, ResourceParsedData, parse_resource};
 use rspack_error::Diagnosable;
@@ -9,10 +9,9 @@ use crate::{
   diagnostic,
   error::RspackError,
   impl_module_methods,
-  module::{MODULE_PROPERTIES_BUFFER, Module},
-  plugins::JsLoaderItem,
+  module::{MODULE_IDENTIFIER_SYMBOL, Module, module_shared_properties},
   resource_data::ReadonlyResourceDataWrapper,
-  shared_properties::define_shared_properties,
+  shared_properties::get_shared_properties,
 };
 
 #[napi]
@@ -43,16 +42,15 @@ impl NormalModule {
             ReadonlyResourceDataWrapper::from(resource_resolved_data.clone()),
           )?
         });
-        let loaders = Object::from_raw(env.raw(), unsafe {
-          ToNapiValue::to_napi_value(
-            env.raw(),
-            module
-              .loaders()
-              .iter()
-              .map(JsLoaderItem::from)
-              .collect::<Vec<_>>(),
-          )?
-        });
+        // The eager loader snapshot contains only two varying strings. Transfer
+        // them together; the installer recreates the same seven own data fields.
+        let loaders = module.loaders().iter().map(|loader| {
+          let identifier = loader.identifier();
+          let (loader_type, request) = identifier.split_once('|').unwrap_or(("", identifier));
+          (request, loader_type)
+        }).collect::<Vec<_>>();
+        let loaders = serde_json::to_string(&loaders).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        let loaders = env.create_string(&loaders)?;
 
         Ok((
           resource,
@@ -64,45 +62,50 @@ impl NormalModule {
         ))
       })?;
 
-    MODULE_PROPERTIES_BUFFER.with(|ref_cell| {
-      let mut properties = ref_cell.borrow_mut();
-      properties.clear();
-
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("resource")?
-          .with_value(&resource),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("request")?
-          .with_value(&request),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("userRequest")?
-          .with_value(&user_request),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("rawRequest")?
-          .with_value(&raw_request),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("resourceResolveData")?
-          .with_value(&resource_resolve_data),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("loaders")?
-          .with_value(&loaders),
-      );
-      Self::new_inherited(self, env, &mut properties)
-    })
+    let (module_type, identifier) = self.module.with_ref(|_, module| {
+      Ok((
+        env.create_string(module.module_type().as_str())?,
+        env.create_string(module.identifier().as_str())?,
+      ))
+    })?;
+    let base = module_shared_properties(env)?;
+    let derived = Self::shared_properties(env)?;
+    let base_descriptors: Object = base.get_named_property("descriptors")?;
+    let derived_descriptors: Object = derived.get_named_property("descriptors")?;
+    let install: Function<FnArgs<(Object, napi::JsString, napi::JsString, napi::JsString, napi::JsString, Object, napi::JsString, napi::JsString, Object, Object, Object, napi::JsString, napi::Unknown)>, ()> =
+      match derived.get_named_property::<Option<Function<napi::Unknown, ()>>>("install")? {
+        Some(_) => derived.get_named_property("install")?,
+        None => {
+          let install: Function<napi::Unknown, ()> = env.run_script(include_str!("normal_module_install.js"))?;
+          let mut derived = derived;
+          derived.set_named_property("install", install)?;
+          derived.get_named_property("install")?
+        }
+      };
+    let instance = self.into_instance(env)?;
+    MODULE_IDENTIFIER_SYMBOL.with(|symbol| {
+      #[allow(clippy::unwrap_used)]
+      let symbol = unsafe {
+        napi::Unknown::from_napi_value(env.raw(), ToNapiValue::to_napi_value(env.raw(), symbol.get().unwrap())?)?
+      };
+      install.call((
+        instance.as_object(env), resource, request, user_request, raw_request,
+        resource_resolve_data, loaders, module_type, derived_descriptors,
+        base_descriptors, Object::new(env)?, identifier, symbol,
+      ).into())
+    })?;
+    Ok(instance)
   }
 
   fn define_shared_properties(env: &napi::Env, object: Object<'_>) -> napi::Result<()> {
+    let shared = Self::shared_properties(env)?;
+    let define: Function<FnArgs<(Object, Object)>, Object> = shared.get_named_property("defineProperties")?;
+    let descriptors: Object = shared.get_named_property("descriptors")?;
+    define.call((object, descriptors).into())?;
+    Ok(())
+  }
+
+  fn shared_properties(env: &napi::Env) -> napi::Result<Object<'_>> {
     #[js_function]
     pub fn match_resource_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>, ()>> {
       let this = ctx.this_unchecked::<JsObject>();
@@ -158,7 +161,7 @@ impl NormalModule {
       })
     }
 
-    define_shared_properties::<Self>(env, object, || {
+    get_shared_properties::<Self>(env, || {
       Ok(vec![
         napi::Property::new()
           .with_utf8_name("matchResource")?

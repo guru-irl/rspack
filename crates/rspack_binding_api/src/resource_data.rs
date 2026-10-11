@@ -1,10 +1,9 @@
 use std::{
-  cell::RefCell,
   sync::{Arc, Weak},
 };
 
 use napi::{
-  Env, JsValue, Property,
+  Env, JsValue,
   bindgen_prelude::{JavaScriptClassExt, JsObjectValue, ToNapiValue},
   sys::napi_value,
 };
@@ -60,9 +59,6 @@ pub struct ReadonlyResourceDataWrapper {
   i: Arc<rspack_core::ResourceData>,
 }
 
-thread_local! {
-  static RESOURCE_DATA_PROPERTIES_BUFFER: RefCell<Vec<Property>> = const { RefCell::new(Vec::new()) };
-}
 
 impl ToNapiValue for ReadonlyResourceDataWrapper {
   unsafe fn to_napi_value(
@@ -78,37 +74,16 @@ impl ToNapiValue for ReadonlyResourceDataWrapper {
     let instance = template.into_instance(&env_wrapper)?;
     let mut object = instance.as_object(&env_wrapper);
 
-    RESOURCE_DATA_PROPERTIES_BUFFER.with(|ref_cell| {
-      let mut properties = ref_cell.borrow_mut();
-      properties.clear();
-      properties.push(
-        Property::new()
-          .with_utf8_name("resource")?
-          .with_value(&env_wrapper.create_string(resource_data.resource())?),
-      );
-      if let Some(path) = resource_data.path() {
-        properties.push(
-          Property::new()
-            .with_utf8_name("path")?
-            .with_value(&env_wrapper.create_string(path.as_str())?),
-        );
-      }
-      if let Some(query) = resource_data.query() {
-        properties.push(
-          Property::new()
-            .with_utf8_name("query")?
-            .with_value(&env_wrapper.create_string(query)?),
-        );
-      }
-      if let Some(fragment) = resource_data.fragment() {
-        properties.push(
-          Property::new()
-            .with_utf8_name("fragment")?
-            .with_value(&env_wrapper.create_string(fragment)?),
-        );
-      }
-      object.define_properties(&properties)
-    })?;
+    object.set_named_property("resource", resource_data.resource())?;
+    if let Some(path) = resource_data.path() {
+      object.set_named_property("path", path.as_str())?;
+    }
+    if let Some(query) = resource_data.query() {
+      object.set_named_property("query", query)?;
+    }
+    if let Some(fragment) = resource_data.fragment() {
+      object.set_named_property("fragment", fragment)?;
+    }
 
     Ok(object.raw())
   }
