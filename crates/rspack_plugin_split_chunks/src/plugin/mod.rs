@@ -1,3 +1,4 @@
+mod stage0;
 mod bitmap;
 mod chunk;
 mod intersections;
@@ -232,6 +233,7 @@ impl SplitChunksPlugin {
         .map(|cache_group| cache_group.cache_group.min_chunks as usize)
         .min();
 
+      let combination_timer = logger.time("stage0 combinator");
       if let Some(min_chunks) = non_used_exports_min_chunks {
         combinator.prepare_group_by_chunks(
           &all_modules,
@@ -266,6 +268,8 @@ impl SplitChunksPlugin {
         );
       }
 
+      logger.time_end(combination_timer);
+      let matching_timer = logger.time("stage0 matching total");
       let mut module_group_map = self
         .prepare_module_group_map(
           &combinator,
@@ -276,6 +280,8 @@ impl SplitChunksPlugin {
           &chunk_index_map,
         )
         .await?;
+      logger.time_end(matching_timer);
+      let size_timer = logger.time("stage0 candidate initial sizes");
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
       module_group_map
@@ -283,9 +289,13 @@ impl SplitChunksPlugin {
         .for_each(|(_, module_group)| module_group.prepare_modules_for_sizes_and_compare());
       self.ensure_min_size_fit(&mut module_group_map, &module_sizes);
 
+      logger.time_end(size_timer);
       while !module_group_map.is_empty() {
+        let selection_timer = logger.time("stage0 candidate selection");
         let (module_group_key, mut module_group) =
           self.find_best_module_group(&mut module_group_map);
+        logger.time_end(selection_timer);
+        let _application_timer = stage0::Span::new(compilation, "stage0 split application");
 
         tracing::trace!(
           "ModuleGroup({}) wins, {:?} `ModuleGroup` remains",
@@ -513,12 +523,14 @@ impl SplitChunksPlugin {
 
         self.split_from_original_chunks(&module_group, &used_chunks, new_chunk, compilation);
 
+        let update_timer = logger.time("stage0 candidate updates");
         self.remove_all_modules_from_other_module_groups(
           &placed_module_chunks,
           &mut module_group_map,
           &module_sizes,
         );
 
+        logger.time_end(update_timer);
         if index != priority_len - 1 {
           match &placed_module_chunks {
             ModuleChunkMap::Shared { modules, chunks } => {

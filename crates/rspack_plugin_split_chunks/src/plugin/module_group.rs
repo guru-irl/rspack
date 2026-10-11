@@ -904,6 +904,7 @@ impl SplitChunksPlugin {
     module_chunks: &[SsoHashSet<ChunkUkey>],
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
   ) -> Result<ModuleGroupMap> {
+    let names_probe = super::stage0::Names::default();
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
     // Only function filters use this preparation-scoped memo. Native-only
@@ -995,18 +996,13 @@ impl SplitChunksPlugin {
         }
 
         let is_match = match &cache_group.test {
-          CacheGroupTest::String(test) => module
-            .name_for_condition()
+          CacheGroupTest::String(test) => names_probe.get(module, module_identifier)
             .is_some_and(|name| name.starts_with(test)),
-          CacheGroupTest::RegExp(test) => module
-            .name_for_condition()
+          CacheGroupTest::RegExp(test) => names_probe.get(module, module_identifier)
             .is_some_and(|name| test.test(&name)),
-          CacheGroupTest::Fn(test) => test(CacheGroupTestFnCtx {
-            compilation,
-            module,
-          })
-          .await?
-          .unwrap_or_default(),
+          CacheGroupTest::Fn(test) => {
+            test(CacheGroupTestFnCtx { compilation, module }).await?.unwrap_or_default()
+          },
           CacheGroupTest::Enabled => true,
         };
         if !is_match || belong_to_chunks.len() < cache_group.min_chunks as usize {
@@ -1185,6 +1181,7 @@ impl SplitChunksPlugin {
       Ok(())
     };
 
+    let _matching_timer = super::stage0::Span::new(compilation, if use_native_preparation { "stage0 matching native" } else { "stage0 matching JS-bearing" });
     if use_native_preparation {
       all_modules
         .par_iter()
@@ -1242,6 +1239,9 @@ impl SplitChunksPlugin {
       }
     }
 
+    drop(_matching_timer);
+    names_probe.report(compilation);
+    let _assembly_timer = super::stage0::Span::new(compilation, "stage0 matching assembly");
     let module_group_count = module_group_map.len();
     let mut result = Vec::with_capacity(module_group_count);
     result.extend(module_group_map);
