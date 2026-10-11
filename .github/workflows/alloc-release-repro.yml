@@ -83,4 +83,10 @@ jobs:
           path: |
             .spider/scratch/alloc-release/results
             !.spider/scratch/alloc-release/results/**/output/**
+            !.spider/scratch/alloc-release/results/**/node_modules/**
+            !.spider/scratch/alloc-release/results/**/*.node
+            !.spider/scratch/alloc-release/results/**/*.wasm
+            !.spider/scratch/alloc-release/results/**/*.dll
+            !.spider/scratch/alloc-release/results/**/*.so
+            !.spider/scratch/alloc-release/results/**/*.dylib
           retention-days: 30
