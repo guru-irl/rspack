@@ -17,7 +17,7 @@ jobs:
           - arm: 'off'
             ref: 2e71aeb6b7ee402571fb72a380cadbeaf3457d2d
           - arm: 'on'
-            ref: 5d27d821b69d1619412ae17a22dc7be937b79561
+            ref: 2f96511b69597aa5da17224b007a03b1fc897100
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
