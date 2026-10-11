@@ -27,7 +27,7 @@ const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, 
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
 const probe = { name: 'watch-observer', setup(api) {
-  
+
   api.modifyRspackConfig((config, { environment }) => {
     config.devtool = false;
     if(scenario==='r2-topology'&&environment.name==='ssr')config.dependencies=['client'];

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -21,9 +22,11 @@ const execute=(arm,scenario,index)=>{
  if(arm!=='stock') {
   const patchFile=arm==='v2'?path.join(root,'benchmarks/tanstack-topology/start-plugin-core-1.171.46-gate-resolver-rebuild-v2.patch'):path.join(fixture,'start-plugin-core-1.171.46-combined.patch');
   const apply=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',patchFile],{cwd:pkg,encoding:'utf8'});
-  fs.writeFileSync(path.join(result,'patch-apply.log'),apply.stdout+apply.stderr); assert.equal(apply.status,0,'pristine dist patch applies');
+  fs.writeFileSync(path.join(result,'patch-apply.log'),apply.stdout+apply.stderr); assert.equal(apply.status,0,'pristine dist patch applies');assert.ok(!/offset|fuzz|FAILED/i.test(apply.stdout+apply.stderr),'clean apply without offsets or fuzz');
  }
+ const expected=arm==='stock'?{ 'plugin.js':'c892ae8404c1e30a2f409fcf1890713453fd465b9a515a5d5a8e685160d1e63b','virtual-modules.js':'8b1aca7c277767ae7a84cb63057b34d4e2dc1b7b90e150a2bb9cf47a4c3bc8a6' }:{ 'plugin.js':'56bd14547f2699be2254e2e5b3fd87b056fe03f44bb51394addfb1b1bf66ea70','virtual-modules.js':'34f09ce17dd6cfef606c8a30f3b651df92f45fc4dcb278251fefee5727690ddb' };
  for(const file of ['plugin.js','virtual-modules.js']) {
+  if(arm!=='v2')assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,file))).digest('hex'),expected[file],`${file}: pristine/patched output byte-for-byte hash`);
   const checked=spawnSync('node',['--check',path.join(dist,file)],{encoding:'utf8'});
   fs.writeFileSync(path.join(result,`${file}-syntax.log`),checked.stdout+checked.stderr);assert.equal(checked.status,0,`${file}: syntax`);
   fs.copyFileSync(path.join(dist,file),path.join(result,`unobserved-${file}`));
@@ -72,7 +75,11 @@ if(mode==='r2-measure') {
  process.exit(0);
 }
 
-if(mode==='r2-extra') {
+if(mode==='r2-final') {
+ for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes'],['barrier','r2-topology']]) {const r=execute(arm,scenario,0);assert.equal(r.status,0,'focused final case');}
+ for(const arm of ['barrier','gate-only','after-make','overlap'])for(const scenario of ['r2-read','red-aba','red-recovery','no-resolver']) {const r=execute(arm,scenario,0);assert.equal(r.status,0,'final resolver convergence');}
+ for(const arm of ['invalid-mode','invalid-switch']){const r=execute(arm,'cold',0);assert.equal(r.status,0,'final exact env logging');}
+} else if(mode==='r2-extra') {
  for(const arm of ['barrier','gate-only','after-make','overlap']) {const r=execute(arm,'r2-read',0);if(r.status!==0)failed=true;}
  const r=execute('barrier','r2-topology',0);if(r.status!==0)failed=true;
 } else if(mode==='r2-matrix') {
@@ -99,7 +106,7 @@ if(mode==='r2-extra'||mode==='r2-red'||mode==='r2-green') {} else if(mode==='sup
 } else {
  const reps=mode==='measure'||mode==='final'?10:1;
  for(let i=0;i<reps;i++) {
-  const arms=mode==='r2-matrix'?['stock','gate-only','barrier','after-make','overlap']:i%2?['overlap','after-make','barrier','stock']:['stock','barrier','after-make','overlap'];
+  const arms=(mode==='r2-matrix'||mode==='r2-final')?['stock','gate-only','barrier','after-make','overlap']:i%2?['overlap','after-make','barrier','stock']:['stock','barrier','after-make','overlap'];
   const results=arms.map(arm=>({...execute(arm,mode==='measure'||mode==='final'&&i>0?'warm':'correctness',i),arm}));
   if(results.some(r=>r.status!==0)) {failed=true;break;}
   if(mode!=='measure' && (mode!=='final'||i===0)) {
