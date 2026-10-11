@@ -36,6 +36,7 @@ jobs:
             bench-results/tanstack-ssr-concurrency/*/*.json
             bench-results/tanstack-ssr-concurrency/*/*.log
             bench-results/tanstack-ssr-concurrency/*/*.html
+            bench-results/tanstack-ssr-concurrency/*/*-entry.txt
             bench-results/tanstack-ssr-concurrency/*/process-time.txt
             bench-results/tanstack-ssr-concurrency/*.json
             bench-results/tanstack-ssr-concurrency/*.log
