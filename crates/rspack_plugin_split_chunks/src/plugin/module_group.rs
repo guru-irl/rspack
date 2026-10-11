@@ -271,6 +271,7 @@ async fn process_name_requests(
   cache_groups: &[IndexedCacheGroup<'_>],
   name_batch_getters: &[Option<SplitChunksNameBatchFn>],
   compilation: &Compilation,
+  callback_probe: &super::stage0::Callbacks,
 ) -> Result<()> {
   let module_graph = compilation.get_module_graph();
 
@@ -311,7 +312,9 @@ async fn process_name_requests(
           cache_group_key: &cache_group.key,
         })
         .collect();
+      let timer = callback_probe.name();
       let names = get_name(contexts).await?;
+      drop(timer);
       debug_assert_eq!(names.len(), run_end - run_start);
 
       for (request, name) in requests[run_start..run_end].iter_mut().zip(names) {
@@ -905,6 +908,7 @@ impl SplitChunksPlugin {
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
   ) -> Result<ModuleGroupMap> {
     let names_probe = super::stage0::Names::default();
+    let callback_probe = super::stage0::Callbacks::default();
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
     // Only function filters use this preparation-scoped memo. Native-only
@@ -996,11 +1000,10 @@ impl SplitChunksPlugin {
         }
 
         let is_match = match &cache_group.test {
-          CacheGroupTest::String(test) => names_probe.get(module, module_identifier)
-            .is_some_and(|name| name.starts_with(test)),
-          CacheGroupTest::RegExp(test) => names_probe.get(module, module_identifier)
-            .is_some_and(|name| test.test(&name)),
+          CacheGroupTest::String(test) => names_probe.test(module, module_identifier, |name| name.starts_with(test)),
+          CacheGroupTest::RegExp(test) => names_probe.test(module, module_identifier, |name| test.test(&name)),
           CacheGroupTest::Fn(test) => {
+            let _timer = callback_probe.test();
             test(CacheGroupTestFnCtx { compilation, module }).await?.unwrap_or_default()
           },
           CacheGroupTest::Enabled => true,
@@ -1087,7 +1090,9 @@ impl SplitChunksPlugin {
               // Failed/cancelled initializations leave the cell empty for retries.
               let selected = selected
                 .get_or_try_init(|| async {
+                  let callback_probe = &callback_probe;
                   let chunks = join_all(chunk_combination.iter().map(|chunk| async move {
+                    let _timer = callback_probe.chunks();
                     cache_group
                       .chunk_filter
                       .test_func(chunk, compilation)
@@ -1153,6 +1158,7 @@ impl SplitChunksPlugin {
               ChunkNameGetter::String(name) => Some(name.clone()),
               ChunkNameGetter::Disabled => None,
               ChunkNameGetter::Fn(get_name) => {
+                let _timer = callback_probe.name();
                 let chunks = selected_chunks.iter().copied().collect::<Vec<_>>();
                 get_name(ChunkNameGetterFnCtx {
                   module,
@@ -1200,11 +1206,12 @@ impl SplitChunksPlugin {
               &cache_groups,
               name_batch_getters.expect("should have batch name getters"),
               compilation,
+              &callback_probe,
             ))
           };
           coordinator.spawn(
-            |(name_receiver, cache_groups, name_batch_getters, compilation)| async move {
-              process_name_requests(name_receiver, cache_groups, name_batch_getters, compilation)
+            |(name_receiver, cache_groups, name_batch_getters, compilation, callback_probe)| async move {
+              process_name_requests(name_receiver, cache_groups, name_batch_getters, compilation, callback_probe)
                 .await
             },
           );
@@ -1240,6 +1247,7 @@ impl SplitChunksPlugin {
     }
 
     drop(_matching_timer);
+    callback_probe.report(compilation);
     names_probe.report(compilation);
     let _assembly_timer = super::stage0::Span::new(compilation, "stage0 matching assembly");
     let module_group_count = module_group_map.len();
