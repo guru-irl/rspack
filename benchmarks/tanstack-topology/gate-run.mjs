@@ -160,8 +160,8 @@ try {
   await edit('remove', functionsFile, originalFunctions, base, 'delta');
   const body = originalFunctions.replace('alpha-public', 'alpha-body-public');
   await edit('body', functionsFile, body, { ...base, alpha: 'alpha-body-public' });
-  const renamed = body.replaceAll('gamma', 'epsilon');
-  await edit('rename', functionsFile, renamed, { alpha: 'alpha-body-public', beta: 'beta-public', epsilon: 'epsilon-public' }, 'gamma');
+  const renamed = body.replace('const gamma =', 'const epsilon =');
+  await edit('rename', functionsFile, renamed, { alpha: 'alpha-body-public', beta: 'beta-public', epsilon: 'gamma-public' }, 'gamma');
   const failedGate = checks.filter((c) => !c.gatePass);
   fs.writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ variant: process.env.VARIANT, checks: checks.length, failedGateSteps: failedGate.map((c) => c.step), passed: true }, null, 2));
 } finally {
