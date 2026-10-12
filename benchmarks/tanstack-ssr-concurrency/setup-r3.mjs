@@ -1,3 +1,4 @@
+import { checkShutdown } from './check-shutdown.mjs';
 import { staticCloseSites } from './static-close-sites.mjs';
 import { instrumentRestart } from './instrument-restart.mjs';
 import { instrumentJS } from './instrument-js.mjs';
@@ -60,6 +61,7 @@ fs.writeFileSync(path.join(work,'r2b-execution.json'),JSON.stringify(await execu
 fs.writeFileSync(path.join(work,'r3-topology.json'),JSON.stringify(topology(v3['plugin.js']),null,2));
 functionInventory(originals,v3,work);
 fs.writeFileSync(path.join(work,'r3-request-gate.json'),JSON.stringify(await requestGate(v3['plugin.js']),null,2));
+await checkShutdown(work);
 if(process.env.MODE==='r2b-red') process.exit(0);
 const execute=(arm,scenario,index)=>{
  const result=path.join(work,`${scenario}-${index}-${arm}`); fs.mkdirSync(result,{recursive:true});
@@ -103,6 +105,7 @@ const execute=(arm,scenario,index)=>{
  else if(process.env.MODE==='r3-restart-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentRestart(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
  else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  fs.copyFileSync(path.join(fixture,'runtime-css.mjs'),path.join(app,'runtime-css.mjs'));
+ fs.copyFileSync(path.join(fixture,'restart-shutdown.mjs'),path.join(app,'restart-shutdown.mjs'));
  if(scenario==='production') {
   fs.copyFileSync(path.join(fixture,'run-production.mjs'),path.join(app,'run-production.mjs'));
   const run=spawnSync('node',['run-production.mjs'],{cwd:app,env:{...process.env,NODE_ENV:'production',RESULT_DIR:result},encoding:'utf8',timeout:600000});

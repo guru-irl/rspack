@@ -1,3 +1,4 @@
+import { recordRestartShutdown } from './restart-shutdown.mjs';
 import fs from 'node:fs';
 import { runtimeCSS } from './runtime-css.mjs';
 import { createServer } from 'node:http';
@@ -15,6 +16,7 @@ const compilerNames=process.env.COMPILER_COUNT==='4'?['client','ssr','aux-a','au
 const userEdges=process.env.USER_EDGES || '';
 const measuring=scenario.startsWith('warm-')||scenario==='cold-measure';
 const customWindow=scenario==='r3-custom-request';
+const restartShutdown=scenario==='r2-restart'?recordRestartShutdown(path.join(out,'restart-shutdown.json')):undefined;
 const coldCloseTrigger=process.env.MODE==='r3-restart-diagnosis'&&['stock','gate-only'].includes(arm)?'client-finishMake':'ssr-watchRun';
 const requestWindowEnabled=customWindow||scenario==='r3-request'||scenario==='correctness';
 let windowRequest;
@@ -343,12 +345,12 @@ try {
     while(!events.some(e=>coldCloseTrigger==='client-finishMake'?e.name==='client'&&e.kind==='coldCloseTrigger':e.name==='ssr'&&e.kind==='watchRun')) {assert.ok(now()<deadline,`Cold close trigger reached: ${coldCloseTrigger}`);await pause(5);}
     console.log('[restart-window]',JSON.stringify({arm,pid:process.pid,trigger:coldCloseTrigger}));
     closeRequested=true;
-    await Promise.race([(server.close ? server.close() : server.server.close()),pause(5000).then(()=>{throw new Error('server.close did not resolve during the cold barrier')})]);
+    await Promise.race([restartShutdown?restartShutdown.restart(()=>server.close ? server.close() : server.server.close()):(server.close ? server.close() : server.server.close()),pause(5000).then(()=>{throw new Error('server.close did not resolve during the cold barrier')})]);
     server=undefined;
     if(scenario==='r2-restart') {
       closeRequested=true;active.clear();step='restart';lastEvent=now();
       server=await rsbuild.startDevServer();await waitIdle(2);
-      await sample(base,'Public leaf baseline');await (server.close ? server.close() : server.server.close());server=undefined;
+      await sample(base,'Public leaf baseline');await restartShutdown.final(()=>server.close ? server.close() : server.server.close());server=undefined;
     }
     fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,closed:true}));
     clearInterval(timer);fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events));process.exit(0);
