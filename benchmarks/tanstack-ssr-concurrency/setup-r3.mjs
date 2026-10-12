@@ -98,6 +98,7 @@ const execute=(arm,scenario,index)=>{
    else if(process.env.MODE==='r3-css-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentCSS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
   else if(process.env.MODE==='r3-js-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentJS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
  else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
+ fs.copyFileSync(path.join(fixture,'runtime-css.mjs'),path.join(app,'runtime-css.mjs'));
  if(scenario==='production') {
   fs.copyFileSync(path.join(fixture,'run-production.mjs'),path.join(app,'run-production.mjs'));
   const run=spawnSync('node',['run-production.mjs'],{cwd:app,env:{...process.env,NODE_ENV:'production',RESULT_DIR:result},encoding:'utf8',timeout:600000});
@@ -174,6 +175,8 @@ const parity=(results,label)=>{
   for(const check of visible(reference)) {
    const load=r=>JSON.parse(fs.readFileSync(path.join(r.result,`${check.step}-outputs.json`)));
    const a=load(reference),b=load(r);
+   const cssShape = runtime => (runtime || []).map(({asset,mapping}) => ({asset, mapping:mapping.map(({chunkId,logical}) => ({chunkId,logical}))}));
+   assert.deepEqual(cssShape(b.client.runtimeCSS), cssShape(a.client.runtimeCSS), `${label} ${r.arm} ${check.step}: runtime CSS chunk IDs and logical names before normalized-byte parity`);
    for(const env of Object.keys(a)) {assert.deepEqual(b[env].modules,a[env].modules,`${label} ${r.arm} ${check.step}: ${env} modules`);if(env.startsWith('aux-'))assert.deepEqual(b[env].assets,a[env].assets,`${label} ${r.arm} ${check.step}: auxiliary output bytes`);const stable=assets=>assets.map(({hash,name,...rest})=>({name:logicalName(name),...rest})).sort((a,b)=>a.name.localeCompare(b.name));assert.deepEqual(stable(b[env].assets),stable(a[env].assets),`${label} ${r.arm} ${check.step}: ${env} assets`);}
   }
  }
@@ -235,13 +238,14 @@ if(mode==='r3-measure') {
  fs.writeFileSync(path.join(work,'arm-orders.json'),JSON.stringify(orders,null,2));process.exit(0);
 }
 production();
-for(const count of ['4','2']) {
+const correctness = count => {
  process.env.COMPILER_COUNT=count;
  parity(['stock','gate-only','barrier','after-make','overlap'].map(arm=>checked(arm,'correctness',Number(count))),`compilers-${count}`);
  for(const [arm,scenario] of [['barrier','r2-close'],['after-make','r2-close'],['barrier','r2-restart'],['after-make','r2-child'],['barrier','r2-done'],['barrier','r2-passes'],['barrier','r2-topology']])checked(arm,scenario,Number(count));
  for(const arm of ['barrier','gate-only','after-make','overlap'])for(const scenario of ['r2-read','red-aba','red-recovery','no-resolver'])checked(arm,scenario,Number(count));
  for(const arm of ['invalid-mode','invalid-switch'])checked(arm,'cold',Number(count));
-}
+};
+correctness('4');
 process.env.COMPILER_COUNT='4';
 for(const edge of ['direct','transitive']) {
  process.env.USER_EDGES=edge;
@@ -252,5 +256,6 @@ for(const edge of ['direct','transitive']) {
  assert.deepEqual(counts(edged),counts(baseline),`${edge}: gate-only pass counts`);
  fs.writeFileSync(path.join(work,`user-${edge}-counts.json`),JSON.stringify({passed:true,reference:counts(baseline),edge:counts(edged)},null,2));
 }
+correctness('2');
 for(const count of ['2','4']){process.env.COMPILER_COUNT=count;execute('stock','r3-custom-request',count);for(const arm of ['barrier','after-make','overlap'])checked(arm,'r3-custom-request',count);}
 fs.writeFileSync(path.join(work,'r3-success.json'),JSON.stringify({passed:true}));

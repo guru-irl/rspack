@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { runtimeCSS } from './runtime-css.mjs';
 import { createServer } from 'node:http';
 import { NodeRequest, sendNodeResponse } from 'srvx/node';
 import path from 'node:path';
@@ -105,7 +106,14 @@ const probe = { name: 'watch-observer', setup(api) {
         });
         if(!measuring) compilation.hooks.processAssets.tap({ name: 'WatchObserver', stage: 6000 }, () => {
           for(const asset of compilation.getAssets()) {if(asset.name==='assets/js/index.js') fs.writeFileSync(path.join(out,`${step}-client-entry.txt`),String(asset.source.source()));}
-          record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => ({ name: a.name, bytes: a.source.size(), hash:hash(a.source.buffer()), normalizedHash:hash(String(a.source.source()).replace(/(__webpack_require__\.h = \(\) => \(")[0-9a-f]+("\))/g,'$1<FULL_HASH>$2')) })).sort((a,b) => a.name.localeCompare(b.name));
+          const cssChunks = [...compilation.chunks].filter(chunk => [...chunk.files].some(file => file.endsWith('.css'))).map(chunk => ({ id: chunk.id }));
+          record.runtimeCSS = [];
+          record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => {
+            const text = String(a.source.source());
+            const runtime = a.name.endsWith('.js') ? runtimeCSS(text, cssChunks) : { mappings: [], normalized: text };
+            if (environment.name === 'client') record.runtimeCSS.push(...runtime.mappings.map(mapping => ({ asset: a.name, mapping })));
+            return { name: a.name, bytes: a.source.size(), hash: hash(a.source.buffer()), normalizedHash: hash(runtime.normalized) };
+          }).sort((a,b) => a.name.localeCompare(b.name));
         });
       });
       compiler.hooks.done.tap({ name: 'WatchObserver', stage: 10000 }, stats => {
@@ -214,7 +222,27 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
     fs.writeFileSync(path.join(out, `${step}-${route.replaceAll('/', '_')}.html`), html);
   }
   for(const page of pages)await assertFreshness(page.route,page.linked,'checkpoint');
+  await waitIdle();
   const latest = Object.fromEntries(compilerNames.map(name => [name, builds.filter(b => b.name === name).at(-1)]));
+  if (!measuring) {
+    const runtimeChecks = [];
+    const save = () => fs.writeFileSync(path.join(out, `${step}-runtime-css.json`), JSON.stringify(runtimeChecks, null, 2));
+    for (const { asset, mapping } of latest.client.runtimeCSS) for (const entry of mapping) {
+      const evidence = { asset, ...entry };
+      runtimeChecks.push(evidence); save();
+      const compiled = latest.client.assets.find(a => a.name === entry.filename);
+      assert.ok(compiled, `${step}: miniCssF CSS filename exists in settled client output: ${entry.filename}`);
+      const logical = latest.client.assets.filter(a => logicalAsset('/' + a.name) === '/' + entry.logical);
+      assert.equal(logical.length, 1, `${step}: unique settled logical CSS asset`);
+      const response = await fetch(new URL(entry.filename, 'http://localhost:3100/'));
+      evidence.status = response.status;
+      evidence.sha256 = hash(Buffer.from(await response.arrayBuffer()));
+      evidence.settled = logical[0].hash; save();
+      assert.equal(response.status, 200, `${step}: runtime CSS HTTP 200 ${entry.filename}`);
+      assert.equal(evidence.sha256, evidence.settled, `${step}: runtime CSS has settled bytes ${entry.filename}`);
+      evidence.passed = true; save();
+    }
+  }
   assert.ok(latest.ssr && latest.client, `${step}: both output snapshots`);
   for (const [name,b] of Object.entries(latest)) assert.equal(b.errors.length,0,`${step}: ${name} final compile errors`);
   const compiled = measuring ? latest.ssr.generated : Object.entries(latest.ssr.modules).find(([id]) => resolver(id))?.[1];
@@ -243,7 +271,7 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   const ends = es.filter(e => e.kind === 'done');
   const timing = { clientPasses:builds.filter(b=>b.step===step&&b.name==='client').length, spanMs: Math.max(...ends.map(e => e.t)) - Math.min(...starts.map(e => e.t)), ...Object.fromEntries(compilerNames.map(name=>[`${name}Ms`,builds.filter(b=>b.step===step&&b.name===name).reduce((n,b)=>n+b.ms,0)])), clientMs: builds.filter(b => b.step === step && b.name === 'client').reduce((n,b)=>n+b.ms,0), ssrMs: builds.filter(b=>b.step===step&&b.name==='ssr').reduce((n,b)=>n+b.ms,0), peakRss: peak, postRss: process.memoryUsage().rss };
   const overlap = starts.some(c => c.name === 'client' && starts.some(s => s.name === 'ssr' && s.t >= c.t && s.t < ends.find(e => e.name==='client' && e.t > c.t)?.t));
-  const snapshots = Object.fromEntries(Object.entries(latest).map(([name,b]) => [name, { modules: b.modules, assets: b.assets }]));
+  const snapshots = Object.fromEntries(Object.entries(latest).map(([name,b]) => [name, { modules: b.modules, assets: b.assets, runtimeCSS: b.runtimeCSS }]));
   fs.writeFileSync(path.join(out, `${step}-outputs.json`), JSON.stringify(snapshots, null, 2));
   const check = { step, responses, calls, removedCalls, timing, overlap, resolverRebuilds: builds.filter(b=>b.step===step).flatMap(b=>b.rebuilt).filter(resolver).length };
   checks.push(check); console.log('CHECK', JSON.stringify(check));
