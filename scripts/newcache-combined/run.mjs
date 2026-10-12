@@ -168,8 +168,10 @@ if (isNew && process.env.CLOSE_DIRECT !== "1") await Promise.race([
   }),
 ]);
 // END is verified new-cache idle completion, not a synthetic delay.
-await anchor('END', true);
+await anchor('END', process.env.CLOSE_DIRECT !== '1');
+const close_start = checkpoint();
 await new Promise((res, rej) => compiler.close((e) => (e ? rej(e) : res())));
+const closed = checkpoint();
 await anchor('post_close', true);
 if (!done || (isNew && !idleDone && process.env.CLOSE_DIRECT !== "1")) throw new Error('Missing anchor');
 if (
@@ -180,6 +182,8 @@ if (
   throw new Error('Cache failure');
 const result = {
   phase,
+  close_start,
+  closed,
   modules,
   graph_counts,
   source: process.env.SOURCE_SHA,
