@@ -1,0 +1,67 @@
+name: New Cache Combined Parity
+on:
+  push:
+    branches: [bench/newcache-parity-combined]
+concurrency:
+  group: newcache-combined-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  sanity:
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: macos-15
+            target: aarch64-apple-darwin
+            jobs: '3'
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            jobs: '4'
+    runs-on: ${{ matrix.host }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
+      RUST_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build both arms and measure on this host
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HARNESS_WORK="$PWD/.bench-work"
+          export HARNESS_RESULTS="$PWD/results"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export HARNESS_WORK="$(cygpath -w "$HARNESS_WORK")"
+            export HARNESS_RESULTS="$(cygpath -w "$HARNESS_RESULTS")"
+          fi
+          mkdir -p "$HARNESS_WORK/tmp" "$HARNESS_RESULTS"
+          export TMPDIR="$HARNESS_WORK/tmp"
+          export TMP="$TMPDIR" TEMP="$TMPDIR"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            if [[ "$(readlink "$HOME/.cargo/bin/rustup" || true)" == */rustup-init ]]; then
+              rustup-init -y --default-toolchain none
+            fi
+          fi
+          python scripts/newcache-combined/launch.py scripts/newcache-combined/config.json
+      - name: Upload metrics and build logs only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: combined-${{ matrix.host }}
+          path: |
+            results/*.json
+            results/*.csv
+            results/*.log
+          if-no-files-found: warn
