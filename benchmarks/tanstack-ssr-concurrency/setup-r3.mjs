@@ -75,7 +75,7 @@ const execute=(arm,scenario,index)=>{
  // Observation only: preserve the real virtual module object and all decisions.
  let plugin=fs.readFileSync(path.join(dist,'plugin.js'),'utf8');
  plugin=plugin.replace('updateServerFnResolver = virtualModuleState.updateServerFnResolver;','updateServerFnResolver = virtualModuleState.updateServerFnResolver;\n globalThis.__watchVirtualState = virtualModuleState;');
- if(process.env.MODE==='r3-response-diagnosis')plugin=instrumentGate(plugin);
+ if(process.env.MODE?.startsWith('r3-response-'))plugin=instrumentGate(plugin);
  fs.writeFileSync(path.join(dist,'plugin.js'),plugin);
  fs.rmSync(path.join(app,'src'),{recursive:true,force:true}); fs.rmSync(path.join(app,'dist'),{recursive:true,force:true});
  fs.cpSync(path.join(root,'benchmarks/tanstack-topology/src'),path.join(app,'src'),{recursive:true});
@@ -93,7 +93,7 @@ const execute=(arm,scenario,index)=>{
   fs.writeFileSync(path.join(app,'aux/new-request.css'),'.generic-new-request { color: rgb(80, 80, 80); }\n');
   fs.writeFileSync(path.join(app,'aux/request.css'),'.generic-request { color: rgb(20, 20, 20); }\n');
   for(const name of ['aux-a','aux-b'])fs.writeFileSync(path.join(app,'aux',`${name}.js`),`document.body.textContent = 'Generic ${name}';\n`);
-  if(process.env.MODE==='r3-response-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentResponse(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
+  if(process.env.MODE?.startsWith('r3-response-'))fs.writeFileSync(path.join(app,'run.mjs'),instrumentResponse(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
    else if(process.env.MODE==='r3-css-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentCSS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
   else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  if(scenario==='production') {
@@ -104,11 +104,11 @@ const execute=(arm,scenario,index)=>{
   assert.ok(!/\[tss-ssr-concurrency\]/.test(run.stdout+run.stderr),'no production concurrency logs');
   return {result,status:run.status};
  }
- const run=spawnSync(process.env.MODE==='r3-response-diagnosis'?'node':'/usr/bin/time',process.env.MODE==='r3-response-diagnosis'?['run.mjs']:['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,STOCK_REQUEST_EXPECTATION:path.join(work,`stock-request-${process.env.COMPILER_COUNT||'2'}-${scenario}.json`),TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
+ const run=spawnSync(process.env.MODE?.startsWith('r3-response-')?'node':'/usr/bin/time',process.env.MODE?.startsWith('r3-response-')?['run.mjs']:['-v','-o',path.join(result,'process-time.txt'),'python3',path.join(fixture,'measure-process.py')],{cwd:app,env:{...process.env,NODE_ENV:'development',RESULT_DIR:result,ARM:arm,SCENARIO:scenario,STOCK_REQUEST_EXPECTATION:path.join(work,`stock-request-${process.env.COMPILER_COUNT||'2'}-${scenario}.json`),TSS_SSR_CONCURRENT:arm==='gate-only'?'0':arm==='invalid-switch'?'true':'1',TSS_SSR_COLD_OVERLAP:arm==='overlap'?'1':arm==='after-make'?'after-make':arm==='invalid-mode'?'after_make':'0'},encoding:'utf8',timeout:900000});
  fs.writeFileSync(path.join(result,'console.log'),run.stdout+run.stderr);
  fs.writeFileSync(path.join(result,'exit.json'),JSON.stringify({status:run.status,signal:run.signal,error:run.error?.message}));
  if(run.status===0 && arm!=='stock' && arm!=='v2') {
-  const log=fs.readFileSync(path.join(result,process.env.MODE==='r3-response-diagnosis'?'console.log':'node-console.log'),'utf8');
+  const log=fs.readFileSync(path.join(result,process.env.MODE?.startsWith('r3-response-')?'console.log':'node-console.log'),'utf8');
   const state=arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':process.env.USER_EDGES?'disengaged reason=topology (user-dependency)':scenario==='r2-topology'?'disengaged reason=topology (user-dependency)':arm==='gate-only'?'disengaged reason=switch (TSS_SSR_CONCURRENT=0)':`engaged mode=${arm==='after-make'?'after-make':arm==='overlap'?'1':'default'}`;
   assert.equal(log.split(`[tss-ssr-concurrency] ${state} gate=on`).length-1,scenario==='r2-restart'?2:1,'literal startup state per start');
   if(arm==='invalid-mode')assert.ok(log.includes('[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=after_make'));
@@ -118,24 +118,25 @@ const execute=(arm,scenario,index)=>{
  return {result,status:run.status};
 };
 const mode=process.env.MODE;
-if(mode==='r3-response-diagnosis') {
+if(mode?.startsWith('r3-response-')) {
  const source=fs.readFileSync(path.join(app,'node_modules/@rspack/core/dist/index.js'),'utf8');
  const excerpts=[];for(const term of ['lastWatcherStartTime','class NodeWatchFileSystem','class Watching','callbackUndelayed']){let i=-1;while((i=source.indexOf(term,i+1))>=0)excerpts.push({term,line:source.slice(0,i).split('\n').length,source:source.slice(Math.max(0,i-1600),i+2600)});}
  fs.writeFileSync(path.join(work,'watch-source.json'),JSON.stringify(excerpts,null,2));
 }
 
 if(mode==='r3-checks')process.exit(0);
-if(mode==='r3-response-diagnosis') {
+if(mode?.startsWith('r3-response-')) {
  process.env.COMPILER_COUNT='4';
+ if(mode==='r3-response-window-diagnosis')process.env.RESPONSE_WINDOW_ONLY='1';
  const results=[];
- for(const pagePath of ['middleware','custom-server']) {
+ for(const pagePath of process.env.RESPONSE_WINDOW_ONLY?['middleware']:['middleware','custom-server']) {
   process.env.DIAGNOSTIC_PAGE_PATH=pagePath;
-  for(let repeat=1;repeat<=3;repeat++)for(const arm of ['stock','gate-only','barrier']) {
+  for(let repeat=1;repeat<=(process.env.RESPONSE_WINDOW_ONLY?10:3);repeat++)for(const arm of ['stock','gate-only','barrier']) {
    const r=execute(arm,'correctness','response-'+pagePath+'-'+repeat);
    results.push({arm,pagePath,repeat,status:r.status,result:path.basename(r.result)});
    fs.writeFileSync(path.join(work,'response-diagnosis-runs.json'),JSON.stringify({diagnosticOnly:true,results},null,2));
    assert.equal(r.status,0,`${arm} ${pagePath}: diagnostic collection completed`);
-   assert.equal(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).length,22,'all edit checkpoints captured');
+   assert.equal(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).length,process.env.RESPONSE_WINDOW_ONLY?5:22,'all requested edit checkpoints captured');
   }
  }
  process.exit(0);

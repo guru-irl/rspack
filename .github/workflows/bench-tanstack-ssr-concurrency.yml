@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [r3-response-diagnosis, r3-css-diagnosis, r3-checks, r3-custom-green, r3-production, r3-custom-red,r3-request-red, r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
+        options: [r3-response-window-diagnosis, r3-response-diagnosis, r3-css-diagnosis, r3-checks, r3-custom-green, r3-production, r3-custom-red,r3-request-red, r3-red, r3-final, r3-measure, r2b-delete, r2b-red, r2-final, r2-extra, r2-measure, r2-matrix, r2-green, r2-red, red, red-aba, red-after-make, aa-route, no-resolver, regression, correctness, measure, final, supplement]
         default: red
 permissions:
   contents: read

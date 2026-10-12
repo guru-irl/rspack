@@ -87,11 +87,19 @@ const fetchLinked=async(label,html)=>{
  // These assertions are observed, not revised, only in this diagnostic runtime copy.
  replace("assert.ok(expectedCSS.some(url=>!previous.includes(url)),'stock route manifest requires the NEW CSS asset');", "windowEvidence.stockRequiresNewCSS=expectedCSS.some(url=>!previous.includes(url));");
  replace("const response = await fetch(\u0060http://localhost:3100${route}\u0060);", "const response = await fetch(\u0060http://localhost:${customWindow?3101:3100}${route}\u0060);");
- replace("fs.writeFileSync(path.join(out, \u0060${step}-${route.replaceAll('/', '_')}.html\u0060), html);", "fs.writeFileSync(path.join(out, \u0060${step}-${route.replaceAll('/', '_')}.html\u0060), html);\n await fetchLinked(route,html);");
+ replace("fs.writeFileSync(path.join(out, \u0060${step}-${route.replaceAll('/', '_')}.html\u0060), html);", "fs.writeFileSync(path.join(out, \u0060${step}-${route.replaceAll('/', '_')}.html\u0060), html);\n if(!process.env.RESPONSE_WINDOW_ONLY)await fetchLinked(route,html);");
  replace("pageServer=createServer(async(req,res)=>{", "pageServer=createServer((req,res)=>requestContext.run({id:++requestNumber,path:req.url,pagePath:'custom-server'},async()=>{\n emitDiagnostic('request-arrival',manifestInfo(publishedManifest));res.once('finish',()=>emitDiagnostic('response-end',{status:res.statusCode,...manifestInfo(publishedManifest)}));");
  replace("} catch(error) {console.error(error);res.statusCode=500;res.end(String(error));}\n    });", "} catch(error) {console.error(error);res.statusCode=500;res.end(String(error));}\n    }));");
  replace("const customWindow=scenario==='r3-custom-request';", "const customWindow=process.env.DIAGNOSTIC_PAGE_PATH==='custom-server';");
  replace("clearInterval(timer);\n  if(pageServer)", "clearInterval(timer);\n   fs.writeFileSync(path.join(out,'response-diagnostic.json'),JSON.stringify({diagnosticOnly:true,pagePath:customWindow?'custom-server':'middleware',events:diagnostic,manifests:Object.fromEntries(manifests)},null,2));\n   if(pageServer)");
+ if(process.env.RESPONSE_WINDOW_ONLY){
+ const a=source.indexOf("       for(const kind of ['add','rename','remove','body'])");
+ const final="await waitIdle(2); await sample(base,'Public leaf baseline');";
+ const b=source.indexOf(final,a)+final.length;
+ assert.ok(a>=0&&b>a,'diagnostic window stop boundaries');
+ source=source.slice(0,a)+'       if(!process.env.RESPONSE_WINDOW_ONLY){\n'+source.slice(a,b)+'\n       }'+source.slice(b);
+ }
+ replace("else fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\\n');", "else fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\\n');\n const editedFile=customWindow?'aux/request-entry.js':'aux/request.css';const editedStat=fs.statSync(editedFile);emitDiagnostic('fixture-write-complete',{file:normalize(path.resolve(editedFile)),mtimeMs:editedStat.mtimeMs,ctimeMs:editedStat.ctimeMs,size:editedStat.size});");
  return source;
 };
 export const instrumentGate=source=>source.replace('release?.();','globalThis.__responseDiagnostic?.("gate-release",{clientRequestRevision,compilingClientRequestRevision});\n\t\t\t\trelease?.();').replace('return bundle;','globalThis.__responseDiagnostic?.("outer-loadBundle-return",{clientRequestRevision,compilingClientRequestRevision});\n\t\t\t\t\treturn bundle;');
