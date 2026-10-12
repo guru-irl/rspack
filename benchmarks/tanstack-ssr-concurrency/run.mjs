@@ -15,6 +15,7 @@ const compilerNames=process.env.COMPILER_COUNT==='4'?['client','ssr','aux-a','au
 const userEdges=process.env.USER_EDGES || '';
 const measuring=scenario.startsWith('warm-')||scenario==='cold-measure';
 const customWindow=scenario==='r3-custom-request';
+const coldCloseTrigger=process.env.MODE==='r3-restart-diagnosis'&&['stock','gate-only'].includes(arm)?'client-finishMake':'ssr-watchRun';
 const requestWindowEnabled=customWindow||scenario==='r3-request'||scenario==='correctness';
 let windowRequest;
 let windowEvidence;
@@ -71,7 +72,10 @@ const probe = { name: 'watch-observer', setup(api) {
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
         pendingInvalid.delete(environment.name);active.add(environment.name); event(environment.name, 'watchRun');
       });
-      if(['r2-close','r2-restart'].includes(scenario) && environment.name==='client') compiler.hooks.finishMake.tapPromise({name:'ColdCloseWindow',stage:900},async()=>{while(!closeRequested)await pause(5);await pause(250);});
+      if(['r2-close','r2-restart'].includes(scenario) && environment.name==='client') compiler.hooks.finishMake.tapPromise({name:'ColdCloseWindow',stage:900},async()=>{
+        if(coldCloseTrigger==='client-finishMake') {event('client','coldCloseTrigger',{trigger:coldCloseTrigger});closeRequested=true;}
+        while(!closeRequested)await pause(5);await pause(250);
+      });
       if(scenario==='r2-done' && environment.name==='client') compiler.hooks.done.tapPromise({name:'DoneBarrierWindow',stage:15000},async()=>pause(250));
       if(scenario==='r2-child' && environment.name==='client') compiler.hooks.make.tapPromise({name:'ClientChild',stage:-5000},async(compilation)=>{
         const child=compilation.createChildCompiler('generic-child',{},[]);
@@ -336,7 +340,8 @@ try {
   } else server=await rsbuild.startDevServer();
   if(['r2-close','r2-restart'].includes(scenario)) {
     const deadline=now()+10000;
-    while(!events.some(e=>e.name==='ssr'&&e.kind==='watchRun')) {assert.ok(now()<deadline,'SSR enters cold watchRun');await pause(5);}
+    while(!events.some(e=>coldCloseTrigger==='client-finishMake'?e.name==='client'&&e.kind==='coldCloseTrigger':e.name==='ssr'&&e.kind==='watchRun')) {assert.ok(now()<deadline,`Cold close trigger reached: ${coldCloseTrigger}`);await pause(5);}
+    console.log('[restart-window]',JSON.stringify({arm,pid:process.pid,trigger:coldCloseTrigger}));
     closeRequested=true;
     await Promise.race([(server.close ? server.close() : server.server.close()),pause(5000).then(()=>{throw new Error('server.close did not resolve during the cold barrier')})]);
     server=undefined;

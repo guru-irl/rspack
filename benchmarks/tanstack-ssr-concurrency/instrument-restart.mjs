@@ -73,7 +73,7 @@ DiagnosticServer.prototype.close = function (...args) {
         return watcher;
       };
 `);
-  source = source.replace('    closeRequested=true;\n    await Promise.race', "    diagnosticRecord('harness-restart-close-begin');\n    closeRequested=true;\n    await Promise.race");
+  source = source.replace('    closeRequested=true;\n    await Promise.race', "    diagnosticRecord('harness-restart-close-begin', {trigger: coldCloseTrigger});\n    closeRequested=true;\n    await Promise.race");
   source = source.replace('    server=undefined;\n    if(scenario', "    diagnosticRecord('harness-restart-close-resolved');\n    server=undefined;\n    if(scenario");
   source = source.replace('      server=await rsbuild.startDevServer();await waitIdle(2);', "      diagnosticRecord('harness-restart-create-begin');\n      server=await rsbuild.startDevServer();diagnosticRecord('harness-restart-create-resolved');await waitIdle(2);");
   source = source.replace("await sample(base,'Public leaf baseline');await (server.close ? server.close() : server.server.close());server=undefined;", "await sample(base,'Public leaf baseline');diagnosticRecord('harness-final-restart-shutdown-begin');await (server.close ? server.close() : server.server.close());diagnosticRecord('harness-final-restart-shutdown-resolved');server=undefined;");
