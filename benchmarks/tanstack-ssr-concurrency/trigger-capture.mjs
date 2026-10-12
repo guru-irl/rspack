@@ -106,37 +106,56 @@ export function edgeContract(reference,edged,edge) {
   return {passed:true,edge,ordering:true,callbackIdentityPreserved:true,differences,replayReference,replayEdge,reference,edged};
 }
 
-// One rule for all count assertions. Timing always retains the original passes.
-export function isReplay(data,pass) {
-  assert.ok(!pass.triggers.includes('unknown'),`${pass.step} ${pass.name} pass ${pass.pass}: unknown trigger`);
-  if(!pass.triggers.includes('outdated-on-attach'))return false;
-  const previous=data.passes.filter(p=>p.name===pass.name && p.started<pass.started).at(-1);
+// All passes remain in timing spans and total-pass metrics.
+export const passClasses=['normal','write-driven attach','pure replay','Start-attributed','unknown'];
+export function classifyPass(data,pass) {
+  const label=`${pass.step} ${pass.name} pass ${pass.pass}`;
+  assert.ok(!pass.triggers.includes('unknown'),`${label}: unknown trigger`);
   const files=p=>[...new Set([...(p.modifiedFiles||[]),...(p.removedFiles||[])])].sort();
-  const replayFiles=[...new Set((pass.evidence||[]).filter(e=>e.branch==='outdated-on-attach').map(e=>e.file))].sort();
-  assert.ok(replayFiles.length,`${pass.step} ${pass.name}: replay lacks Watchpack branch evidence for each path`);
-  assert.ok(previous && files(pass).length,`${pass.step} ${pass.name}: replay has no preceding same paths`);
-  assert.deepEqual(files(pass),files(previous),`${pass.step} ${pass.name}: replay must have same paths as preceding pass`);
-  assert.ok(files(pass).every(file=>replayFiles.includes(file)),`${pass.step} ${pass.name}: replay lacks Watchpack branch evidence for each path`);
-  // Conservative interval includes writes during the preceding compilation,
-  // not just the idle gap, so a rapid second save cannot be discounted.
-  const writes=(data.writers||[]).filter(w=>w.t>previous.started && w.t<=pass.started && files(pass).includes(w.file));
-  assert.equal(writes.length,0,`${pass.step} ${pass.name}: write between preceding pass and replay`);
-  return true;
+  if(pass.triggers.includes('normal-change') || pass.triggers.includes('initial'))return 'normal';
+  if(pass.triggers.includes('outdated-on-attach')) {
+    const previous=data.passes.filter(p=>p.name===pass.name && p.started<pass.started).at(-1);
+    const replayFiles=[...new Set((pass.evidence||[]).filter(e=>e.branch==='outdated-on-attach').map(e=>e.file))].sort();
+    assert.ok(replayFiles.length,`${label}: replay lacks Watchpack branch evidence for each path`);
+    assert.ok(previous && files(pass).length,`${label}: replay has no preceding same paths`);
+    assert.deepEqual(files(pass),files(previous),`${label}: replay must have same paths as preceding pass`);
+    assert.ok(files(pass).every(file=>replayFiles.includes(file)),`${label}: replay lacks Watchpack branch evidence for each path`);
+    const writes=(data.writers||[]).filter(w=>w.t>previous.started && w.t<=pass.started && files(pass).includes(w.file));
+    if(!writes.length)return 'pure replay';
+    const scenario=w=>/\/run\.mjs:\d+:\d+/.test(w.writerStack||'');
+    const start=w=>w.operation==='Start-virtual-write' || /@tanstack\/.*(?:resolver|virtual-modules|router-generator)/.test(w.writerStack||'');
+    assert.ok(writes.every(w=>scenario(w)||start(w)),`${label}: unknown intervening writer`);
+    return writes.some(scenario)?'write-driven attach':'Start-attributed';
+  }
+  if(pass.triggers.includes('Start-virtual-write'))return 'Start-attributed';
+  // A completed upstream pass is a captured MultiCompiler trigger, not a guess.
+  // Its downstream pass performs normal edge work and remains non-replay work.
+  if(pass.triggers.includes('edge-propagation'))return 'normal';
+  assert.fail(`${label}: unknown trigger class`);
 }
+export function isReplay(data,pass) {return classifyPass(data,pass)==='pure replay';}
 export function replaySummary(data) {
   assert.ok(data.callbackIdentityPreserved,'watcher callback identity');
   const checkpoints=[];
   for(const pass of data.passes) {
-    const replay=isReplay(data,pass);
+    const classification=classifyPass(data,pass),replay=classification==='pure replay';
     let record=checkpoints.find(c=>c.step===pass.step && c.name===pass.name);
-    if(!record){record={step:pass.step,name:pass.name,passes:0,nonReplay:0,replays:0,replayPasses:[]};checkpoints.push(record);}
-    record.passes++;if(replay){record.replays++;record.replayPasses.push(pass.pass);}else record.nonReplay++;
+    if(!record){record={step:pass.step,name:pass.name,passes:0,nonReplay:0,replays:0,replayPasses:[],classes:Object.fromEntries(passClasses.map(c=>[c,0])),classifiedPasses:[]};checkpoints.push(record);}
+    record.passes++;record.classes[classification]++;record.classifiedPasses.push({pass:pass.pass,classification});
+    if(replay){record.replays++;record.replayPasses.push(pass.pass);}else record.nonReplay++;
   }
-  return {passed:true,conditions:['Watchpack outdated-on-attach branch','same paths as preceding compiler pass','no intervening captured write'],checkpoints};
+  return {passed:true,conditions:['captured normal or edge trigger','write-driven attach: same paths and scenario write in start-to-start interval','pure replay: same paths and no write in start-to-start interval','Start writer attribution','unknown is a stop'],checkpoints};
 }
 export function assertPassCount(data,step,name,expected,label) {
   const summary=replaySummary(data);
   const count=summary.checkpoints.find(c=>c.step===step && c.name===name)?.nonReplay||0;
   assert.equal(count,expected,`${label}: non-replay pass count`);
+  return summary;
+}
+export function assertPassBounds(data,step,name,saves,label) {
+  const summary=replaySummary(data);
+  const record=summary.checkpoints.find(c=>c.step===step && c.name===name);
+  const count=record?.nonReplay||0,start=record?.classes['Start-attributed']||0;
+  assert.ok(count>=1 && count<=saves+start,`${label}: non-replay pass count ${count}, saves ${saves}, Start-attributed ${start}`);
   return summary;
 }

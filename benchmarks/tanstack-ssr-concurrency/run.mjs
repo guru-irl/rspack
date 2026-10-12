@@ -1,4 +1,4 @@
-import { triggerCapture, replaySummary, assertPassCount } from './trigger-capture.mjs';
+import { triggerCapture, replaySummary, assertPassCount, assertPassBounds } from './trigger-capture.mjs';
 import { recordRestartShutdown } from './restart-shutdown.mjs';
 import fs from 'node:fs';
 import { runtimeCSS } from './runtime-css.mjs';
@@ -301,6 +301,7 @@ const edit = async (name, file, content, expected, leaf='Public leaf baseline', 
   }
   await waitIdle(2);
   await sample(expected, leaf, removed, addedRoute);
+  if(rapid !== undefined)for(const name of ['client','ssr'])assertPassBounds(triggers.evidence(),step,name,2,`${step} ${name}: deliberate rapid saves`);
 };
 let server;
 let pageServer;
