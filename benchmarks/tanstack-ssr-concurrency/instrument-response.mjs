@@ -11,6 +11,7 @@ const requestContext=new AsyncLocalStorage();
 const linkedChecks=[];
 const pendingInvalid=new Set();
 const manifests=new Map();
+const manifestCache=new WeakMap();
 let requestNumber=0;
 let publishedManifest;
 const serial=v=>JSON.parse(JSON.stringify(v??null));
@@ -21,18 +22,19 @@ const clientState=()=>{
 const emitDiagnostic=(kind,extra={})=>diagnostic.push({kind,step,t:performance.now(),wallMs:Date.now(),pid:process.pid,request:requestContext.getStore(),client:clientState(),...extra});
 const manifestInfo=value=>{
  if(value==null)return {manifestSHA256:null};
+ if(manifestCache.has(value))return manifestCache.get(value);
  const json=JSON.stringify(value),sha=hash(json);if(!manifests.has(sha))manifests.set(sha,serial(value));
- return {manifestSHA256:sha,routeCSS:routeCSS([value.routes?.__root__,value.routes?.['/']])};
+ const info={manifestSHA256:sha,routeCSS:routeCSS([value.routes?.__root__,value.routes?.['/']])};manifestCache.set(value,info);return info;
 };
 Object.defineProperty(globalThis,'__TSS_DEV_START_MANIFEST__',{configurable:true,get(){emitDiagnostic('manifest-read',{...manifestInfo(publishedManifest),stack:new Error().stack});return publishedManifest;},set(value){publishedManifest=value;emitDiagnostic('manifest-publication',manifestInfo(value));}});
 globalThis.__responseDiagnostic=(kind,extra)=>emitDiagnostic(kind,{...manifestInfo(publishedManifest),...extra});
 const stack=()=>new Error().stack;
-const diagnosticFile=p=>typeof p==='string'&&(p.startsWith(path.join(process.cwd(),'src'))||p.startsWith(path.join(process.cwd(),'aux'))||p.includes('_tanstack-start'));
+const diagnosticFile=p=>typeof p==='string'&&(path.resolve(p).startsWith(path.join(process.cwd(),'src'))||path.resolve(p).startsWith(path.join(process.cwd(),'aux'))||p.includes('_tanstack-start'));
 for(const key of ['writeFileSync','renameSync','unlinkSync']){
- const fn=fs[key];fs[key]=function(...args){if(diagnosticFile(args[0]))emitDiagnostic('fs-'+key,{file:normalize(String(args[0])),destination:key==='renameSync'?normalize(String(args[1])):undefined,contentSHA256:key==='writeFileSync'?hash(args[1]):undefined,stack:stack()});return fn.apply(this,args);};
+ const fn=fs[key];fs[key]=function(...args){if(diagnosticFile(args[0]))emitDiagnostic('fs-'+key,{file:normalize(path.resolve(String(args[0]))),destination:key==='renameSync'?normalize(path.resolve(String(args[1]))):undefined,contentSHA256:key==='writeFileSync'?hash(args[1]):undefined,stack:stack()});return fn.apply(this,args);};
 }
 for(const key of ['writeFile','rename','unlink']){
- const fn=fs.promises[key];fs.promises[key]=function(...args){if(diagnosticFile(String(args[0])))emitDiagnostic('fs-promises-'+key,{file:normalize(String(args[0])),destination:key==='rename'?normalize(String(args[1])):undefined,stack:stack()});return fn.apply(this,args);};
+ const fn=fs.promises[key];fs.promises[key]=function(...args){if(diagnosticFile(String(args[0])))emitDiagnostic('fs-promises-'+key,{file:normalize(path.resolve(String(args[0]))),destination:key==='rename'?normalize(path.resolve(String(args[1]))):undefined,stack:stack()});return fn.apply(this,args);};
 }
 syncBuiltinESMExports();
 const wrapBundle=bundle=>{
@@ -70,10 +72,9 @@ const fetchLinked=async(label,html)=>{
  replace("compiler.hooks.invalid.tap('WatchInvalidObserver',()=>event(environment.name,'invalid'));", `compiler.hooks.invalid.tap('WatchInvalidObserver',(file,changeTime)=>event(environment.name,'invalid',{file:file&&normalize(file),changeTime,stack:stack()}));
  const wfs=compiler.watchFileSystem;
  if(wfs?.watch){const watch=wfs.watch;wfs.watch=function(...args){
- const cb=args[5],undelayed=args[6];
- args[5]=function(error,ft,ct,changed,removed){emitDiagnostic('watch-aggregate',{name:environment.name,changed:[...(changed??[])].map(normalize),removed:[...(removed??[])].map(normalize)});return cb.apply(this,arguments);};
- if(undelayed)args[6]=function(file,time){emitDiagnostic('watch-change',{name:environment.name,file:normalize(file),changeTime:time});return undelayed.apply(this,arguments);};
- const watcher=watch.apply(this,args);if(watcher?.getInfo){const get=watcher.getInfo;watcher.getInfo=function(){const info=get.apply(this,arguments);emitDiagnostic('watch-getInfo',{name:environment.name,changed:[...(info.changes??[])].map(normalize),removed:[...(info.removals??[])].map(normalize)});return info;};}return watcher;
+ const watcher=watch.apply(this,args);const raw=this.watcher;
+ if(raw?.on){raw.on('change',(file,time)=>emitDiagnostic('watch-change',{name:environment.name,file:normalize(file),changeTime:time}));raw.on('remove',file=>emitDiagnostic('watch-remove',{name:environment.name,file:normalize(file)}));raw.on('aggregated',(changed,removed)=>emitDiagnostic('watch-aggregate',{name:environment.name,changed:[...(changed??[])].map(normalize),removed:[...(removed??[])].map(normalize)}));}
+ if(watcher?.getInfo){const get=watcher.getInfo;watcher.getInfo=function(){const info=get.apply(this,arguments);emitDiagnostic('watch-getInfo',{name:environment.name,changed:[...(info.changes??[])].map(normalize),removed:[...(info.removals??[])].map(normalize)});return info;};}return watcher;
  };}
  compiler.hooks.watchRun.tap({name:'ResponseDiagnosticPaths',stage:-20000},()=>emitDiagnostic('watchRun-paths',{name:environment.name,modifiedFiles:[...(compiler.modifiedFiles??[])].map(normalize),removedFiles:[...(compiler.removedFiles??[])].map(normalize)}));`);
  replace("if(environment.name==='client') {", "if(environment.name==='client') {\n  record.diagnosticAssets=compilation.getAssets().filter(a=>/\\.(css|js)$/.test(a.name)).map(a=>({name:a.name,sha256:hash(a.source.buffer()),bytes:a.source.size()}));");

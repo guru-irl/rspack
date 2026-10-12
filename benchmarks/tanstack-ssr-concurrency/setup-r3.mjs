@@ -118,15 +118,21 @@ const execute=(arm,scenario,index)=>{
  return {result,status:run.status};
 };
 const mode=process.env.MODE;
+if(mode==='r3-response-diagnosis') {
+ const source=fs.readFileSync(path.join(app,'node_modules/@rspack/core/dist/index.js'),'utf8');
+ const excerpts=[];for(const term of ['lastWatcherStartTime','class NodeWatchFileSystem','class Watching','callbackUndelayed']){let i=-1;while((i=source.indexOf(term,i+1))>=0)excerpts.push({term,line:source.slice(0,i).split('\n').length,source:source.slice(Math.max(0,i-1600),i+2600)});}
+ fs.writeFileSync(path.join(work,'watch-source.json'),JSON.stringify(excerpts,null,2));
+}
+
 if(mode==='r3-checks')process.exit(0);
 if(mode==='r3-response-diagnosis') {
  process.env.COMPILER_COUNT='4';
  const results=[];
  for(const pagePath of ['middleware','custom-server']) {
   process.env.DIAGNOSTIC_PAGE_PATH=pagePath;
-  for(const arm of ['stock','gate-only','barrier']) {
-   const r=execute(arm,'correctness','response-'+pagePath);
-   results.push({arm,pagePath,status:r.status,result:path.basename(r.result)});
+  for(let repeat=1;repeat<=3;repeat++)for(const arm of ['stock','gate-only','barrier']) {
+   const r=execute(arm,'correctness','response-'+pagePath+'-'+repeat);
+   results.push({arm,pagePath,repeat,status:r.status,result:path.basename(r.result)});
    fs.writeFileSync(path.join(work,'response-diagnosis-runs.json'),JSON.stringify({diagnosticOnly:true,results},null,2));
    assert.equal(r.status,0,`${arm} ${pagePath}: diagnostic collection completed`);
    assert.equal(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).length,22,'all edit checkpoints captured');
