@@ -1,3 +1,4 @@
+import { edgeContract } from './trigger-capture.mjs';
 import { checkShutdown } from './check-shutdown.mjs';
 import { staticCloseSites } from './static-close-sites.mjs';
 import { instrumentRestart } from './instrument-restart.mjs';
@@ -13,6 +14,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+const captureCheck=spawnSync('node',[new URL('./check-edge-capture.mjs',import.meta.url).pathname],{encoding:'utf8'});
+assert.equal(captureCheck.status,0,captureCheck.stdout+captureCheck.stderr);console.log(captureCheck.stdout);
 const root=process.cwd();
 const fixture=path.join(root,'benchmarks/tanstack-ssr-concurrency');
 const work=process.env.WORK_DIR || path.join(root,'bench-results/tanstack-ssr-concurrency');
@@ -104,6 +107,7 @@ const execute=(arm,scenario,index)=>{
   else if(process.env.MODE==='r3-js-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentJS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
  else if(process.env.MODE==='r3-restart-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentRestart(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
  else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
+ fs.copyFileSync(path.join(fixture,'trigger-capture.mjs'),path.join(app,'trigger-capture.mjs'));
  fs.copyFileSync(path.join(fixture,'runtime-css.mjs'),path.join(app,'runtime-css.mjs'));
  fs.copyFileSync(path.join(fixture,'restart-shutdown.mjs'),path.join(app,'restart-shutdown.mjs'));
  if(scenario==='production') {
@@ -280,9 +284,9 @@ for(const edge of ['direct','transitive']) {
  const baseline=checked('gate-only','correctness',edge+'-reference');
  const edged=checked('barrier','correctness',edge);delete process.env.USER_EDGES;
  parity([baseline,edged],`user-${edge}`);
- const counts=r=>{const builds=JSON.parse(fs.readFileSync(path.join(r.result,'builds.json')));return Object.fromEntries(JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(c=>[c.step,Object.fromEntries(['client','ssr','aux-a','aux-b'].map(name=>[name,builds.filter(b=>b.step===c.step&&b.name===name).length]))]));};
- assert.deepEqual(counts(edged),counts(baseline),`${edge}: gate-only pass counts`);
- fs.writeFileSync(path.join(work,`user-${edge}-counts.json`),JSON.stringify({passed:true,reference:counts(baseline),edge:counts(edged)},null,2));
+ const capture=r=>JSON.parse(fs.readFileSync(path.join(r.result,'pass-triggers.json')));
+ const contract=edgeContract(capture(baseline),capture(edged),edge);
+ fs.writeFileSync(path.join(work,`user-${edge}-contract.json`),JSON.stringify(contract,null,2));
 }
 correctness('2');
 for(const count of ['2','4']){process.env.COMPILER_COUNT=count;execute('stock','r3-custom-request',count);for(const arm of ['barrier','after-make','overlap'])checked(arm,'r3-custom-request',count);}

@@ -1,3 +1,4 @@
+import { triggerCapture } from './trigger-capture.mjs';
 import { recordRestartShutdown } from './restart-shutdown.mjs';
 import fs from 'node:fs';
 import { runtimeCSS } from './runtime-css.mjs';
@@ -40,6 +41,7 @@ const events = [];
 const checks = [];
 const current = new Map();
 const compilers = new Map();
+const triggers=triggerCapture({step:()=>step,now,normalize:p=>normalize(p)});
 const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
@@ -58,6 +60,7 @@ startPlugin.setup=(api)=>{
  });
 };
 const probe = { name: 'watch-observer', setup(api) {
+  api.onAfterCreateCompiler(({compiler})=>triggers.setGraph(compiler));
   api.onBeforeStartDevServer(({server})=>{hookEnvironment=server.environments.ssr;});
 
   api.modifyRspackConfig((config, { environment }) => {
@@ -70,6 +73,7 @@ const probe = { name: 'watch-observer', setup(api) {
     if(scenario==='no-resolver' && environment.name==='ssr') {config.entry={index:{import:['./src/no-resolver.ts']}};}
     config.plugins.push({ apply(compiler) {
       compilers.set(environment.name,compiler);
+      triggers.install(compiler,environment.name);
       compiler.hooks.invalid.tap('WatchInvalidObserver',()=>{pendingInvalid.add(environment.name);event(environment.name,'invalid');});
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
         pendingInvalid.delete(environment.name);active.add(environment.name); event(environment.name, 'watchRun');
@@ -99,7 +103,7 @@ const probe = { name: 'watch-observer', setup(api) {
           await pause(750);
         });
         compilation.hooks.afterSeal.tap('WatchSealObserver',()=>event(environment.name,'afterSeal'));
-        const record = { step, name: environment.name, rebuilt: [], built: [], errors: [], modules: {}, assets: [] };
+        const record = { step, name: environment.name, trigger:triggers.latest(environment.name), rebuilt: [], built: [], errors: [], modules: {}, assets: [] };
         current.set(environment.name, record);
         const original = compilation.rebuildModule.bind(compilation);
         compilation.rebuildModule = (mod, cb) => { record.rebuilt.push(normalize(mod.identifier())); return original(mod, cb); };
@@ -353,7 +357,8 @@ try {
       await sample(base,'Public leaf baseline');await restartShutdown.final(()=>server.close ? server.close() : server.server.close());server=undefined;
     }
     fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,closed:true}));
-    clearInterval(timer);fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events));process.exit(0);
+    clearInterval(timer);fs.writeFileSync(path.join(out,'pass-triggers.json'),JSON.stringify(triggers.evidence(),null,2));
+    fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events));process.exit(0);
   }
   readiness=(async()=>{
     if(scenario==='no-resolver') {readyTime=now();return;}
@@ -502,6 +507,7 @@ try {
 } finally {
   clearInterval(timer);
   if(pageServer)await new Promise(resolve=>pageServer.close(resolve));
+  fs.writeFileSync(path.join(out,'pass-triggers.json'),JSON.stringify(triggers.evidence(),null,2));
   fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events,null,2));
   fs.writeFileSync(path.join(out,'builds.json'),JSON.stringify(builds,null,2));
   if(['r2-close','r2-restart'].includes(scenario)&&closeRequested) {process.exit(process.exitCode||1);}
