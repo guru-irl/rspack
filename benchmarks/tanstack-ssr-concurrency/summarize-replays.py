@@ -7,6 +7,7 @@ def fisher(a,b,c,d):
     def weight(x):return math.comb(col,x)*math.comb(n-col,row-x)
     observed=weight(a)
     return sum(weight(x) for x in range(max(0,row-(n-col)),min(row,col)+1) if weight(x)<=observed)/math.comb(n,row)
+categories=['scenario','toolchain','startup','none','unknown']
 classes=['normal','write-driven attach','pure replay','Start-attributed','unknown']
 records=[]
 for file in sorted(root.glob('*/replay-summary.json')):
@@ -18,7 +19,9 @@ for file in sorted(root.glob('*/replay-summary.json')):
 def aggregate(rows):
     counts={k:sum(c['classes'][k] for c in rows) for k in classes}
     frequencies={k:sum(c['classes'][k]>0 for c in rows) for k in classes}
-    return {'classes':counts,'checkpointsByClass':frequencies,** {'checkpoints':len(rows),'passes':sum(c['passes'] for c in rows),'nonReplayPasses':sum(c['nonReplay'] for c in rows),'replayPasses':sum(c['replays'] for c in rows),'checkpointsWithReplay':sum(c['replays']>0 for c in rows),'multiPassCheckpoints':sum(c['passes']>1 for c in rows),'passesPerCheckpoint':sum(c['passes'] for c in rows)/len(rows) if rows else None}}
+    writerCounts={k:sum(c['writerCategories'][k] for c in rows) for k in categories}
+    writerFrequencies={k:sum(c['writerCategories'][k]>0 for c in rows) for k in categories}
+    return {'writerCategories':writerCounts,'checkpointsByWriterCategory':writerFrequencies,'classes':counts,'checkpointsByClass':frequencies,** {'checkpoints':len(rows),'passes':sum(c['passes'] for c in rows),'nonReplayPasses':sum(c['nonReplay'] for c in rows),'replayPasses':sum(c['replays'] for c in rows),'checkpointsWithReplay':sum(c['replays']>0 for c in rows),'multiPassCheckpoints':sum(c['passes']>1 for c in rows),'passesPerCheckpoint':sum(c['passes'] for c in rows)/len(rows) if rows else None}}
 groups=[]
 for scenario in sorted(set(r['scenario'] for r in records)):
     for compiler in sorted(set(r['name'] for r in records)):
@@ -36,7 +39,9 @@ for scenario in sorted(set(r['scenario'] for r in records)):
                 for label in ['pure replay','write-driven attach']:
                     x=a['checkpointsByClass'][label];y=b['checkpointsByClass'][label]
                     comparisons[label]={'table':[[x,a['checkpoints']-x],[y,b['checkpoints']-y]],'fisherExactTwoSided':fisher(x,a['checkpoints']-x,y,b['checkpoints']-y)}
+                x=a['checkpointsByWriterCategory']['toolchain'];y=b['checkpointsByWriterCategory']['toolchain']
+                comparisons['toolchain']={'table':[[x,a['checkpoints']-x],[y,b['checkpoints']-y]],'fisherExactTwoSided':fisher(x,a['checkpoints']-x,y,b['checkpoints']-y)}
             groups.append({'scenario':scenario,'compiler':compiler,'phase':phase,'arms':arms,'defaultVsStock':comparisons})
-result={'method':'Every pass classified by captured trigger and writer evidence; write-driven attach and pure replay use the same start-to-start interval. All passes retained in spans. Class Fisher tests use checkpoints with >=1 pass of that class versus none. Fisher two-sided on checkpoints with >=1 replay versus none. Client-pass Fisher uses checkpoints with >1 total pass versus <=1, not a surrogate replay classification. Correctness and measurements are separate. Repeated edits within processes are descriptive, not independent process-level timing inference.','groups':groups,'records':records}
+result={'method':'Every pass classified by captured trigger and writer evidence; write-driven attach and pure replay use the same start-to-start interval. Writer categories recorded separately; scenario passes count against expectations, toolchain passes bounded at 2/compiler/checkpoint. All passes retained in spans. Class Fisher tests use checkpoints with >=1 pass of that class versus none. Fisher two-sided on checkpoints with >=1 replay versus none. Client-pass Fisher uses checkpoints with >1 total pass versus <=1, not a surrogate replay classification. Correctness and measurements are separate. Repeated edits within processes are descriptive, not independent process-level timing inference.','groups':groups,'records':records}
 (root/'replay-frequency.json').write_text(json.dumps(result,indent=2))
 for g in groups:print(json.dumps(g))

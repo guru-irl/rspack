@@ -108,54 +108,81 @@ export function edgeContract(reference,edged,edge) {
 
 // All passes remain in timing spans and total-pass metrics.
 export const passClasses=['normal','write-driven attach','pure replay','Start-attributed','unknown'];
-export function classifyPass(data,pass) {
+export const writerCategories=['scenario','toolchain','startup','none','unknown'];
+export function writerCategory(write) {
+  const stack=write.writerStack||'';
+  const caller=stack.split('\n').find(line=>/\bat\b/.test(line) && !line.includes('/trigger-capture.mjs:'))||'';
+  if(/@tanstack\/router-generator\//.test(caller) && /(?:^|\/)routeTree\.gen\.ts$/.test(write.file))return 'toolchain';
+  if(/@tanstack\/start-plugin-core\//.test(caller) && /(?:virtual-modules|resolver)/.test(stack))return 'toolchain';
+  if(/\/run\.mjs:\d+:\d+/.test(caller))return 'scenario';
+  return 'unknown';
+}
+export function passAttribution(data,pass) {
   const label=`${pass.step} ${pass.name} pass ${pass.pass}`;
   assert.ok(!pass.triggers.includes('unknown'),`${label}: unknown trigger`);
+  if(pass.triggers.includes('initial'))return {classification:'normal',writerCategory:'startup',writes:[]};
+  const previous=data.passes.filter(p=>p.name===pass.name && p.started<pass.started).at(-1);
   const files=p=>[...new Set([...(p.modifiedFiles||[]),...(p.removedFiles||[])])].sort();
-  if(pass.triggers.includes('normal-change') || pass.triggers.includes('initial'))return 'normal';
+  const paths=files(pass);
+  const writes=(data.writers||[]).filter(w=>w.t>(previous?.started??-Infinity) && w.t<=pass.started && paths.includes(w.file));
+  if(writes.length) {
+    assert.ok(paths.every(file=>writes.some(w=>w.file===file)),`${label}: unknown writer for modified/removed path`);
+    const categories=writes.map(writerCategory);
+    assert.ok(!categories.includes('unknown'),`${label}: unknown intervening writer`);
+    if(pass.triggers.includes('outdated-on-attach')) {
+      const attached=(pass.evidence||[]).filter(e=>e.branch==='outdated-on-attach').map(e=>e.file);
+      assert.ok(paths.every(file=>attached.includes(file)),`${label}: replay lacks Watchpack branch evidence for each path`);
+    }
+    return {classification:pass.triggers.includes('normal-change')?'normal':pass.triggers.includes('outdated-on-attach')?'write-driven attach':'Start-attributed',writerCategory:categories.includes('scenario')?'scenario':'toolchain',writes};
+  }
   if(pass.triggers.includes('outdated-on-attach')) {
-    const previous=data.passes.filter(p=>p.name===pass.name && p.started<pass.started).at(-1);
     const replayFiles=[...new Set((pass.evidence||[]).filter(e=>e.branch==='outdated-on-attach').map(e=>e.file))].sort();
     assert.ok(replayFiles.length,`${label}: replay lacks Watchpack branch evidence for each path`);
-    assert.ok(previous && files(pass).length,`${label}: replay has no preceding same paths`);
-    assert.deepEqual(files(pass),files(previous),`${label}: replay must have same paths as preceding pass`);
-    assert.ok(files(pass).every(file=>replayFiles.includes(file)),`${label}: replay lacks Watchpack branch evidence for each path`);
-    const writes=(data.writers||[]).filter(w=>w.t>previous.started && w.t<=pass.started && files(pass).includes(w.file));
-    if(!writes.length)return 'pure replay';
-    const scenario=w=>/\/run\.mjs:\d+:\d+/.test(w.writerStack||'');
-    const start=w=>w.operation==='Start-virtual-write' || /@tanstack\/.*(?:resolver|virtual-modules|router-generator)/.test(w.writerStack||'');
-    assert.ok(writes.every(w=>scenario(w)||start(w)),`${label}: unknown intervening writer`);
-    return writes.some(scenario)?'write-driven attach':'Start-attributed';
+    assert.ok(previous && paths.length,`${label}: replay has no preceding same paths`);
+    assert.deepEqual(paths,files(previous),`${label}: replay must have same paths as preceding pass`);
+    assert.ok(paths.every(file=>replayFiles.includes(file)),`${label}: replay lacks Watchpack branch evidence for each path`);
+    return {classification:'pure replay',writerCategory:'none',writes:[]};
   }
-  if(pass.triggers.includes('Start-virtual-write'))return 'Start-attributed';
-  // A completed upstream pass is a captured MultiCompiler trigger, not a guess.
-  // Its downstream pass performs normal edge work and remains non-replay work.
-  if(pass.triggers.includes('edge-propagation'))return 'normal';
-  assert.fail(`${label}: unknown trigger class`);
+  const virtual=(pass.evidence||[]).filter(e=>e.kind==='virtual-write');
+  if(virtual.length) {
+    assert.ok(virtual.every(e=>writerCategory(e)==='toolchain'),`${label}: unknown virtual writer`);
+    return {classification:'Start-attributed',writerCategory:'toolchain',writes:virtual};
+  }
+  if(pass.triggers.includes('edge-propagation')) {
+    const parents=(pass.dependencies||[]).map(d=>data.passes.find(p=>p.name===d.name && p.pass===d.pass));
+    assert.ok(parents.length && parents.every(p=>p && p.started<pass.started),`${label}: unknown edge writer`);
+    const causes=parents.map(p=>passAttribution(data,p));
+    const category=causes.some(c=>c.writerCategory==='scenario')?'scenario':causes.some(c=>c.writerCategory==='toolchain')?'toolchain':causes.every(c=>c.writerCategory==='startup')?'startup':'none';
+    return {classification:'normal',writerCategory:category,dependencies:pass.dependencies,writes:causes.flatMap(c=>c.writes)};
+  }
+  assert.fail(`${label}: unknown writer or trigger class`);
 }
+export function classifyPass(data,pass) {return passAttribution(data,pass).classification;}
 export function isReplay(data,pass) {return classifyPass(data,pass)==='pure replay';}
 export function replaySummary(data) {
   assert.ok(data.callbackIdentityPreserved,'watcher callback identity');
   const checkpoints=[];
   for(const pass of data.passes) {
-    const classification=classifyPass(data,pass),replay=classification==='pure replay';
+    const attribution=passAttribution(data,pass),replay=attribution.classification==='pure replay';
     let record=checkpoints.find(c=>c.step===pass.step && c.name===pass.name);
-    if(!record){record={step:pass.step,name:pass.name,passes:0,nonReplay:0,replays:0,replayPasses:[],classes:Object.fromEntries(passClasses.map(c=>[c,0])),classifiedPasses:[]};checkpoints.push(record);}
-    record.passes++;record.classes[classification]++;record.classifiedPasses.push({pass:pass.pass,classification});
+    if(!record){record={step:pass.step,name:pass.name,passes:0,nonReplay:0,scenarioPasses:0,replays:0,replayPasses:[],classes:Object.fromEntries(passClasses.map(c=>[c,0])),writerCategories:Object.fromEntries(writerCategories.map(c=>[c,0])),classifiedPasses:[]};checkpoints.push(record);}
+    record.passes++;record.classes[attribution.classification]++;record.writerCategories[attribution.writerCategory]++;
+    record.classifiedPasses.push({pass:pass.pass,...attribution});
+    if(attribution.writerCategory==='scenario')record.scenarioPasses++;
+    assert.ok(record.writerCategories.toolchain<=2,`${pass.step} ${pass.name}: toolchain pass bound exceeded`);
     if(replay){record.replays++;record.replayPasses.push(pass.pass);}else record.nonReplay++;
   }
-  return {passed:true,conditions:['captured normal or edge trigger','write-driven attach: same paths and scenario write in start-to-start interval','pure replay: same paths and no write in start-to-start interval','Start writer attribution','unknown is a stop'],checkpoints};
+  return {passed:true,conditions:['scenario writes count against exact/bounded expectations','attach paths match captured writes in start-to-start interval','pure replay matches preceding paths with no write','toolchain writer stack required, <=2 passes/compiler/checkpoint','unknown is a stop'],checkpoints};
 }
 export function assertPassCount(data,step,name,expected,label) {
   const summary=replaySummary(data);
-  const count=summary.checkpoints.find(c=>c.step===step && c.name===name)?.nonReplay||0;
-  assert.equal(count,expected,`${label}: non-replay pass count`);
+  const count=summary.checkpoints.find(c=>c.step===step && c.name===name)?.scenarioPasses||0;
+  assert.equal(count,expected,`${label}: scenario-triggered pass count`);
   return summary;
 }
 export function assertPassBounds(data,step,name,saves,label) {
   const summary=replaySummary(data);
-  const record=summary.checkpoints.find(c=>c.step===step && c.name===name);
-  const count=record?.nonReplay||0,start=record?.classes['Start-attributed']||0;
-  assert.ok(count>=1 && count<=saves+start,`${label}: non-replay pass count ${count}, saves ${saves}, Start-attributed ${start}`);
+  const count=summary.checkpoints.find(c=>c.step===step && c.name===name)?.scenarioPasses||0;
+  assert.ok(count>=1 && count<=saves,`${label}: scenario-triggered pass count ${count}, saves ${saves}`);
   return summary;
 }
