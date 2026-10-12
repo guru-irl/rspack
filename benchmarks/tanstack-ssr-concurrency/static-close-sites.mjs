@@ -39,6 +39,15 @@ export function staticCloseSites(app, fixture, work) {
  const applied=spawnSync('patch',['--batch','--fuzz=0','-p1','-i',path.join(fixture,'start-plugin-core-1.171.46-combined.patch')],{cwd:patched,encoding:'utf8'});
  assert.equal(applied.status,0,applied.stdout+applied.stderr);assert.ok(!/offset|fuzz|FAILED/i.test(applied.stdout+applied.stderr));
  for(const name of ['plugin.js','virtual-modules.js'])scan(path.join(app,'node_modules/@tanstack/start-plugin-core/dist/esm/rsbuild',name),fs.readFileSync(path.join(patched,'dist/esm/rsbuild',name),'utf8'),'patched');
+ const implementations=[];
+ const capture=(file,text,terms)=>{for(const term of terms){let i=-1;while((i=text.indexOf(term,i+1))>=0)implementations.push({file,term,line:text.slice(0,i).split('\n').length,excerpt:text.slice(Math.max(0,i-500),i+1700)});}};
+ capture(`node@${process.versions.node}/lib/net.js`,process.binding('natives').net,['Server.prototype.close =','function close()']);
+ capture(`node@${process.versions.node}/lib/events.js`,process.binding('natives').events,['function onceWrapper']);
+ for(const name of fs.readdirSync(path.join(app,'node_modules/@rsbuild/core/dist')))if(/\.js$/.test(name)) {
+  const file=path.join(app,'node_modules/@rsbuild/core/dist',name);
+  capture(path.relative(app,file),fs.readFileSync(file,'utf8'),['server.close(','httpServer.close(','closeServer =','closeServer()','async function closeServer','createDevServer =']);
+ }
+ fs.writeFileSync(path.join(work,'static-close-implementation.json'),JSON.stringify(implementations,null,2));
  const result={scanned,packages:[...packages].sort(),failures,sites};
  fs.writeFileSync(path.join(work,'static-close-sites.json'),JSON.stringify(result,null,2));
  console.log(JSON.stringify({scanned,failures,sites:sites.map(({excerpt,...s})=>s)},null,2));
