@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 export const instrumentJS=original=>{
  let source=original;
  const replace=(old,next)=>{assert.ok(source.includes(old),`JS diagnostic insertion: ${old.slice(0,90)}`);source=source.replace(old,next);};
+ replace("const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);","const timer = undefined;");
  replace("const current = new Map();",`const current = new Map();
 const diagnostic=[];
 const passCounts=new Map();
@@ -15,7 +16,7 @@ const observe=(kind,extra={})=>diagnostic.push({step,kind,t:now(),wallMs:Date.no
 const wfs=compiler.watchFileSystem;
 if(wfs?.watch){const watch=wfs.watch;wfs.watch=function(...args){
  observe('watch-attach',{name:environment.name,startTime:args[3]});
- for(const [index,kind] of [[5,'watch-aggregate-callback'],[6,'watch-undelayed-callback']]){const cb=args[index];if(cb)args[index]=function(...values){observe(kind,{name:environment.name,changed:index===5?paths(values[3]):undefined,removed:index===5?paths(values[4]):undefined,file:index===6&&values[0]?normalize(values[0]):undefined,stack:new Error().stack});return cb.apply(this,values);};}
+ // Keep both original callbacks: Rspack recognizes them by WeakSet identity.
  const watcher=watch.apply(this,args),raw=this.watcher;
  if(raw){
   for(const key of ['_onChange','_onRemove']){const fn=raw[key];if(fn)raw[key]=function(...values){observe('watchpack-'+key,{name:environment.name,args:values.map(v=>typeof v==='string'?normalize(v):v),stack:new Error().stack});return fn.apply(this,values);};}
