@@ -1,3 +1,4 @@
+import { instrumentRestart } from './instrument-restart.mjs';
 import { instrumentJS } from './instrument-js.mjs';
 import { instrumentResponse, instrumentGate } from './instrument-response.mjs';
 import { instrumentCSS } from './instrument-css.mjs';
@@ -97,6 +98,7 @@ const execute=(arm,scenario,index)=>{
   if(process.env.MODE?.startsWith('r3-response-'))fs.writeFileSync(path.join(app,'run.mjs'),instrumentResponse(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
    else if(process.env.MODE==='r3-css-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentCSS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
   else if(process.env.MODE==='r3-js-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentJS(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
+ else if(process.env.MODE==='r3-restart-diagnosis')fs.writeFileSync(path.join(app,'run.mjs'),instrumentRestart(fs.readFileSync(path.join(fixture,'run.mjs'),'utf8')));
  else fs.copyFileSync(path.join(fixture,'run.mjs'),path.join(app,'run.mjs'));
  fs.copyFileSync(path.join(fixture,'runtime-css.mjs'),path.join(app,'runtime-css.mjs'));
  if(scenario==='production') {
@@ -121,6 +123,27 @@ const execute=(arm,scenario,index)=>{
  return {result,status:run.status};
 };
 const mode=process.env.MODE;
+if (mode === 'r3-restart-diagnosis') {
+ process.env.COMPILER_COUNT='4';
+ const results=[];
+ for (let repeat=1;repeat<=5;repeat++) for (const arm of ['stock','gate-only','barrier']) {
+  const r=execute(arm,'r2-restart','diagnostic-'+repeat);
+  results.push({arm,repeat,status:r.status,result:path.basename(r.result)});
+  fs.writeFileSync(path.join(work,'restart-diagnosis-runs.json'),JSON.stringify({diagnosticOnly:true,results},null,2));
+ }
+ // Preserve the exact installed close/restart implementation for attribution.
+ const files=['node_modules/@rsbuild/core/dist/index.js','node_modules/@rspack/core/dist/index.js'];
+ for (const [i,file] of files.entries()) {
+  const text=fs.readFileSync(path.join(app,file),'utf8');
+  const excerpts=[];
+  for(const term of ['ERR_SERVER_NOT_RUNNING','async function close','server.close','closeServer','startDevServer']) {
+   let offset=-1;
+   while((offset=text.indexOf(term,offset+1))>=0)excerpts.push({term,line:text.slice(0,offset).split('\n').length,source:text.slice(Math.max(0,offset-1200),offset+1800)});
+  }
+  fs.writeFileSync(path.join(work,`restart-close-source-${i}.json`),JSON.stringify(excerpts,null,2));
+ }
+ process.exit(0);
+}
 if(mode?.startsWith('r3-response-')) {
  const source=fs.readFileSync(path.join(app,'node_modules/@rspack/core/dist/index.js'),'utf8');
  const excerpts=[];for(const term of ['lastWatcherStartTime','class NodeWatchFileSystem','class Watching','callbackUndelayed']){let i=-1;while((i=source.indexOf(term,i+1))>=0)excerpts.push({term,line:source.slice(0,i).split('\n').length,source:source.slice(Math.max(0,i-1600),i+2600)});}
