@@ -1,4 +1,4 @@
-import { triggerCapture } from './trigger-capture.mjs';
+import { triggerCapture, replaySummary, assertPassCount } from './trigger-capture.mjs';
 import { recordRestartShutdown } from './restart-shutdown.mjs';
 import fs from 'node:fs';
 import { runtimeCSS } from './runtime-css.mjs';
@@ -42,6 +42,7 @@ const checks = [];
 const current = new Map();
 const compilers = new Map();
 const triggers=triggerCapture({step:()=>step,now,normalize:p=>normalize(p)});
+triggers.installWriters();
 const timer = measuring ? undefined : setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 10);
 const event = (name, kind, extra = {}) => { const t = now(); lastEvent = t; events.push({ step, name, kind, t, wallMs:Date.now(), ...extra }); };
 const normalize = s => s.replaceAll(process.cwd(), '<APP>').replaceAll('\\', '/');
@@ -356,6 +357,7 @@ try {
       server=await rsbuild.startDevServer();await waitIdle(2);
       await sample(base,'Public leaf baseline');await restartShutdown.final(()=>server.close ? server.close() : server.server.close());server=undefined;
     }
+    fs.writeFileSync(path.join(out,'replay-summary.json'),JSON.stringify(replaySummary(triggers.evidence()),null,2));
     fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,closed:true}));
     clearInterval(timer);fs.writeFileSync(path.join(out,'pass-triggers.json'),JSON.stringify(triggers.evidence(),null,2));
     fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events));process.exit(0);
@@ -426,9 +428,9 @@ try {
     assert.ok(ssrMake.t>=clientAfter.t,'default SSR make must wait for client afterDone');
   } else if (scenario==='r2-passes') {
     await edit('body-single','src/functions.ts',baselineFns.replace('alpha-public','alpha-updated'),{...base,alpha:'alpha-updated'});
-    assert.equal(builds.filter(b=>b.name==='ssr'&&b.step==='body-single').length,1,'server-function body edit has one SSR pass');
+    assertPassCount(triggers.evidence(),'body-single','ssr',1,'server-function body edit has one SSR pass');
     await edit('add-single','src/functions.ts',baselineFns+"\nexport const delta=createServerFn({method:'GET'}).handler(async()=> 'delta-public');\n",{...base,delta:'delta-public'});
-    assert.equal(builds.filter(b=>b.name==='ssr'&&b.step==='add-single').length,1,'server-function add has one SSR pass');
+    assertPassCount(triggers.evidence(),'add-single','ssr',1,'server-function add has one SSR pass');
   } else if (scenario==='cold'||scenario==='cold-measure'||scenario==='r2-topology') {}
   else if (scenario==='red-recovery') {
     step='resolver-recovery'; peak=process.memoryUsage().rss; lastEvent=now();
@@ -501,7 +503,8 @@ try {
       }
     }
   }
-  fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,steps:checks.length}));
+  fs.writeFileSync(path.join(out,'replay-summary.json'),JSON.stringify(replaySummary(triggers.evidence()),null,2));
+    fs.writeFileSync(path.join(out,'success.json'),JSON.stringify({passed:true,arm,scenario,steps:checks.length}));
 } catch(error) {
   console.error(error); process.exitCode=1;
 } finally {

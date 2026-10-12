@@ -54,6 +54,7 @@ jobs:
             node --check "$WORK_DIR/js-observed-source.mjs"
           fi
           node benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
+          python3 benchmarks/tanstack-ssr-concurrency/summarize-replays.py "$WORK_DIR"
           if [[ "$MODE" == r3-measure ]]; then
             python3 benchmarks/tanstack-ssr-concurrency/analyze-r3.py "$WORK_DIR" "$WORK_DIR/measurement-analysis.json"
           fi

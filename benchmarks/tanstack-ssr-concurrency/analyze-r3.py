@@ -74,7 +74,7 @@ def pass_counts(arm,scenario):
         builds=json.loads((directory/'builds.json').read_text())
         steps=['initial'] if scenario=='cold-measure' else [c['step'] for c in json.loads((directory/'checks.json').read_text()) if c['step'].startswith(('leaf-','body-'))]
         counts.extend(sum(b['step']==step and b['name']=='client' for b in builds) for step in steps)
-    return {'observations':len(counts),'passes':sum(counts),'meanPasses':statistics.mean(counts),'counts':counts,'distribution':{str(n):counts.count(n) for n in sorted(set(counts))},'replayed':sum(n>1 for n in counts)}
+    return {'observations':len(counts),'passes':sum(counts),'meanPasses':statistics.mean(counts),'counts':counts,'distribution':{str(n):counts.count(n) for n in sorted(set(counts))},'multiPass':sum(n>1 for n in counts)}
 
 orders=json.loads((root/'arm-orders.json').read_text())
 for scenario in ['cold-measure','warm-leaf','warm-body']:
@@ -95,7 +95,8 @@ result['clientPassesPerEdit']={}
 for scenario in ['cold-measure','warm-leaf','warm-body']:
     counts={arm:pass_counts(arm,scenario) for arm in ['stock','gate-only','barrier']}
     a=counts['stock'];b=counts['barrier']
-    result['clientPassesPerEdit'][scenario]={'unit':'startup' if scenario=='cold-measure' else 'edit','arms':counts,'defaultVsStockFisherExact':fisher(a['replayed'],a['observations']-a['replayed'],b['replayed'],b['observations']-b['replayed'])}
+    result['clientPassesPerEdit'][scenario]={'unit':'startup' if scenario=='cold-measure' else 'edit','arms':counts,'defaultVsStockFisherExact':fisher(a['multiPass'],a['observations']-a['multiPass'],b['multiPass'],b['observations']-b['multiPass'])}
+result['validatedReplayFrequency']=json.loads((root/'replay-frequency.json').read_text())
 output.write_text(json.dumps(result,indent=2))
 print(result['method'])
 for r in result['comparisons']:

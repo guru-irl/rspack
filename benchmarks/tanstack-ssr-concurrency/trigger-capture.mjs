@@ -1,12 +1,34 @@
 // Passive event observation. Never replace either watch callback or Watchpack methods.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
 export function triggerCapture({step, now, normalize}) {
-  const observations=[], passes=[], states=new Map(), graph=new Map();
+  const observations=[], writers=[], passes=[], states=new Map(), graph=new Map();
   const paths=items=>[...(items??[])].map(p=>normalize(String(p))).sort();
   const observe=(name,kind,extra={})=>{
     const record={step:step(),name,kind,t:now(),...extra};
     observations.push(record); return record;
   };
+  const recordWrite=(file,operation)=>{
+    if(typeof file!=='string' && !(file instanceof URL))return;
+    const absolute=file instanceof URL?file.pathname:path.resolve(file);
+    // Fixture source edits, resolver writes and route-tree generation only.
+    if(!absolute.startsWith(path.join(process.cwd(),'src')+path.sep) && !absolute.startsWith(path.join(process.cwd(),'aux')+path.sep) && !absolute.includes('_tanstack-start-'))return;
+    writers.push({t:now(),step:step(),file:normalize(absolute),operation,writerStack:new Error().stack});
+  };
+  function installWriters() {
+    const operations=['writeFile','appendFile','truncate','unlink','rename','copyFile','createWriteStream'];
+    for(const target of [fs,fs.promises])for(const operation of operations)for(const suffix of target===fs?['','Sync']:['']) {
+      const key=operation+suffix,original=target[key];if(typeof original!=='function')continue;
+      target[key]=function(...args) {
+        recordWrite(args[0],key);
+        if(['rename','copyFile'].includes(operation))recordWrite(args[1],key);
+        return Reflect.apply(original,this,args);
+      };
+    }
+    syncBuiltinESMExports();
+  }
   function install(compiler,name) {
     const state={cursor:0,pass:0,latest:undefined,done:undefined}; states.set(name,state);
     const wfs=compiler.watchFileSystem;
@@ -33,6 +55,7 @@ export function triggerCapture({step, now, normalize}) {
     for(const plugin of compiler.options.plugins) if(typeof plugin?.writeModule==='function') {
       const write=plugin.writeModule;
       plugin.writeModule=function(file,content) {
+        recordWrite(String(file),'Start-virtual-write');
         observe(name,'virtual-write',{file:normalize(String(file)),writerStack:new Error().stack});
         return Reflect.apply(write,this,arguments);
       };
@@ -57,7 +80,7 @@ export function triggerCapture({step, now, normalize}) {
       state.latest.finished=now();state.done=state.latest;
     });
   }
-  return {install,setGraph:multi=>{for(const compiler of multi.compilers||[multi])graph.set(compiler.name,multi.dependencies?.get(compiler)||[]);},latest:name=>states.get(name)?.latest,evidence:()=>({callbackIdentityPreserved:true,observations,passes})};
+  return {install,installWriters,setGraph:multi=>{for(const compiler of multi.compilers||[multi])graph.set(compiler.name,multi.dependencies?.get(compiler)||[]);},latest:name=>states.get(name)?.latest,evidence:()=>({callbackIdentityPreserved:true,observations,writers,passes})};
 }
 export function edgeContract(reference,edged,edge) {
   const ordering=data=>{
@@ -67,6 +90,7 @@ export function edgeContract(reference,edged,edge) {
     assert.ok(data.callbackIdentityPreserved,'watcher callback identity');
   };
   ordering(reference);ordering(edged);
+  const replayReference=replaySummary(reference),replayEdge=replaySummary(edged);
   const differences=[];
   const keys=new Set([...reference.passes,...edged.passes].map(p=>JSON.stringify([p.step,p.name])));
   for(const key of keys) {
@@ -75,9 +99,44 @@ export function edgeContract(reference,edged,edge) {
     if(a.length===b.length)continue;
     const extra=(b.length>a.length?b:a).slice(Math.min(a.length,b.length));
     for(const pass of extra)assert.ok(!pass.triggers.includes('unknown'),`${edge} ${step} ${name}: extra pass ${pass.pass} has unknown trigger`);
-    differences.push({step,name,reference:a.length,edge:b.length,extra});
+    differences.push({step,name,reference:a.length,edge:b.length,extra,referenceNonReplay:a.filter(p=>!isReplay(reference,p)).length,edgeNonReplay:b.filter(p=>!isReplay(edged,p)).length});
   }
   // Output differences, including fewer passes with different output, fail
   // the unchanged checkpoint parity guard before this contract is evaluated.
-  return {passed:true,edge,ordering:true,callbackIdentityPreserved:true,differences,reference,edged};
+  return {passed:true,edge,ordering:true,callbackIdentityPreserved:true,differences,replayReference,replayEdge,reference,edged};
+}
+
+// One rule for all count assertions. Timing always retains the original passes.
+export function isReplay(data,pass) {
+  assert.ok(!pass.triggers.includes('unknown'),`${pass.step} ${pass.name} pass ${pass.pass}: unknown trigger`);
+  if(!pass.triggers.includes('outdated-on-attach'))return false;
+  const previous=data.passes.filter(p=>p.name===pass.name && p.started<pass.started).at(-1);
+  const files=p=>[...new Set([...(p.modifiedFiles||[]),...(p.removedFiles||[])])].sort();
+  const replayFiles=[...new Set((pass.evidence||[]).filter(e=>e.branch==='outdated-on-attach').map(e=>e.file))].sort();
+  assert.ok(replayFiles.length,`${pass.step} ${pass.name}: replay lacks Watchpack branch evidence for each path`);
+  assert.ok(previous && files(pass).length,`${pass.step} ${pass.name}: replay has no preceding same paths`);
+  assert.deepEqual(files(pass),files(previous),`${pass.step} ${pass.name}: replay must have same paths as preceding pass`);
+  assert.ok(files(pass).every(file=>replayFiles.includes(file)),`${pass.step} ${pass.name}: replay lacks Watchpack branch evidence for each path`);
+  // Conservative interval includes writes during the preceding compilation,
+  // not just the idle gap, so a rapid second save cannot be discounted.
+  const writes=(data.writers||[]).filter(w=>w.t>previous.started && w.t<=pass.started && files(pass).includes(w.file));
+  assert.equal(writes.length,0,`${pass.step} ${pass.name}: write between preceding pass and replay`);
+  return true;
+}
+export function replaySummary(data) {
+  assert.ok(data.callbackIdentityPreserved,'watcher callback identity');
+  const checkpoints=[];
+  for(const pass of data.passes) {
+    const replay=isReplay(data,pass);
+    let record=checkpoints.find(c=>c.step===pass.step && c.name===pass.name);
+    if(!record){record={step:pass.step,name:pass.name,passes:0,nonReplay:0,replays:0,replayPasses:[]};checkpoints.push(record);}
+    record.passes++;if(replay){record.replays++;record.replayPasses.push(pass.pass);}else record.nonReplay++;
+  }
+  return {passed:true,conditions:['Watchpack outdated-on-attach branch','same paths as preceding compiler pass','no intervening captured write'],checkpoints};
+}
+export function assertPassCount(data,step,name,expected,label) {
+  const summary=replaySummary(data);
+  const count=summary.checkpoints.find(c=>c.step===step && c.name===name)?.nonReplay||0;
+  assert.equal(count,expected,`${label}: non-replay pass count`);
+  return summary;
 }

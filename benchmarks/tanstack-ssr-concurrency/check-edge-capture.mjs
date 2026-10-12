@@ -15,7 +15,7 @@ assert.deepEqual(capture.evidence().passes[1].triggers,['outdated-on-attach']);
 const pass=(name,started,finished,triggers=['normal-change'])=>({step:'edit',name,pass:1,started,finished,triggers});
 const data=passes=>({callbackIdentityPreserved:true,passes});
 const base=data([pass('client',1,2),pass('ssr',3,4)]);
-const more=data([...base.passes,pass('client',5,6,['outdated-on-attach']),pass('ssr',7,8,['edge-propagation'])]);
+const more=data([...base.passes,pass('client',5,6,['normal-change']),pass('ssr',7,8,['edge-propagation'])]);
 assert.equal(edgeContract(base,more,'direct').differences.length,2);
 assert.throws(()=>edgeContract(base,data([...base.passes,pass('ssr',5,6,['unknown'])]),'direct'),/unknown trigger/);
 assert.throws(()=>edgeContract(base,data([pass('client',1,4),pass('ssr',3,5)]),'direct'),/overlaps client/);
