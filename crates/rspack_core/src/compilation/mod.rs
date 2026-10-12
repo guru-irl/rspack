@@ -315,6 +315,7 @@ pub struct Compilation {
   pub modified_files: InternedPathSet,
   pub removed_files: InternedPathSet,
   pub build_module_graph_artifact: crate::new_cache::probe_graph::GraphCell,
+  pub(crate) probe_graph_start_time: u64,
   pub(crate) probe_graph_snapshot: Option<crate::new_cache::Snapshot>,
   pub input_filesystem: Arc<dyn ReadableFileSystem>,
 
@@ -428,6 +429,7 @@ impl Compilation {
       logging,
       cache,
       module_build_cache,
+      probe_graph_start_time: rspack_util::current_time(),
       probe_graph_snapshot: None,
       resolver_cache,
       file_system_info,

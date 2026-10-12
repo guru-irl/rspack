@@ -310,6 +310,70 @@ impl TurboDatabase {
     Ok(writes_len)
   }
 
+  pub fn key_hash(key: &CacheKey) -> u64 {
+    turbo_persistence::hash_key(key)
+  }
+  /// Fork-only bounded SST stream. Join both encoders before exclusive flush,
+  /// then atomically publish every value through one commit.
+  pub fn write_batch_streamed(
+    &self,
+    writes: impl ParallelIterator<Item = (DatabaseFamily, CacheKey, Vec<u8>)>,
+    topology: impl Iterator<Item = Result<(CacheKey, Vec<u8>)>> + Send,
+    metadata: impl FnOnce() -> Result<Vec<(CacheKey, Vec<u8>)>>,
+  ) -> Result<usize> {
+    let inner = self
+      .inner
+      .as_ref()
+      .ok_or_else(|| rspack_error::error!("Cache database is not open for storing"))?;
+    let mut batch = inner.write_batch::<CacheKey>()?;
+    let put_regular = || {
+      writes
+        .try_fold(
+          || 0,
+          |count, (family, key, value)| -> Result<usize> {
+            batch.put(family.index() as u32, key, value.into())?;
+            Ok(count + 1)
+          },
+        )
+        .try_reduce(|| 0, |a, b| Ok(a + b))
+    };
+    let topology = topology.map(|entry| {
+      entry
+        .map(|(key, value)| (key, value.into()))
+        .map_err(|e| std::io::Error::other(e.to_string()).into())
+    });
+    let count = if std::env::var_os("RSPACK_PROBE_STORE_SERIAL").is_some() {
+      let regular = put_regular()?;
+      batch.flush_exclusive(DatabaseFamily::Cache.index() as u32)?;
+      regular + batch.put_sorted(DatabaseFamily::Cache.index() as u32, topology)?
+    } else {
+      // The sorted stream never touches the ordinary collectors. Both producers
+      // finish before exclusive flush, publication, or rollback can occur.
+      let (regular, sorted) = std::thread::scope(|scope| {
+        let batch = &batch;
+        let writer =
+          scope.spawn(move || batch.put_sorted(DatabaseFamily::Cache.index() as u32, topology));
+        let regular = put_regular();
+        (
+          regular,
+          writer.join().expect("topology writer must not panic"),
+        )
+      });
+      let count = regular? + sorted?;
+      batch.flush_exclusive(DatabaseFamily::Cache.index() as u32)?;
+      count
+    };
+    let metadata = metadata()?;
+    let count = count + metadata.len();
+    for (key, value) in metadata {
+      batch.put(DatabaseFamily::Cache.index() as u32, key, value.into())?;
+    }
+    if count > 0 {
+      inner.commit_write_batch(batch)?;
+    }
+    Ok(count)
+  }
+
   pub fn compact(&self) -> Result<()> {
     let Some(inner) = self
       .inner

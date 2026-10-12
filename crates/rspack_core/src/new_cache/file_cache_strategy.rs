@@ -377,7 +377,7 @@ impl FileCacheStrategy {
         state.database.prepare_open(&self.logger)?
       };
 
-      let (entries, new_build_dependencies, probe_graph) = {
+      let (entries, new_build_dependencies, mut probe_graph) = {
         let mut state = self.write_state();
         let Some(state) = state.as_mut() else {
           return Ok(());
@@ -397,6 +397,12 @@ impl FileCacheStrategy {
 
       let validator = if let Some(dependencies) = new_build_dependencies {
         self.validator.update(dependencies).await?
+      } else {
+        None
+      };
+
+      let graph_snapshot = if let Some(graph) = probe_graph.as_mut() {
+        Some(graph.create_snapshot().await?)
       } else {
         None
       };
@@ -427,17 +433,17 @@ impl FileCacheStrategy {
         let Some(state) = state.as_ref() else {
           return Ok(());
         };
-        let mut count = state.database.write_batch(writes)?;
         if let Some(graph) = probe_graph.as_ref() {
-          count += graph.write_bounded(|writes| {
-            state.database.write_batch(
-              writes
-                .into_par_iter()
-                .map(|(key, value)| (DatabaseFamily::Cache, key, value)),
-            )
-          })?;
+          let snapshot = graph_snapshot
+            .as_ref()
+            .expect("queued graph snapshot must exist");
+          let (topology, index) = graph.topology_writes();
+          state
+            .database
+            .write_batch_streamed(writes, topology, || graph.metadata_writes(snapshot, index))?
+        } else {
+          state.database.write_batch(writes)?
         }
-        count
       };
       if probe_graph.is_some() {
         super::probe_graph::store_metrics();

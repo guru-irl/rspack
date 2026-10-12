@@ -34,7 +34,9 @@ const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 // elapsed durations separately expose the read/decode barrier critical path.
 static TIMING: LazyLock<bool> =
   LazyLock::new(|| std::env::var_os("RSPACK_PROBE_GRAPH_TIMERS").is_some());
-static METRICS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+static METRICS: [AtomicU64; 18] = [const { AtomicU64::new(0) }; 18];
+static COUNTERS_AFTER: LazyLock<bool> =
+  LazyLock::new(|| std::env::var_os("RSPACK_PROBE_COUNTERS_AFTER").is_some());
 pub(crate) fn timer_start() -> Option<Instant> {
   (*TIMING).then(Instant::now)
 }
@@ -66,28 +68,51 @@ fn millis(start: Instant) -> f64 {
 // This cell shares the graph only after done. No second topology owner is copied.
 // Rebuild is deliberately excluded from the prototype's supported workflow.
 #[derive(Debug)]
-pub struct GraphCell(Option<Arc<BuildModuleGraphArtifact>>);
+pub enum GraphCell {
+  Owned(Box<BuildModuleGraphArtifact>),
+  Shared(Arc<BuildModuleGraphArtifact>),
+  Stolen,
+}
 impl From<BuildModuleGraphArtifact> for GraphCell {
   fn from(value: BuildModuleGraphArtifact) -> Self {
-    Self(Some(Arc::new(value)))
+    Self::Owned(Box::new(value))
   }
 }
 impl GraphCell {
   pub fn try_read(&self) -> Option<&BuildModuleGraphArtifact> {
-    self.0.as_deref()
+    match self {
+      Self::Owned(graph) => Some(graph),
+      Self::Shared(graph) => Some(graph),
+      Self::Stolen => None,
+    }
   }
   pub fn try_write(&mut self) -> Option<&mut BuildModuleGraphArtifact> {
-    self.0.as_mut().and_then(Arc::get_mut)
+    match self {
+      Self::Owned(graph) => Some(graph),
+      Self::Shared(graph) => Arc::get_mut(graph),
+      Self::Stolen => None,
+    }
   }
   pub fn is_stolen(&self) -> bool {
-    self.0.is_none()
+    matches!(self, Self::Stolen)
   }
   pub fn steal(&mut self) -> BuildModuleGraphArtifact {
-    Arc::try_unwrap(self.0.take().expect("graph must exist"))
-      .expect("graph must not be shared during compilation")
+    match std::mem::replace(self, Self::Stolen) {
+      Self::Owned(graph) => *graph,
+      Self::Shared(graph) => {
+        Arc::try_unwrap(graph).expect("graph must not be shared during compilation")
+      }
+      Self::Stolen => panic!("graph must exist"),
+    }
   }
-  fn share(&self) -> Arc<BuildModuleGraphArtifact> {
-    Arc::clone(self.0.as_ref().expect("graph must exist"))
+  fn share(&mut self) -> Arc<BuildModuleGraphArtifact> {
+    let graph = match std::mem::replace(self, Self::Stolen) {
+      Self::Owned(graph) => Arc::new(*graph),
+      Self::Shared(graph) => graph,
+      Self::Stolen => panic!("graph must exist"),
+    };
+    *self = Self::Shared(Arc::clone(&graph));
+    graph
   }
 }
 impl Deref for GraphCell {
@@ -111,12 +136,20 @@ impl ArtifactExt for GraphCell {
   }
 }
 
-#[derive(Debug)]
 pub(crate) struct PendingGraph {
   graph: Arc<BuildModuleGraphArtifact>,
-  snapshot: Snapshot,
+  snapshot: Option<Snapshot>,
+  file_system_info: super::FileSystemInfo,
+  start_time: u64,
+  snapshot_strategy: crate::SnapshotStrategyOptions,
 }
-
+impl std::fmt::Debug for PendingGraph {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("PendingGraph")
+      .field("start_time", &self.start_time)
+      .finish_non_exhaustive()
+  }
+}
 // Dependency and block objects already belong to the module entry. Only IDs,
 // parents, factorization data and edges are stored here.
 #[cacheable]
@@ -128,6 +161,7 @@ struct Node<'a> {
     Option<OwnedOrRef<'a, FactorizeInfo>>,
   )>,
   connections: Vec<OwnedOrRef<'a, ModuleGraphConnection>>,
+  incoming: Vec<crate::ModuleGraphConnectionId>,
   lazy_info: Option<OwnedOrRef<'a, crate::compilation::build_module_graph::LazyDependencies>>,
 }
 
@@ -165,6 +199,15 @@ fn topology<'a>(graph: &'a BuildModuleGraphArtifact, id: &crate::ModuleIdentifie
           .into()
       })
       .collect(),
+    incoming: mgm
+      .incoming_connections()
+      .iter()
+      .filter(|id| {
+        mg.connection_by_id(id)
+          .is_some_and(|connection| connection.original_module_identifier.is_some())
+      })
+      .copied()
+      .collect(),
     lazy_info: graph
       .module_to_lazy_make
       .get_lazy_dependencies(id)
@@ -173,26 +216,56 @@ fn topology<'a>(graph: &'a BuildModuleGraphArtifact, id: &crate::ModuleIdentifie
 }
 
 impl PendingGraph {
-  pub(crate) fn write_bounded(
-    &self,
-    mut commit: impl FnMut(Vec<(CacheKey, Vec<u8>)>) -> Result<usize>,
-  ) -> Result<usize> {
+  pub(crate) async fn create_snapshot(&mut self) -> Result<Snapshot> {
+    if let Some(snapshot) = self.snapshot.take() {
+      return Ok(snapshot);
+    }
     let graph = &self.graph;
-    let codec = CacheCodec::new(None);
+    let files = graph.file_dependencies.files().cloned().collect();
+    let contexts = graph.context_dependencies.files().cloned().collect();
+    let missing = graph.missing_dependencies.files().cloned().collect();
+    self
+      .file_system_info
+      .create_snapshot(
+        Some(self.start_time),
+        &files,
+        &contexts,
+        &missing,
+        self.snapshot_strategy,
+      )
+      .await
+  }
+
+  pub(crate) fn topology_writes(
+    &self,
+  ) -> (
+    impl Iterator<Item = Result<(CacheKey, Vec<u8>)>> + '_,
+    Vec<String>,
+  ) {
+    let graph = &self.graph;
     let mut ids = graph
       .get_module_graph()
       .modules()
       .map(|(id, _)| *id)
       .collect::<Vec<_>>();
     ids.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-    let mut index = Vec::new();
-    let mut count = 0;
-    // Commit at most 4 MiB of ordinary packs at a time. An individual
-    // value may be larger, up to the explicit 8 MiB recovery limit.
-    // The serialized byte cap is checked before adding each value to a batch.
-    let mut pending = Vec::new();
-    let mut bytes = 0;
-    for ids in ids.chunks(CHUNK) {
+    let mut packs = ids
+      .chunks(CHUNK)
+      .enumerate()
+      .map(|(i, ids)| {
+        let key = key(ids[0].as_str());
+        (super::db::Database::key_hash(&key), key, i)
+      })
+      .collect::<Vec<_>>();
+    let index = packs
+      .iter()
+      .map(|(_, key, _)| key.as_str().to_owned())
+      .collect();
+    // Database order, not identifier order. Only pack descriptors are sorted.
+    packs.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let codec = CacheCodec::new(None);
+    let writes = packs.into_iter().map(move |(_, key, chunk)| {
+      let ids = &ids[chunk * CHUNK..((chunk + 1) * CHUNK).min(ids.len())];
       let start = timer_start();
       let nodes = ids.iter().map(|id| topology(graph, id)).collect::<Vec<_>>();
       let value = codec.encode(&nodes)?;
@@ -202,24 +275,28 @@ impl PendingGraph {
       timer_add(2, start);
       count_add(5, value.len());
       count_add(7, ids.len());
-      if !pending.is_empty() && bytes + value.len() > PACKET_BYTES {
-        count += commit(std::mem::take(&mut pending))?;
-        bytes = 0;
-      }
-      let key = key(ids[0].as_str());
-      index.push(key.as_str().to_owned());
-      bytes += value.len();
-      pending.push((key, value));
-    }
-    if !pending.is_empty() {
-      count += commit(pending)?;
-    }
-    // Index is published only after all packs are committed.
-    count += commit(vec![
-      (CacheKey::new(SNAPSHOT), codec.encode(&self.snapshot)?),
-      (CacheKey::new(INDEX), index.join("\n").into_bytes()),
-    ])?;
-    Ok(count)
+      Ok((key, value))
+    });
+    (writes, index)
+  }
+  pub(crate) fn metadata_writes(
+    &self,
+    snapshot: &Snapshot,
+    index: Vec<String>,
+  ) -> Result<Vec<(CacheKey, Vec<u8>)>> {
+    let codec = CacheCodec::new(None);
+    Ok(vec![
+      (CacheKey::new(SNAPSHOT), codec.encode(snapshot)?),
+      (
+        CacheKey::new(INDEX),
+        index
+          .join(
+            "
+",
+          )
+          .into_bytes(),
+      ),
+    ])
   }
 }
 
@@ -229,83 +306,122 @@ fn recover_packed(
   cache: &CacheFacade,
   codec: &CacheCodec,
   keys: &[&str],
+  exports: &mut crate::ExportsInfoArtifact,
 ) -> Result<()> {
-  let produce = |mut consume: Box<
-    dyn FnMut(Vec<(ModuleRef, Node<'static>)>) -> Result<()> + '_,
-  >|
-   -> Result<()> {
-    let mut values = Vec::new();
-    let mut total = 0;
-    let decode = |values: Vec<Vec<u8>>| -> Result<Vec<(ModuleRef, Node<'static>)>> {
-      values
-        .into_par_iter()
-        .map(|bytes| -> Result<_> {
-          let start = timer_start();
-          let nodes: Vec<Node<'static>> = codec.decode(&bytes)?;
-          timer_add(3, start);
-          if nodes.len() > CHUNK {
-            return Err(error!("oversized topology node count"));
-          }
-          drop(bytes);
-          nodes
-            .into_par_iter()
-            .map(|node| -> Result<_> {
-              let id = node.mgm.as_ref().module_identifier;
-              let value = cache
-                .get::<ModuleRef>(id.as_str(), None)
-                .ok_or_else(|| error!("missing module {id}"))?;
-              let module = value.as_arc().as_ref().clone();
-              module.reset_for_compilation(module.factory_meta());
-              Ok((module, node))
-            })
-            .collect::<Result<Vec<_>>>()
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|packs| packs.into_iter().flatten().collect())
+  type Records = Vec<(ModuleRef, Node<'static>)>;
+  let produce =
+    |keys: &[&str], mut consume: Box<dyn FnMut(Records) -> Result<()> + '_>| -> Result<()> {
+      let mut values = Vec::new();
+      let mut total = 0;
+      let decode = |values: Vec<Vec<u8>>| -> Result<Vec<(ModuleRef, Node<'static>)>> {
+        let group_start = timer_start();
+        let result = values
+          .into_par_iter()
+          .map(|bytes| -> Result<_> {
+            let start = timer_start();
+            let nodes: Vec<Node<'static>> = codec.decode(&bytes)?;
+            timer_add(3, start);
+            if nodes.len() > CHUNK {
+              return Err(error!("oversized topology node count"));
+            }
+            drop(bytes);
+            nodes
+              .into_par_iter()
+              .map(|node| -> Result<_> {
+                let id = node.mgm.as_ref().module_identifier;
+                let value = cache
+                  .get::<ModuleRef>(id.as_str(), None)
+                  .ok_or_else(|| error!("missing module {id}"))?;
+                let module = value.as_arc().as_ref().clone();
+                module.reset_for_compilation(module.factory_meta());
+                Ok((module, node))
+              })
+              .collect::<Result<Vec<_>>>()
+          })
+          .collect::<Result<Vec<_>>>()
+          .map(|packs| packs.into_iter().flatten().collect());
+        if let Some(start) = group_start {
+          let elapsed = start.elapsed().as_nanos() as u64;
+          METRICS[11].fetch_add(elapsed, Ordering::Relaxed);
+          METRICS[12].fetch_add(1, Ordering::Relaxed);
+          METRICS[13].fetch_max(elapsed, Ordering::Relaxed);
+        }
+        result
+      };
+      for key in keys {
+        let start = timer_start();
+        let bytes = strategy
+          .probe_graph_get(&CacheKey::new(key))
+          .ok_or_else(|| error!("missing topology {key}"))?;
+        timer_add(2, start);
+        count_add(5, bytes.len());
+        count_add(7, 1);
+        if bytes.len() > MAX_RECORD_BYTES {
+          return Err(error!("oversized topology"));
+        }
+        if !values.is_empty() && (total + bytes.len() > PACKET_BYTES || values.len() >= 4) {
+          consume(decode(std::mem::take(&mut values))?)?;
+          total = 0;
+        }
+        total += bytes.len();
+        values.push(bytes);
+      }
+      if !values.is_empty() {
+        consume(decode(values)?)?;
+      }
+      Ok(())
     };
-    for key in keys {
-      let start = timer_start();
-      let bytes = strategy
-        .probe_graph_get(&CacheKey::new(key))
-        .ok_or_else(|| error!("missing topology {key}"))?;
-      timer_add(2, start);
-      count_add(5, bytes.len());
-      count_add(7, 1);
-      if bytes.len() > MAX_RECORD_BYTES {
-        return Err(error!("oversized topology"));
-      }
-      if !values.is_empty() && (total + bytes.len() > PACKET_BYTES || values.len() >= 4) {
-        consume(decode(std::mem::take(&mut values))?)?;
-        total = 0;
-      }
-      total += bytes.len();
-      values.push(bytes);
-    }
-    if !values.is_empty() {
-      consume(decode(values)?)?;
-    }
-    Ok(())
-  };
   let (tx, rx) = std::sync::mpsc::sync_channel(1);
   std::thread::scope(|scope| {
-    scope.spawn(move || {
-      let result = produce(Box::new(|records| {
-        tx.send(Ok(records))
-          .map_err(|_| error!("graph consumer stopped"))
-      }));
-      if let Err(error) = result {
-        let _ = tx.send(Err(error));
-      }
-    });
+    let workers = std::env::var("RSPACK_PROBE_DECODE_WORKERS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .unwrap_or(2)
+      .clamp(1, 2);
+    // Two producers, one queued decoded group and one consumer group. Each
+    // producer also owns at most one lookahead pack. Rayon owns CPU decode work.
+    for keys in keys.chunks(keys.len().div_ceil(workers).max(1)) {
+      let tx = tx.clone();
+      let produce = &produce;
+      scope.spawn(move || {
+        let result = produce(
+          keys,
+          Box::new(|records| {
+            let start = timer_start();
+            let result = tx
+              .send(Ok(records))
+              .map_err(|_| error!("graph consumer stopped"));
+            timer_add(10, start);
+            result
+          }),
+        );
+        if let Err(error) = result {
+          let _ = tx.send(Err(error));
+        }
+      });
+    }
+    drop(tx);
     let mut result = Ok(());
-    while let Ok(records) = rx.recv() {
+    loop {
+      let start = timer_start();
+      let records = rx.recv();
+      timer_add(9, start);
+      let Ok(records) = records else {
+        break;
+      };
       match records {
         Ok(records) => {
           let start = timer_start();
           for (module, node) in records {
+            let id = module.identifier();
             if let Err(error) = install(graph, module, node) {
               result = Err(error);
               break;
+            }
+            if !*COUNTERS_AFTER {
+              let start = timer_start();
+              exports.new_exports_info(id);
+              timer_add(16, start);
             }
           }
           timer_add(8, start);
@@ -322,7 +438,10 @@ fn recover_packed(
 }
 
 pub(crate) async fn prepare(compilation: &mut Compilation) -> Result<()> {
-  if std::env::var_os("RSPACK_PROBE_GRAPH").is_none() || compilation.is_rebuild {
+  if std::env::var_os("RSPACK_PROBE_SNAPSHOT_EAGER").is_none()
+    || std::env::var_os("RSPACK_PROBE_GRAPH").is_none()
+    || compilation.is_rebuild
+  {
     return Ok(());
   }
   let Some(strategy) = compilation.probe_graph_strategy() else {
@@ -341,7 +460,7 @@ pub(crate) async fn prepare(compilation: &mut Compilation) -> Result<()> {
     compilation
       .file_system_info
       .create_snapshot(
-        None,
+        Some(compilation.probe_graph_start_time),
         &files,
         &contexts,
         &missing,
@@ -353,15 +472,22 @@ pub(crate) async fn prepare(compilation: &mut Compilation) -> Result<()> {
 }
 
 pub(crate) fn queue(compilation: &mut Compilation) {
-  let Some(snapshot) = compilation.probe_graph_snapshot.take() else {
+  if std::env::var_os("RSPACK_PROBE_GRAPH").is_none() || compilation.is_rebuild {
+    return;
+  }
+  let Some(strategy) = compilation.probe_graph_strategy() else {
     return;
   };
-  if let Some(strategy) = compilation.probe_graph_strategy() {
-    strategy.probe_graph_store(PendingGraph {
-      graph: compilation.build_module_graph_artifact.share(),
-      snapshot,
-    });
+  if strategy.probe_graph_get(&CacheKey::new(INDEX)).is_some() {
+    return;
   }
+  strategy.probe_graph_store(PendingGraph {
+    graph: compilation.build_module_graph_artifact.share(),
+    snapshot: compilation.probe_graph_snapshot.take(),
+    file_system_info: compilation.file_system_info.clone(),
+    start_time: compilation.probe_graph_start_time,
+    snapshot_strategy: compilation.options.snapshot.module,
+  });
 }
 
 pub(crate) async fn restore(compilation: &mut Compilation) -> bool {
@@ -456,7 +582,8 @@ async fn recover(
   let mut graph = BuildModuleGraphArtifact::new();
   let mut chunks = Vec::new();
   let records_start = Instant::now();
-  recover_packed(&mut graph, strategy, &cache, &codec, &ids)?;
+  let mut exports = crate::ExportsInfoArtifact::default();
+  recover_packed(&mut graph, strategy, &cache, &codec, &ids, &mut exports)?;
   if *TIMING {
     chunks.push((
       ids.len(),
@@ -466,23 +593,7 @@ async fn recover(
     ));
   }
   let incoming_start = Instant::now();
-  // Rebuild incoming connections only after every target graph module exists.
-  let connections = graph
-    .module_graph
-    .module_graph_modules()
-    .flat_map(|(_, m)| m.outgoing_connections().iter().copied())
-    .collect::<Vec<_>>();
-  for id in connections {
-    let target = *graph
-      .module_graph
-      .connection_by_id(&id)
-      .expect("connection must exist")
-      .module_identifier();
-    graph
-      .module_graph
-      .module_graph_module_by_identifier_mut(&target)
-      .add_incoming_connection(id);
-  }
+  // Reverse edges are installed from the same topology value as the node.
   let incoming_ms = millis(incoming_start);
   let entry_start = Instant::now();
   // Like legacy recovery, synthetic links let make repair current entry identity.
@@ -509,48 +620,45 @@ async fn recover(
   }
   let entry_ms = millis(entry_start);
   let module_counters_start = Instant::now();
-  for (id, module) in graph.module_graph.modules() {
-    let info = module.build_info();
-    let resource = ResourceId::from(*id);
-    graph
-      .file_dependencies
-      .add_files(&resource, &info.dependencies.file);
-    graph
-      .context_dependencies
-      .add_files(&resource, &info.dependencies.context);
-    graph
-      .missing_dependencies
-      .add_files(&resource, &info.dependencies.missing);
-    graph
-      .build_dependencies
-      .add_files(&resource, &info.dependencies.build);
-    if !module.diagnostics().is_empty() {
-      graph.make_failed_module.insert(*id);
+  if *COUNTERS_AFTER {
+    let ids = graph
+      .module_graph
+      .modules()
+      .map(|(id, module)| (*id, module.clone()))
+      .collect::<Vec<_>>();
+    for (id, module) in ids {
+      module_counters(&mut graph, id, &module);
     }
   }
   let module_counters_ms = millis(module_counters_start);
   let factor_counters_start = Instant::now();
-  for (id, info) in graph.factorization_artifact.iter() {
-    if !info.is_success() {
-      graph.make_failed_dependencies.insert(id);
+  if *COUNTERS_AFTER {
+    let mut file = std::mem::take(&mut graph.file_dependencies);
+    let mut context = std::mem::take(&mut graph.context_dependencies);
+    let mut missing = std::mem::take(&mut graph.missing_dependencies);
+    for (id, info) in graph.factorization_artifact.iter() {
+      if !info.is_success() {
+        graph.make_failed_dependencies.insert(id);
+      }
+      let resource = id.into();
+      file.add_files(&resource, info.file_dependencies());
+      context.add_files(&resource, info.context_dependencies());
+      missing.add_files(&resource, info.missing_dependencies());
     }
-    let resource = id.into();
-    graph
-      .file_dependencies
-      .add_files(&resource, info.file_dependencies());
-    graph
-      .context_dependencies
-      .add_files(&resource, info.context_dependencies());
-    graph
-      .missing_dependencies
-      .add_files(&resource, info.missing_dependencies());
+    graph.file_dependencies = file;
+    graph.context_dependencies = context;
+    graph.missing_dependencies = missing;
   }
   let factor_counters_ms = millis(factor_counters_start);
   let exports_start = Instant::now();
-  for (id, _) in graph.get_module_graph().modules() {
-    compilation.exports_info_artifact.new_exports_info(*id);
+  if *COUNTERS_AFTER {
+    for (id, _) in graph.get_module_graph().modules() {
+      exports.new_exports_info(*id);
+    }
   }
   let exports_ms = millis(exports_start);
+  // Publish exports only after the graph has completely recovered.
+  *compilation.exports_info_artifact = exports;
   if *TIMING {
     let mut metrics = METRICS.each_ref().map(|v| v.swap(0, Ordering::Relaxed));
     for chunk in &chunks {
@@ -559,7 +667,7 @@ async fn recover(
       }
     }
     eprintln!(
-      "GRAPH_TIMERS index_ms={index_ms} snapshot_read_decode_ms={snapshot_read_decode_ms} snapshot_ms={validation_ms} module_lookup_cpu_ms={} module_decode_cpu_ms={} topology_lookup_cpu_ms={} topology_decode_cpu_ms={} module_bytes={} topology_bytes={} module_lookups={} topology_lookups={} stream_install_ms={} incoming_ms={incoming_ms} entries_ms={entry_ms} module_counters_ms={module_counters_ms} factor_counters_ms={factor_counters_ms} exports_ms={exports_ms} chunks={chunks:?}",
+      "GRAPH_TIMERS index_ms={index_ms} snapshot_read_decode_ms={snapshot_read_decode_ms} snapshot_ms={validation_ms} module_lookup_cpu_ms={} module_decode_cpu_ms={} topology_lookup_cpu_ms={} topology_decode_cpu_ms={} module_bytes={} topology_bytes={} module_lookups={} topology_lookups={} stream_install_ms={} consumer_wait_ms={} producer_send_ms={} group_decode_sum_ms={} group_count={} group_decode_max_ms={} factor_stream_ms={} module_stream_ms={} exports_stream_ms={} incoming_ms={incoming_ms} entries_ms={entry_ms} module_counters_ms={module_counters_ms} factor_counters_ms={factor_counters_ms} exports_ms={exports_ms} chunks={chunks:?}",
       metrics[0] as f64 / 1e6,
       metrics[1] as f64 / 1e6,
       metrics[2] as f64 / 1e6,
@@ -568,10 +676,42 @@ async fn recover(
       metrics[5],
       metrics[6],
       metrics[7],
-      metrics[8] as f64 / 1e6
+      metrics[8] as f64 / 1e6,
+      metrics[9] as f64 / 1e6,
+      metrics[10] as f64 / 1e6,
+      metrics[11] as f64 / 1e6,
+      metrics[12],
+      metrics[13] as f64 / 1e6,
+      metrics[14] as f64 / 1e6,
+      metrics[15] as f64 / 1e6,
+      metrics[16] as f64 / 1e6
     );
   }
   Ok(Some(graph))
+}
+
+fn module_counters(
+  graph: &mut BuildModuleGraphArtifact,
+  id: crate::ModuleIdentifier,
+  module: &ModuleRef,
+) {
+  let info = module.build_info();
+  let resource = ResourceId::from(id);
+  graph
+    .file_dependencies
+    .add_files(&resource, &info.dependencies.file);
+  graph
+    .context_dependencies
+    .add_files(&resource, &info.dependencies.context);
+  graph
+    .missing_dependencies
+    .add_files(&resource, &info.dependencies.missing);
+  graph
+    .build_dependencies
+    .add_files(&resource, &info.dependencies.build);
+  if !module.diagnostics().is_empty() {
+    graph.make_failed_module.insert(id);
+  }
 }
 
 fn install(graph: &mut BuildModuleGraphArtifact, module: ModuleRef, node: Node<'_>) -> Result<()> {
@@ -604,7 +744,26 @@ fn install(graph: &mut BuildModuleGraphArtifact, module: ModuleRef, node: Node<'
       },
     );
     if let Some(info) = info {
-      graph.factorization_artifact.insert(info.into_owned());
+      let info = info.into_owned();
+      if !*COUNTERS_AFTER {
+        let start = timer_start();
+        let owner = info.owner_dep_id();
+        if !info.is_success() {
+          graph.make_failed_dependencies.insert(owner);
+        }
+        let resource = owner.into();
+        graph
+          .file_dependencies
+          .add_files(&resource, info.file_dependencies());
+        graph
+          .context_dependencies
+          .add_files(&resource, info.context_dependencies());
+        graph
+          .missing_dependencies
+          .add_files(&resource, info.missing_dependencies());
+        timer_add(14, start);
+      }
+      graph.factorization_artifact.insert(info);
     }
   }
   for con in node.connections {
@@ -617,9 +776,16 @@ fn install(graph: &mut BuildModuleGraphArtifact, module: ModuleRef, node: Node<'
       .module_to_lazy_make
       .update_module_lazy_dependencies(id, Some(lazy.into_owned()));
   }
-  graph
-    .module_graph
-    .add_module_graph_module(node.mgm.into_owned());
+  let mut mgm = node.mgm.into_owned();
+  for connection in node.incoming {
+    mgm.add_incoming_connection(connection);
+  }
+  graph.module_graph.add_module_graph_module(mgm);
+  if !*COUNTERS_AFTER {
+    let start = timer_start();
+    module_counters(graph, id, &module);
+    timer_add(15, start);
+  }
   graph.module_graph.add_module(module);
   Ok(())
 }

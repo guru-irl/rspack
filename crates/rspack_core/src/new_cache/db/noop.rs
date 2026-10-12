@@ -42,6 +42,23 @@ impl NoopDatabase {
     Ok(writes.count())
   }
 
+  pub fn key_hash(_key: &CacheKey) -> u64 {
+    0
+  }
+  pub fn write_batch_streamed(
+    &self,
+    writes: impl ParallelIterator<Item = (DatabaseFamily, CacheKey, Vec<u8>)>,
+    topology: impl Iterator<Item = Result<(CacheKey, Vec<u8>)>> + Send,
+    metadata: impl FnOnce() -> Result<Vec<(CacheKey, Vec<u8>)>>,
+  ) -> Result<usize> {
+    let mut count = writes.count();
+    for entry in topology {
+      entry?;
+      count += 1;
+    }
+    Ok(count + metadata()?.len())
+  }
+
   pub fn compact(&self) -> Result<()> {
     Ok(())
   }
