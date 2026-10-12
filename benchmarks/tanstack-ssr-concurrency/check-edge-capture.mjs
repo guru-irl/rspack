@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { triggerCapture, edgeContract } from './trigger-capture.mjs';
+import { triggerCapture, edgeContract, replaySummary, assertPassCount } from './trigger-capture.mjs';
 const hooks=()=>Object.fromEntries(['invalid','watchRun','done'].map(name=>[name,{taps:[],tap(options,fn){this.taps.push(fn);},call(...args){for(const fn of this.taps)fn(...args);}}]));
 let time=0;
 const raw=new EventEmitter(), aggregate=()=>{}, immediate=()=>{};
@@ -21,3 +21,16 @@ assert.throws(()=>edgeContract(base,data([...base.passes,pass('ssr',5,6,['unknow
 assert.throws(()=>edgeContract(base,data([pass('client',1,4),pass('ssr',3,5)]),'direct'),/overlaps client/);
 assert.throws(()=>edgeContract(base,data([pass('client',1,2),pass('aux-a',3,5),pass('ssr',4,6)]),'transitive'),/overlaps aux-a/);
 console.log('Passive watcher callback identity, replay capture, ordering and unknown-trigger rejection passed');
+
+// A replay is exempt from a count only with all three independent proofs.
+const one={step:edit,name:ssr,pass:1,started:10,finished:20,modifiedFiles:[/fixture/leaf.ts],removedFiles:[],triggers:[normal-change],evidence:[]};
+const two={...one,pass:2,started:25,finished:30,triggers:[outdated-on-attach],evidence:[{kind:change,branch:outdated-on-attach,file:/fixture/leaf.ts}]};
+const replayData={callbackIdentityPreserved:true,observations:[],writers:[],passes:[one,two]};
+assertPassCount(replayData,edit,ssr,1,one non-replay SSR pass);
+assert.equal(replaySummary(replayData).checkpoints[0].replays,1);
+assert.throws(()=>assertPassCount({...replayData,passes:[one]},edit,ssr,2,missing),/missing/);
+assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,modifiedFiles:[/fixture/other.ts]}]}),/same paths/);
+assert.throws(()=>replaySummary({...replayData,writers:[{t:22,file:/fixture/leaf.ts,writerStack:fixture write}]}),/write between/);
+assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,evidence:[]}]}),/Watchpack branch/);
+assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,triggers:[unknown]}]}),/unknown trigger/);
+console.log(Global replay rule: branch, same paths, no intervening write, missing and unknown pass guards passed);
