@@ -4270,6 +4270,7 @@ dependencies = [
  "itertools 0.14.0",
  "json",
  "libc",
+ "lzzzz",
  "memchr",
  "mime_guess",
  "napi",
