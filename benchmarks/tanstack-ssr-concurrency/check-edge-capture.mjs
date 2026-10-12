@@ -43,7 +43,7 @@ const { assertPassBounds }=await import('./trigger-capture.mjs');
 assertPassBounds(savedAgain,'edit','ssr',2,'rapid saves');
 assertPassBounds({...replayData,passes:[one]},'edit','ssr',2,'coalesced saves');
 assert.throws(()=>assertPassBounds({...replayData,passes:[]},'edit','ssr',2,'missing saves'),/missing saves/);
-assert.throws(()=>assertPassBounds({...savedAgain,passes:[one,two,{...one,pass:3,started:35,finished:40}]},'edit','ssr',2,'too many saves'),/too many saves/);
+assert.throws(()=>assertPassBounds({...savedAgain,writers:[...savedAgain.writers,{t:34,file:'/fixture/leaf.ts',writerStack:'at edit (file:///fixture/run.mjs:295:6)'}],passes:[one,two,{...one,pass:3,started:35,finished:40}]},'edit','ssr',2,'too many saves'),/too many saves/);
 console.log('Write-driven attach classes and bounded rapid-save count guards passed');
 
 // Generated writes match their own path, not the preceding edit's path.
