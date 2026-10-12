@@ -30,7 +30,18 @@ assertPassCount(replayData,'edit','ssr',1,'one non-replay SSR pass');
 assert.equal(replaySummary(replayData).checkpoints[0].replays,1);
 assert.throws(()=>assertPassCount({...replayData,passes:[one]},'edit','ssr',2,'missing'),/missing/);
 assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,modifiedFiles:['/fixture/other.ts']}]}),/same paths/);
-assert.throws(()=>replaySummary({...replayData,writers:[{t:22,file:'/fixture/leaf.ts',writerStack:'fixture write'}]}),/write between/);
+const savedAgain={...replayData,writers:[{t:15,file:'/fixture/leaf.ts',writerStack:'at edit (file:///fixture/run.mjs:300:8)'}]};
+assert.equal(replaySummary(savedAgain).checkpoints[0].classes['write-driven attach'],1);
+assertPassCount(savedAgain,'edit','ssr',2,'second scenario save is real work');
+assert.throws(()=>replaySummary({...savedAgain,writers:[{...savedAgain.writers[0],writerStack:'unidentified writer'}]}),/unknown/);
 assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,evidence:[]}]}),/Watchpack branch/);
 assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,triggers:['unknown']}]}),/unknown trigger/);
 console.log('Global replay rule: branch, same paths, no intervening write, missing and unknown pass guards passed');
+
+// Two saves can be coalesced or compiled separately, never silently dropped.
+const { assertPassBounds }=await import('./trigger-capture.mjs');
+assertPassBounds(savedAgain,'edit','ssr',2,'rapid saves');
+assertPassBounds({...replayData,passes:[one]},'edit','ssr',2,'coalesced saves');
+assert.throws(()=>assertPassBounds({...replayData,passes:[]},'edit','ssr',2,'missing saves'),/missing saves/);
+assert.throws(()=>assertPassBounds({...savedAgain,passes:[one,two,{...one,pass:3,started:35,finished:40}]},'edit','ssr',2,'too many saves'),/too many saves/);
+console.log('Write-driven attach classes and bounded rapid-save count guards passed');
