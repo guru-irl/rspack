@@ -38,8 +38,10 @@ jobs:
           node --check benchmarks/tanstack-ssr-concurrency/instrument-css.mjs
           node --check benchmarks/tanstack-ssr-concurrency/instrument-response.mjs
           node --check benchmarks/tanstack-ssr-concurrency/run.mjs
+          if [[ "$MODE" == r3-response-* ]]; then
           node --input-type=module -e "import fs from 'node:fs'; import { instrumentResponse } from './benchmarks/tanstack-ssr-concurrency/instrument-response.mjs'; fs.writeFileSync(process.env.WORK_DIR+'/response-observed-source.mjs',instrumentResponse(fs.readFileSync('benchmarks/tanstack-ssr-concurrency/run.mjs','utf8')));"
           node --check "$WORK_DIR/response-observed-source.mjs"
+          fi
           node --check benchmarks/tanstack-ssr-concurrency/setup.mjs
           node --check benchmarks/tanstack-ssr-concurrency/setup-r3.mjs
           node --check benchmarks/tanstack-ssr-concurrency/check-identity.mjs

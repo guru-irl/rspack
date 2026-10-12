@@ -28,6 +28,9 @@ let step = 'initial';
 let lastEvent = now();
 let peak = process.memoryUsage().rss;
 const active = new Set();
+const pendingInvalid = new Set();
+const freshnessChecks = [];
+let preEditAssets = new Map();
 const builds = [];
 const events = [];
 const checks = [];
@@ -63,9 +66,9 @@ const probe = { name: 'watch-observer', setup(api) {
     if(scenario==='no-resolver' && environment.name==='ssr') {config.entry={index:{import:['./src/no-resolver.ts']}};}
     config.plugins.push({ apply(compiler) {
       compilers.set(environment.name,compiler);
-      compiler.hooks.invalid.tap('WatchInvalidObserver',()=>event(environment.name,'invalid'));
+      compiler.hooks.invalid.tap('WatchInvalidObserver',()=>{pendingInvalid.add(environment.name);event(environment.name,'invalid');});
       compiler.hooks.watchRun.tap({ name: 'WatchObserver', stage: -10000 }, () => {
-        active.add(environment.name); event(environment.name, 'watchRun');
+        pendingInvalid.delete(environment.name);active.add(environment.name); event(environment.name, 'watchRun');
       });
       if(['r2-close','r2-restart'].includes(scenario) && environment.name==='client') compiler.hooks.finishMake.tapPromise({name:'ColdCloseWindow',stage:900},async()=>{while(!closeRequested)await pause(5);await pause(250);});
       if(scenario==='r2-done' && environment.name==='client') compiler.hooks.done.tapPromise({name:'DoneBarrierWindow',stage:15000},async()=>pause(250));
@@ -83,7 +86,7 @@ const probe = { name: 'watch-observer', setup(api) {
         if(requestWindowEnabled && environment.name==='client') compilation.hooks.afterSeal.tapPromise({name:'RequestWindow',stage:-10000},async()=>{
           if(step!=='request-window'||windowRequest)return;
           windowEvidence={started:now(),invalidSeen:events.some(e=>e.step===step&&e.name==='client'&&e.kind==='invalid')};
-          windowRequest=(async()=>{const r=await fetch(`http://localhost:${customWindow?3101:3100}/`,{signal:AbortSignal.timeout(15000)});const html=await r.text();windowEvidence.status=r.status;windowEvidence.latencyMs=now()-windowEvidence.started;windowEvidence.css=[...html.matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"/g)].map(m=>m[1]).sort();fs.writeFileSync(path.join(out,'request-window.html'),html);})();
+          windowRequest=(async()=>{const r=await fetch(`http://localhost:${customWindow?3101:3100}/`,{signal:AbortSignal.timeout(15000)});const html=await r.text();windowEvidence.status=r.status;windowEvidence.latencyMs=now()-windowEvidence.started;windowEvidence.css=linkedAssets(html).filter(url=>/\.css(?:[?#]|$)/.test(url));windowEvidence.linked=linkedAssets(html);fs.writeFileSync(path.join(out,'request-window.html'),html);})();
           // Only the client is held. Stock's graph and v3's request gate wait;
           // v2's independent SSR bundle is otherwise immediately ready.
           await pause(750);
@@ -102,7 +105,7 @@ const probe = { name: 'watch-observer', setup(api) {
         });
         if(!measuring) compilation.hooks.processAssets.tap({ name: 'WatchObserver', stage: 6000 }, () => {
           for(const asset of compilation.getAssets()) {if(asset.name==='assets/js/index.js') fs.writeFileSync(path.join(out,`${step}-client-entry.txt`),String(asset.source.source()));}
-          record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => ({ name: a.name, bytes: a.source.size(), hash:hash(String(a.source.source())), normalizedHash:hash(String(a.source.source()).replace(/(__webpack_require__\.h = \(\) => \(")[0-9a-f]+("\))/g,'$1<FULL_HASH>$2')) })).sort((a,b) => a.name.localeCompare(b.name));
+          record.assets = compilation.getAssets().filter(a => !a.name.includes('hot-update')).map(a => ({ name: a.name, bytes: a.source.size(), hash:hash(a.source.buffer()), normalizedHash:hash(String(a.source.source()).replace(/(__webpack_require__\.h = \(\) => \(")[0-9a-f]+("\))/g,'$1<FULL_HASH>$2')) })).sort((a,b) => a.name.localeCompare(b.name));
         });
       });
       compiler.hooks.done.tap({ name: 'WatchObserver', stage: 10000 }, stats => {
@@ -111,7 +114,7 @@ const probe = { name: 'watch-observer', setup(api) {
         record.hash=stats.hash;
         record.errors = measuring ? (stats.hasErrors()?['compilation failed']:[]) : stats.toJson({ all: false, errors: true }).errors;
         record.generated = normalize(globalThis.__watchVirtualState?.generateCurrentResolverContent(true) ?? '');
-        builds.push(record); active.delete(environment.name); event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
+        builds.push(record); pendingInvalid.delete(environment.name);active.delete(environment.name); event(environment.name, 'done', { ms: record.ms, errors: record.errors.length });
         if(scenario==='r2b-delete' && step.startsWith('delete-') && record.errors.length) {
           const request={step,triggerCompiler:environment.name,started:now(),triggerErrors:record.errors.map(e=>e.message)};
           pendingDeletionRequests.push((async()=>{
@@ -130,7 +133,7 @@ const waitIdle = async (minimum = 0) => {
   while (now() - start < 120000) {
     const relevant = events.filter(e => e.step === step);
     if(scenario==='no-resolver') assert.ok(relevant.filter(e=>e.kind==='done').length<20,`${step}: no repeated resolver invalidation loop`);
-    if (!active.size && relevant.filter(e => e.kind === 'done').length >= minimum && now() - lastEvent > 800) return;
+    if (!active.size && !pendingInvalid.size && [...compilers.values()].every(c=>!c.watching?.running && !c.watching?.invalid) && relevant.filter(e => e.kind === 'done').length >= minimum && now() - lastEvent >= 1000) return;
     await pause(25);
   }
   throw new Error(`watch never settled: ${step}, active=${[...active]}`);
@@ -144,8 +147,60 @@ const rpc = async id => {
   const response = await fetch(`http://localhost:3100/_serverFn/${encodeURIComponent(id)}`, { headers: { 'x-tsr-serverFn': 'true', origin: 'http://localhost:3100', 'sec-fetch-site': 'same-origin' } });
   return { status: response.status, response: await response.text() };
 };
+// A hash suffix can change on Watchpack replay without changing served bytes.
+const logicalAsset = url => new URL(url,'http://localhost:3100').pathname.replace(/\.[0-9a-f]{8}(?=\.(?:css|js)$)/i,'');
+const linkedAssets = html => [...new Set([
+  ...[...html.matchAll(/<link\b[^>]*href="([^"]+)"/g)].map(m=>m[1]),
+  ...[...html.matchAll(/<script\b[^>]*src="([^"]+)"/g)].map(m=>m[1]),
+].filter(url=>/\.(?:css|js)(?:[?#]|$)/.test(url)))].sort();
+const routeAssets = route => {
+  const manifest=globalThis.__TSS_DEV_START_MANIFEST__;
+  assert.ok(manifest?.routes?.__root__ && manifest.routes[route],`${step} ${route}: settled route manifest`);
+  const urls=new Set();
+  const collect=value=>{
+    if(typeof value==='string' && /\.(?:css|js)(?:[?#]|$)/.test(value))urls.add(value);
+    else if(Array.isArray(value))value.forEach(collect);
+    else if(value && typeof value==='object')Object.values(value).forEach(collect);
+  };
+  for(const id of ['__root__',route])collect(manifest.routes[id]);
+  return [...urls].sort();
+};
+const beforeEdit = () => {
+  preEditAssets=new Map((builds.filter(b=>b.name==='client').at(-1)?.assets||[]).map(a=>[logicalAsset('/'+a.name),a.hash]));
+};
+const assertFreshness = async (route,linked,label) => {
+  await waitIdle();
+  const expected=routeAssets(route);
+  const logical=urls=>[...new Set(urls.map(logicalAsset))].sort();
+  const evidence={step,route,label,linked,expected,expectedLogical:logical(expected),actualLogical:logical(linked),assets:[]};
+  const save=()=>fs.writeFileSync(path.join(out,'freshness.json'),JSON.stringify(freshnessChecks,null,2));
+  freshnessChecks.push(evidence);save();
+  assert.deepEqual(evidence.actualLogical,evidence.expectedLogical,`${step} ${route}: page logical assets equal settled route manifest`);
+  const settled=new Map();
+  for(const url of expected) {
+    const response=await fetch(new URL(url,'http://localhost:3100'));
+    assert.equal(response.status,200,`${step}: settled asset ${url}`);
+    const bytes=Buffer.from(await response.arrayBuffer());
+    const sha256=hash(bytes);
+    const compiled=builds.filter(b=>b.name==='client').at(-1).assets.find(a=>'/'+a.name===new URL(url,'http://localhost:3100').pathname);
+    if(compiled)assert.equal(sha256,compiled.hash,`${step}: settled server bytes equal compilation ${url}`);
+    settled.set(logicalAsset(url),{url,sha256});
+  }
+  for(const url of linked) {
+    const current=settled.get(logicalAsset(url));
+    const response=await fetch(new URL(url,'http://localhost:3100'));
+    const sha256=hash(Buffer.from(await response.arrayBuffer()));
+    const previous=preEditAssets.get(logicalAsset(url));
+    evidence.assets.push({url,logical:logicalAsset(url),status:response.status,sha256,settled:current.sha256,previous});save();
+    assert.equal(response.status,200,`${step}: linked asset remains fetchable ${url}`);
+    assert.equal(sha256,current.sha256,`${step}: linked asset has settled bytes ${url}`);
+    if(previous && previous!==current.sha256)assert.notEqual(sha256,previous,`${step}: no pre-edit bytes ${url}`);
+  }
+  evidence.passed=true;save();
+};
 const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   const responses = {};
+  const pages = [];
   for (const route of measuring?['/']:['/', '/page-001', '/page-025', '/page-060', ...(addedRoute ? ['/extra'] : [])]) {
     const response = await fetch(`http://localhost:3100${route}`);
     const html = await response.text();
@@ -155,8 +210,10 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
     const data = JSON.parse(htmlDecode(pre ?? 'null'));
     assert.deepEqual(data, expected, `${step} ${route}: SSR data`);
     responses[route] = { status: response.status, data, leaf, css: [...html.matchAll(/<link[^>]+href="([^"]+\.css[^\"]*)"/g)].map(m => m[1]).sort(), scripts: [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map(m => m[1]).sort() };
+    pages.push({route,linked:linkedAssets(html)});
     fs.writeFileSync(path.join(out, `${step}-${route.replaceAll('/', '_')}.html`), html);
   }
+  for(const page of pages)await assertFreshness(page.route,page.linked,'checkpoint');
   const latest = Object.fromEntries(compilerNames.map(name => [name, builds.filter(b => b.name === name).at(-1)]));
   assert.ok(latest.ssr && latest.client, `${step}: both output snapshots`);
   for (const [name,b] of Object.entries(latest)) assert.equal(b.errors.length,0,`${step}: ${name} final compile errors`);
@@ -184,7 +241,7 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   const es = events.filter(e => e.step === step);
   const starts = es.filter(e => e.kind === 'watchRun');
   const ends = es.filter(e => e.kind === 'done');
-  const timing = { spanMs: Math.max(...ends.map(e => e.t)) - Math.min(...starts.map(e => e.t)), ...Object.fromEntries(compilerNames.map(name=>[`${name}Ms`,builds.filter(b=>b.step===step&&b.name===name).reduce((n,b)=>n+b.ms,0)])), clientMs: builds.filter(b => b.step === step && b.name === 'client').reduce((n,b)=>n+b.ms,0), ssrMs: builds.filter(b=>b.step===step&&b.name==='ssr').reduce((n,b)=>n+b.ms,0), peakRss: peak, postRss: process.memoryUsage().rss };
+  const timing = { clientPasses:builds.filter(b=>b.step===step&&b.name==='client').length, spanMs: Math.max(...ends.map(e => e.t)) - Math.min(...starts.map(e => e.t)), ...Object.fromEntries(compilerNames.map(name=>[`${name}Ms`,builds.filter(b=>b.step===step&&b.name===name).reduce((n,b)=>n+b.ms,0)])), clientMs: builds.filter(b => b.step === step && b.name === 'client').reduce((n,b)=>n+b.ms,0), ssrMs: builds.filter(b=>b.step===step&&b.name==='ssr').reduce((n,b)=>n+b.ms,0), peakRss: peak, postRss: process.memoryUsage().rss };
   const overlap = starts.some(c => c.name === 'client' && starts.some(s => s.name === 'ssr' && s.t >= c.t && s.t < ends.find(e => e.name==='client' && e.t > c.t)?.t));
   const snapshots = Object.fromEntries(Object.entries(latest).map(([name,b]) => [name, { modules: b.modules, assets: b.assets }]));
   fs.writeFileSync(path.join(out, `${step}-outputs.json`), JSON.stringify(snapshots, null, 2));
@@ -195,7 +252,7 @@ const sample = async (expected, leaf, removed = [], addedRoute = false) => {
   if (arm !== 'stock' && scenario !== 'red-recovery' && step.startsWith('leaf-')) assert.equal(check.resolverRebuilds, 0, 'leaf keeps resolver gate fast path');
 };
 const edit = async (name, file, content, expected, leaf='Public leaf baseline', removed=[], rapid, addedRoute=false) => {
-  step=name; peak=process.memoryUsage().rss; lastEvent=now();
+  beforeEdit();step=name; peak=process.memoryUsage().rss; lastEvent=now();
   fs.writeFileSync(file, content);
   if (rapid !== undefined) {
     // Save again while a real compiler pass is active, not merely before the debounce expires.
@@ -214,37 +271,21 @@ let readyTime;
 const checkRequestWindow=async()=>{
   const previous=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
   if(!customWindow)assert.ok(previous.length,'client-only CSS entry exists');
-  step='request-window';lastEvent=now();
+  beforeEdit();step='request-window';lastEvent=now();
   if(customWindow)fs.writeFileSync('aux/request-entry.js',"import './new-request.css';\n");
   else fs.writeFileSync('aux/request.css','.generic-request { color: rgb(80, 80, 80); }\n');
   await waitIdle(1);assert.ok(windowRequest,'request issued during client compilation');await windowRequest;
   const next=builds.filter(b=>b.name==='client').at(-1).assets.filter(a=>a.name.endsWith('.css')).map(a=>'/'+a.name).sort();
-  const expectationFile=process.env.STOCK_REQUEST_EXPECTATION;
-  if(arm==='stock') {
-    const manifest=globalThis.__TSS_DEV_START_MANIFEST__;
-    assert.ok(manifest?.routes?.__root__ && manifest.routes['/'],'stock manifest contains requested route and root');
-    const css=new Set();
-    const collect=value=>{
-      if(typeof value==='string' && /\.css(?:[?#]|$)/.test(value))css.add(value);
-      else if(Array.isArray(value))value.forEach(collect);
-      else if(value && typeof value==='object')Object.values(value).forEach(collect);
-    };
-    // Only the requested route and its ancestor are needed by this page.
-    for(const id of ['__root__','/'])collect(manifest.routes[id]);
-    const expectedCSS=[...css].sort();
-    assert.ok(expectedCSS.length,'stock route manifest has CSS for the edited client entry');
-    fs.writeFileSync(expectationFile,JSON.stringify({route:'/',manifest,expectedCSS},null,2));
-  }
-  const {expectedCSS}=JSON.parse(fs.readFileSync(expectationFile));
+  const expectedCSS=routeAssets('/').filter(url=>/\.css(?:[?#]|$)/.test(url));
   Object.assign(windowEvidence,{previousCSS:previous,newCSS:next,expectedCSS,ssrPasses:builds.filter(b=>b.step===step&&b.name==='ssr').length});
   fs.writeFileSync(path.join(out,'request-window.json'),JSON.stringify(windowEvidence,null,2));
   assert.ok(windowEvidence.invalidSeen,'request follows client invalid');
   if(customWindow)assert.ok(next.some(url=>!previous.includes(url)),'client-only edit emits a NEW CSS asset');
   else assert.notDeepEqual(next,previous,'client-only CSS edit changes asset hash');
   assert.equal(windowEvidence.status,200,'window request succeeds');
-  assert.ok(expectedCSS.some(url=>!previous.includes(url)),'stock route manifest requires the NEW CSS asset');
-  assert.ok(expectedCSS.every(url=>windowEvidence.css.includes(url)),'window HTML references NEW CSS asset required by stock route manifest');
-  assert.ok(windowEvidence.css.every(url=>next.includes(url)),'window HTML has no stale or replaced CSS link');
+  assert.ok(expectedCSS.some(url=>!previous.includes(url)),'settled route manifest requires the NEW CSS asset');
+  if(customWindow)assert.ok(expectedCSS.every(url=>windowEvidence.css.includes(url)),'window HTML references NEW CSS asset required by stock route manifest');
+  await assertFreshness('/',windowEvidence.linked,'request-window');
 };
 let readiness;
 let closeRequested=false;

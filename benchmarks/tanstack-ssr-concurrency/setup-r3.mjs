@@ -151,15 +151,16 @@ if(mode==='r3-css-diagnosis') {
  }
  fs.writeFileSync(path.join(work,'css-diagnosis-runs.json'),JSON.stringify({diagnosticOnly:true,results},null,2));process.exit(0);
 }
+const logicalName=name=>name.replace(/\.[0-9a-f]{8}(?=\.(?:css|js)$)/i,'');
 const parity=(results,label)=>{
- const visible=r=>JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(({step,responses,calls,removedCalls})=>({step,responses,calls,removedCalls}));
+ const visible=r=>JSON.parse(fs.readFileSync(path.join(r.result,'checks.json'))).map(({step,responses,calls,removedCalls})=>({step,responses:Object.fromEntries(Object.entries(responses).map(([route,response])=>[route,{...response,css:response.css.map(logicalName).sort(),scripts:response.scripts.map(logicalName).sort()}])),calls,removedCalls}));
  const reference=results[0];assert.equal(visible(reference).length,22,'full checkpoint count');
  for(const r of results.slice(1)) {
   assert.deepEqual(visible(r),visible(reference),`${label} ${r.arm}: SSR HTML and RPC parity`);
   for(const check of visible(reference)) {
    const load=r=>JSON.parse(fs.readFileSync(path.join(r.result,`${check.step}-outputs.json`)));
    const a=load(reference),b=load(r);
-   for(const env of Object.keys(a)) {assert.deepEqual(b[env].modules,a[env].modules,`${label} ${r.arm} ${check.step}: ${env} modules`);if(env.startsWith('aux-'))assert.deepEqual(b[env].assets,a[env].assets,`${label} ${r.arm} ${check.step}: auxiliary output bytes`);const stable=assets=>assets.map(({hash,...rest})=>rest);assert.deepEqual(stable(b[env].assets),stable(a[env].assets),`${label} ${r.arm} ${check.step}: ${env} assets`);}
+   for(const env of Object.keys(a)) {assert.deepEqual(b[env].modules,a[env].modules,`${label} ${r.arm} ${check.step}: ${env} modules`);if(env.startsWith('aux-'))assert.deepEqual(b[env].assets,a[env].assets,`${label} ${r.arm} ${check.step}: auxiliary output bytes`);const stable=assets=>assets.map(({hash,name,...rest})=>({name:logicalName(name),...rest})).sort((a,b)=>a.name.localeCompare(b.name));assert.deepEqual(stable(b[env].assets),stable(a[env].assets),`${label} ${r.arm} ${check.step}: ${env} assets`);}
   }
  }
  fs.writeFileSync(path.join(work,`${label}-parity.json`),JSON.stringify({passed:true,steps:22,arms:results.map(r=>r.arm)}));
