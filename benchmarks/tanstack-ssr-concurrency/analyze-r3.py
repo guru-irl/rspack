@@ -48,7 +48,7 @@ def read(arm,index,scenario):
         start=min(e['wallMs'] for e in es if e['kind']=='watchRun'); end=max(e['wallMs'] for e in es if e['kind']=='done')
         during=[s for s in samples if start<=s['wallMs']<=end and 'VmRSS' in s]
         assert during,'external RSS samples exist'
-        post=min((s for s in samples if 'VmRSS' in s),key=lambda s:abs(s['wallMs']-(end+750)))
+        post=min((s for s in samples if 'VmRSS' in s),key=lambda s:abs(s['wallMs']-(end+1000)))
         return {'peakMiB':max(s['VmRSS'] for s in during)/2**20,'postMiB':post['VmRSS']/2**20,'hwmMiB':post['VmHWM']/2**20}
     if scenario=='cold-measure':
         cold=json.loads((directory/'cold.json').read_text())
@@ -58,9 +58,24 @@ def read(arm,index,scenario):
     for c in checks:
         if not c['step'].startswith(('leaf-','body-')):continue
         es=[e for e in events if e['step']==c['step']]
-        warm.append({**c['timing'],**memory(es),'ssrPasses':len([b for b in builds if b['step']==c['step'] and b['name']=='ssr'])})
+        warm.append({**c['timing'],**memory(es),'ssrPasses':len([b for b in builds if b['step']==c['step'] and b['name']=='ssr']),'clientPasses':len([b for b in builds if b['step']==c['step'] and b['name']=='client'])})
     assert len(warm)==10,(directory,len(warm))
-    return {metric:statistics.median([w[metric] for w in warm]) for metric in ['spanMs','clientMs','ssrMs','aux-aMs','aux-bMs','ssrPasses','peakMiB','postMiB','hwmMiB']}
+    return {metric:statistics.median([w[metric] for w in warm]) for metric in ['spanMs','clientMs','ssrMs','aux-aMs','aux-bMs','ssrPasses','clientPasses','peakMiB','postMiB','hwmMiB']}
+def fisher(a,b,c,d):
+    n=a+b+c+d; row=a+b; col=a+c
+    def weight(x):return math.comb(col,x)*math.comb(n-col,row-x)
+    observed=weight(a); denominator=math.comb(n,row)
+    return sum(weight(x) for x in range(max(0,row-(n-col)),min(row,col)+1) if weight(x)<=observed)/denominator
+
+def pass_counts(arm,scenario):
+    counts=[]
+    for index in range(1,11):
+        directory=root/f'{scenario}-{index}-{arm}'
+        builds=json.loads((directory/'builds.json').read_text())
+        steps=['initial'] if scenario=='cold-measure' else [c['step'] for c in json.loads((directory/'checks.json').read_text()) if c['step'].startswith(('leaf-','body-'))]
+        counts.extend(sum(b['step']==step and b['name']=='client' for b in builds) for step in steps)
+    return {'observations':len(counts),'passes':sum(counts),'meanPasses':statistics.mean(counts),'counts':counts,'distribution':{str(n):counts.count(n) for n in sorted(set(counts))},'replayed':sum(n>1 for n in counts)}
+
 orders=json.loads((root/'arm-orders.json').read_text())
 for scenario in ['cold-measure','warm-leaf','warm-body']:
     relevant=[o for o in orders if o['scenario']==scenario]
@@ -70,12 +85,17 @@ result={'method':'10 fresh-process paired groups per scenario, exactly 5 forward
 for scenario in ['cold-measure','warm-leaf','warm-body']:
     arms=['stock','gate-only','barrier']
     data={arm:[read(arm,i,scenario) for i in range(1,11)] for arm in arms};result['samples'][scenario]=data
-    metrics=['ssrReadyMs','finalReadyMs','spanMs','clientMs','ssrMs','aux-aMs','aux-bMs','peakMiB','postMiB','hwmMiB','ssrPasses','clientPasses'] if scenario=='cold-measure' else ['spanMs','clientMs','ssrMs','aux-aMs','aux-bMs','ssrPasses','peakMiB','postMiB','hwmMiB']
+    metrics=['ssrReadyMs','finalReadyMs','spanMs','clientMs','ssrMs','aux-aMs','aux-bMs','peakMiB','postMiB','hwmMiB','ssrPasses','clientPasses'] if scenario=='cold-measure' else ['spanMs','clientMs','ssrMs','aux-aMs','aux-bMs','ssrPasses','clientPasses','peakMiB','postMiB','hwmMiB']
     pairs=[('stock',a) for a in arms[1:]]+[('gate-only','barrier')]
     for a,b in pairs:
         for metric in metrics:
             before=[v[metric] for v in data[a]];after=[v[metric] for v in data[b]];deltas=[y-x for x,y in zip(before,after)]
             result['comparisons'].append({'scenario':scenario,'before':a,'after':b,'metric':metric,'beforeMedian':statistics.median(before),'afterMedian':statistics.median(after),**interval(deltas),'deltas':deltas})
+result['clientPassesPerEdit']={}
+for scenario in ['cold-measure','warm-leaf','warm-body']:
+    counts={arm:pass_counts(arm,scenario) for arm in ['stock','gate-only','barrier']}
+    a=counts['stock'];b=counts['barrier']
+    result['clientPassesPerEdit'][scenario]={'unit':'startup' if scenario=='cold-measure' else 'edit','arms':counts,'defaultVsStockFisherExact':fisher(a['replayed'],a['observations']-a['replayed'],b['replayed'],b['observations']-b['replayed'])}
 output.write_text(json.dumps(result,indent=2))
 print(result['method'])
 for r in result['comparisons']:
