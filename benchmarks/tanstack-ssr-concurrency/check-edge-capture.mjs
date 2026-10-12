@@ -13,9 +13,9 @@ raw.emit('change','/fixture/leaf.ts',1,'watch (outdated on attach)');
 c.modifiedFiles=new Set(['/fixture/leaf.ts']);c.hooks.watchRun.call();c.hooks.done.call();
 assert.deepEqual(capture.evidence().passes[1].triggers,['outdated-on-attach']);
 const pass=(name,started,finished,triggers=['normal-change'])=>({step:'edit',name,pass:1,started,finished,triggers});
-const data=passes=>({callbackIdentityPreserved:true,passes});
+const data=passes=>({callbackIdentityPreserved:true,passes:passes.map(p=>({...p,modifiedFiles:['/fixture/leaf.ts']})),writers:passes.map(p=>({t:p.started-0.1,file:'/fixture/leaf.ts',writerStack:'at edit (file:///fixture/run.mjs:295:6)'}))});
 const base=data([pass('client',1,2),pass('ssr',3,4)]);
-const more=data([...base.passes,pass('client',5,6,['normal-change']),pass('ssr',7,8,['edge-propagation'])]);
+const more=data([...base.passes,pass('client',5,6,['normal-change']),pass('ssr',7,8,['normal-change'])]);
 assert.equal(edgeContract(base,more,'direct').differences.length,2);
 assert.throws(()=>edgeContract(base,data([...base.passes,pass('ssr',5,6,['unknown'])]),'direct'),/unknown trigger/);
 assert.throws(()=>edgeContract(base,data([pass('client',1,4),pass('ssr',3,5)]),'direct'),/overlaps client/);
@@ -25,15 +25,15 @@ console.log('Passive watcher callback identity, replay capture, ordering and unk
 // A replay is exempt from a count only with all three independent proofs.
 const one={step:'edit',name:'ssr',pass:1,started:10,finished:20,modifiedFiles:['/fixture/leaf.ts'],removedFiles:[],triggers:['normal-change'],evidence:[]};
 const two={...one,pass:2,started:25,finished:30,triggers:['outdated-on-attach'],evidence:[{kind:'change',branch:'outdated-on-attach',file:'/fixture/leaf.ts'}]};
-const replayData={callbackIdentityPreserved:true,observations:[],writers:[],passes:[one,two]};
+const replayData={callbackIdentityPreserved:true,observations:[],writers:[{t:9,file:'/fixture/leaf.ts',writerStack:'at edit (file:///fixture/run.mjs:295:6)'}],passes:[one,two]};
 assertPassCount(replayData,'edit','ssr',1,'one non-replay SSR pass');
 assert.equal(replaySummary(replayData).checkpoints[0].replays,1);
 assert.throws(()=>assertPassCount({...replayData,passes:[one]},'edit','ssr',2,'missing'),/missing/);
 assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,modifiedFiles:['/fixture/other.ts']}]}),/same paths/);
-const savedAgain={...replayData,writers:[{t:15,file:'/fixture/leaf.ts',writerStack:'at edit (file:///fixture/run.mjs:300:8)'}]};
+const savedAgain={...replayData,writers:[...replayData.writers,{t:15,file:'/fixture/leaf.ts',writerStack:'at edit (file:///fixture/run.mjs:300:8)'}]};
 assert.equal(replaySummary(savedAgain).checkpoints[0].classes['write-driven attach'],1);
 assertPassCount(savedAgain,'edit','ssr',2,'second scenario save is real work');
-assert.throws(()=>replaySummary({...savedAgain,writers:[{...savedAgain.writers[0],writerStack:'unidentified writer'}]}),/unknown/);
+assert.throws(()=>replaySummary({...savedAgain,writers:[...replayData.writers,{...savedAgain.writers.at(-1),writerStack:'unidentified writer'}]}),/unknown/);
 assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,evidence:[]}]}),/Watchpack branch/);
 assert.throws(()=>replaySummary({...replayData,passes:[one,{...two,triggers:['unknown']}]}),/unknown trigger/);
 console.log('Global replay rule: branch, same paths, no intervening write, missing and unknown pass guards passed');
@@ -45,3 +45,13 @@ assertPassBounds({...replayData,passes:[one]},'edit','ssr',2,'coalesced saves');
 assert.throws(()=>assertPassBounds({...replayData,passes:[]},'edit','ssr',2,'missing saves'),/missing saves/);
 assert.throws(()=>assertPassBounds({...savedAgain,passes:[one,two,{...one,pass:3,started:35,finished:40}]},'edit','ssr',2,'too many saves'),/too many saves/);
 console.log('Write-driven attach classes and bounded rapid-save count guards passed');
+
+// Generated writes match their own path, not the preceding edit's path.
+const generated={...replayData,passes:[one,{...two,modifiedFiles:['/fixture/routeTree.gen.ts'],evidence:[{kind:'change',branch:'outdated-on-attach',file:'/fixture/routeTree.gen.ts'}]}],writers:[...replayData.writers,{t:15,file:'/fixture/routeTree.gen.ts',writerStack:'at Generator.safeFileWrite (file:///fixture/node_modules/@tanstack/router-generator/dist/esm/generator.js:596:17)'}]};
+const generatedSummary=replaySummary(generated).checkpoints[0];
+assert.equal(generatedSummary.classes['write-driven attach'],1);
+assert.equal(generatedSummary.writerCategories.toolchain,1);
+assertPassCount(generated,'edit','ssr',1,'only scenario work counts');
+const virtual=i=>({...one,pass:i+2,started:25+i*10,finished:30+i*10,modifiedFiles:[],triggers:['Start-virtual-write'],evidence:[{kind:'virtual-write',file:'/fixture/resolver.js',writerStack:'at update (file:///fixture/node_modules/@tanstack/start-plugin-core/dist/esm/rsbuild/virtual-modules.js:160:4)'}]});
+assert.throws(()=>replaySummary({...replayData,passes:[one,virtual(0),virtual(1),virtual(2)]}),/toolchain.*bound/);
+console.log('Generated write-path matching, writer categories and toolchain bounds passed');
