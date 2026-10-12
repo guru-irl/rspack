@@ -1,3 +1,4 @@
+import { staticCloseSites } from './static-close-sites.mjs';
 import { instrumentRestart } from './instrument-restart.mjs';
 import { instrumentJS } from './instrument-js.mjs';
 import { instrumentResponse, instrumentGate } from './instrument-response.mjs';
@@ -24,6 +25,7 @@ const pkg=path.join(app,'node_modules/@tanstack/start-plugin-core');
 const dist=path.join(pkg,'dist/esm/rsbuild');
 const originals=Object.fromEntries(['plugin.js','start-compiler-host.js','virtual-modules.js','normalized-client-build.js'].map(f=>[f,fs.readFileSync(path.join(dist,f),'utf8')]));
 fs.copyFileSync(path.join(app,'package-lock.json'),path.join(work,'package-lock.json'));
+if(process.env.MODE==='r3-close-static'){staticCloseSites(app,fixture,work);process.exit(0);}
 // Independently reconstruct the measured candidate and regenerate the corrected
 // patch from pristine bytes. Retain complete non-RSC partition hashes as evidence.
 const measuredRoot=path.join(work,'measured-dist');fs.mkdirSync(measuredRoot,{recursive:true});
