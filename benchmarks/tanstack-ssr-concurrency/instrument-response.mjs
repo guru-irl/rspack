@@ -93,7 +93,7 @@ const fetchLinked=async(label,html)=>{
  replace("const customWindow=scenario==='r3-custom-request';", "const customWindow=process.env.DIAGNOSTIC_PAGE_PATH==='custom-server';");
  replace("clearInterval(timer);\n  if(pageServer)", "clearInterval(timer);\n   fs.writeFileSync(path.join(out,'response-diagnostic.json'),JSON.stringify({diagnosticOnly:true,pagePath:customWindow?'custom-server':'middleware',events:diagnostic,manifests:Object.fromEntries(manifests)},null,2));\n   if(pageServer)");
  if(process.env.RESPONSE_WINDOW_ONLY){
- const a=source.indexOf("       for(const kind of ['add','rename','remove','body'])");
+ const a=source.indexOf("for(const kind of ['add','rename','remove','body'])");
  const final="await waitIdle(2); await sample(base,'Public leaf baseline');";
  const b=source.indexOf(final,a)+final.length;
  assert.ok(a>=0&&b>a,'diagnostic window stop boundaries');
