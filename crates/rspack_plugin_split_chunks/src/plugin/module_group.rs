@@ -253,6 +253,29 @@ struct PendingNameRequest {
 // Keep each N-API payload bounded while amortizing the fixed cost of crossing into JavaScript.
 const JS_CHUNK_NAME_BATCH_SIZE: usize = 128;
 
+const JS_TEST_BATCH_SIZE: usize = 2048;
+
+// As on main, report the lowest failing module and skip that module's later groups.
+struct CallbackFailures {
+  failed: Vec<bool>,
+  first: Option<(usize, rspack_error::Error)>,
+}
+
+impl CallbackFailures {
+  fn record<T>(&mut self, index: usize, result: Result<T>) -> Option<T> {
+    match result {
+      Ok(value) => Some(value),
+      Err(error) => {
+        self.failed[index] = true;
+        if self.first.as_ref().is_none_or(|(first, _)| index < *first) {
+          self.first = Some((index, error));
+        }
+        None
+      }
+    }
+  }
+}
+
 pub(super) fn cache_group_uses_intersections(
   cache_group: &CacheGroup,
   has_name_batch_getter: bool,
@@ -920,7 +943,9 @@ impl SplitChunksPlugin {
       .any(|indexed| indexed.cache_group.chunk_filter.is_func())
       .then(SelectedChunksCache::default);
     let name_batch_getters = self.name_batch_getters.as_deref();
-    // Module callbacks still run once in the existing asynchronous pass.
+    let test_batch_getters = self.test_batch_getters.as_deref();
+    let group_positions: Vec<_> = (0..cache_groups.len()).collect();
+    // Module callbacks still run once per module and group.
     // Anonymous all-chunk candidates can then be assembled independently,
     // avoiding a shared-map lookup for every candidate/module association.
     let direct_matches: Vec<_> = cache_groups
@@ -949,20 +974,15 @@ impl SplitChunksPlugin {
           .is_some_and(Option::is_some)
       })
     });
-    let (name_sender, name_receiver) = if has_name_batch_callback {
-      let (sender, receiver) = mpsc::unbounded();
-      (Some(sender), Some(receiver))
-    } else {
-      (None, None)
-    };
-
     // These filters cannot yield or invoke user callbacks. Run their CPU work
     // on Rayon instead of allocating and joining one Tokio task per module.
     let use_native_preparation = !has_name_batch_callback
       && cache_groups
         .iter()
         .all(|indexed| is_native_cache_group(indexed.cache_group));
-    let process_module = async |module_index: usize,
+    let process_module = async |positions: &[usize],
+                                prechecked: bool,
+                                module_index: usize,
                                 module_identifier: ModuleIdentifier,
                                 name_sender: Option<mpsc::UnboundedSender<PendingNameRequest>>|
            -> Result<()> {
@@ -980,7 +1000,8 @@ impl SplitChunksPlugin {
       let mut used_exports_combinations = [None, None];
       let mut non_used_exports_combinations = [None, None];
 
-      for (cache_group_position, indexed_cache_group) in cache_groups.iter().enumerate() {
+      for &cache_group_position in positions {
+        let indexed_cache_group = &cache_groups[cache_group_position];
         let cache_group = indexed_cache_group.cache_group;
         let has_name_batch_getter = name_batch_getters.is_some_and(|getters| {
           getters
@@ -989,10 +1010,13 @@ impl SplitChunksPlugin {
         });
         let include_intersections = self.dedup_depth > 0
           && cache_group_uses_intersections(cache_group, has_name_batch_getter);
-        if !is_default_module_type_filter(&cache_group.r#type) && !(cache_group.r#type)(module) {
+        if !prechecked
+          && !is_default_module_type_filter(&cache_group.r#type)
+          && !(cache_group.r#type)(module)
+        {
           continue;
         }
-        if !is_default_module_layer_filter(&cache_group.layer) {
+        if !prechecked && !is_default_module_layer_filter(&cache_group.layer) {
           let matched = if let Some(filter) = cache_group.layer.native() {
             filter(module.get_layer().map(|layer| layer.as_str()))
           } else {
@@ -1007,6 +1031,7 @@ impl SplitChunksPlugin {
         }
 
         let is_match = match &cache_group.test {
+          _ if prechecked => true,
           CacheGroupTest::String(test) => module
             .name_for_condition()
             .is_some_and(|name| name.starts_with(test)),
@@ -1202,55 +1227,192 @@ impl SplitChunksPlugin {
         .par_iter()
         .enumerate()
         .try_for_each(|(module_index, module_identifier)| {
-          process_module(module_index, *module_identifier, None)
+          process_module(
+            &group_positions,
+            false,
+            module_index,
+            *module_identifier,
+            None,
+          )
+          .now_or_never()
+          .expect("native cache-group preparation should not yield")
+        })?;
+    } else {
+      let has_name = |position: usize| {
+        name_batch_getters.is_some_and(|getters| {
+          getters[cache_groups[position].cache_group_index as usize].is_some()
+        })
+      };
+      let native_positions: Vec<_> = group_positions
+        .iter()
+        .copied()
+        .filter(|&position| {
+          !has_name(position) && is_native_cache_group(cache_groups[position].cache_group)
+        })
+        .collect();
+      all_modules
+        .par_iter()
+        .enumerate()
+        .try_for_each(|(index, module)| {
+          process_module(&native_positions, false, index, *module, None)
             .now_or_never()
             .expect("native cache-group preparation should not yield")
         })?;
-    } else {
-      let module_group_results = rspack_parallel::scope::<_, Result<_>>(|token| {
-        if let Some(name_receiver) = name_receiver {
-          let coordinator = unsafe {
-            token.used((
-              name_receiver,
-              &cache_groups,
-              name_batch_getters.expect("should have batch name getters"),
-              compilation,
-            ))
-          };
-          coordinator.spawn(
-            |(name_receiver, cache_groups, name_batch_getters, compilation)| async move {
-              process_name_requests(name_receiver, cache_groups, name_batch_getters, compilation)
-                .await
-            },
-          );
+      let mut failures = CallbackFailures {
+        failed: vec![false; all_modules.len()],
+        first: None,
+      };
+      // Finish one group before testing the next, so each module's earlier names run before its later tests.
+      for &position in &group_positions {
+        if native_positions.contains(&position) {
+          continue;
         }
-        all_modules
+        let indexed = &cache_groups[position];
+        let group = indexed.cache_group;
+        let mut candidates: Vec<_> = all_modules
           .iter()
           .enumerate()
-          .for_each(|(module_index, module_identifier)| {
-            let name_sender = name_sender.clone();
-            let s = unsafe {
-              token.used((
-                &process_module,
-                module_index,
-                *module_identifier,
-                name_sender,
-              ))
-            };
-            s.spawn(
-              |(process_module, module_index, module_identifier, name_sender)| async move {
-                process_module(module_index, module_identifier, name_sender).await
-              },
-            );
+          .filter_map(|(index, identifier)| {
+            let module = module_graph
+              .module_by_identifier(identifier)
+              .expect("should have module");
+            (!failures.failed[index]
+              && !module_chunks[index].is_empty()
+              && (group.r#type)(module.as_ref())
+              && group
+                .layer
+                .native()
+                .is_none_or(|filter| filter(module.get_layer().map(|layer| layer.as_str()))))
+            .then_some(index)
+          })
+          .collect();
+        if group.layer.native().is_none() {
+          let mut filtered = Vec::new();
+          for batch in candidates.chunks(JS_TEST_BATCH_SIZE) {
+            let results = join_all(batch.iter().map(|&index| {
+              let module = module_graph
+                .module_by_identifier(&all_modules[index])
+                .expect("should have module");
+              group
+                .layer
+                .call(module.get_layer().map(ToString::to_string))
+            }))
+            .await;
+            for (&index, result) in batch.iter().zip(results) {
+              if failures.record(index, result) == Some(true) {
+                filtered.push(index);
+              }
+            }
+          }
+          candidates = filtered;
+        }
+        let mut matched = Vec::new();
+        let getter = test_batch_getters
+          .and_then(|getters| getters[indexed.cache_group_index as usize].as_ref());
+        for batch in candidates.chunks(JS_TEST_BATCH_SIZE) {
+          let contexts = batch.iter().map(|&index| CacheGroupTestFnCtx {
+            compilation,
+            module: module_graph
+              .module_by_identifier(&all_modules[index])
+              .expect("should have module")
+              .as_ref(),
           });
-        drop(name_sender);
-      })
-      .await
-      .into_iter()
-      .map(|result| result.to_rspack_result())
-      .collect::<Result<Vec<_>>>()?;
-      for result in module_group_results {
-        result?;
+          let results = if let Some(getter) = getter {
+            getter(contexts.collect()).await?
+          } else {
+            join_all(contexts.map(|ctx| async move {
+              Ok(match &group.test {
+                CacheGroupTest::String(test) => Some(
+                  ctx
+                    .module
+                    .name_for_condition()
+                    .is_some_and(|name| name.starts_with(test)),
+                ),
+                CacheGroupTest::RegExp(test) => Some(
+                  ctx
+                    .module
+                    .name_for_condition()
+                    .is_some_and(|name| test.test(&name)),
+                ),
+                CacheGroupTest::Fn(test) => test(ctx).await?,
+                CacheGroupTest::Enabled => Some(true),
+              })
+            }))
+            .await
+          };
+          for (&index, result) in batch.iter().zip(results) {
+            if failures.record(index, result).flatten().unwrap_or_default()
+              && module_chunks[index].len() >= group.min_chunks as usize
+            {
+              matched.push(index);
+            }
+          }
+        }
+        let positions = [position];
+        let has_name = has_name(position);
+        if !has_name
+          && !group.chunk_filter.is_func()
+          && !matches!(group.name, ChunkNameGetter::Fn(_))
+        {
+          matched.par_iter().try_for_each(|&index| {
+            process_module(&positions, true, index, all_modules[index], None)
+              .now_or_never()
+              .expect("native cache-group preparation should not yield")
+          })?;
+        } else {
+          let (sender, receiver) = if has_name {
+            let (sender, receiver) = mpsc::unbounded();
+            (Some(sender), Some(receiver))
+          } else {
+            (None, None)
+          };
+          let results = rspack_parallel::scope::<_, Result<_>>(|token| {
+            if let Some(receiver) = receiver {
+              let coordinator = unsafe {
+                token.used((
+                  receiver,
+                  &cache_groups,
+                  name_batch_getters.expect("should have batch name getters"),
+                  compilation,
+                ))
+              };
+              coordinator.spawn(|(receiver, groups, getters, compilation)| async move {
+                process_name_requests(receiver, groups, getters, compilation).await
+              });
+            }
+            for &index in &matched {
+              let task = unsafe {
+                token.used((
+                  &process_module,
+                  &positions,
+                  index,
+                  all_modules[index],
+                  sender.clone(),
+                ))
+              };
+              task.spawn(|(process, positions, index, module, sender)| async move {
+                process(positions, true, index, module, sender).await
+              });
+            }
+            drop(sender);
+          })
+          .await
+          .into_iter()
+          .map(|result| result.to_rspack_result())
+          .collect::<Result<Vec<_>>>()?;
+          let mut results = results.into_iter();
+          if has_name {
+            results
+              .next()
+              .expect("should have name coordinator result")?;
+          }
+          for (&index, result) in matched.iter().zip(results) {
+            let _ = failures.record(index, result);
+          }
+        }
+      }
+      if let Some((_, error)) = failures.first {
+        return Err(error);
       }
     }
 
