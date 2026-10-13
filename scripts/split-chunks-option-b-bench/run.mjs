@@ -100,6 +100,7 @@ function groupsFor(counts) {
   if (options.arm === 'native-type' || options.arm === 'layer') {
     let index = 0;
     for (const group of Object.values(groups)) {
+      if (!group || typeof group !== 'object') continue;
       if (options.arm === 'native-type') group.type = 'javascript/auto';
       else group.layer = index % 2 === 0 ? 'bench' : /^bench$/;
       index++;

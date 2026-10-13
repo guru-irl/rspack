@@ -3,8 +3,9 @@ from pathlib import Path
 from paired_stats import summarize
 root=Path(sys.argv[1]).resolve();repo=Path(sys.argv[2]).resolve();system=os.environ['RUNNER_OS']
 results=root/'results';results.mkdir(parents=True,exist_ok=True)
-labels=['main','main-prime','pr1','pr2']
-if system=='Linux':labels.insert(2,'old24')
+native_filters_only=os.environ.get('BENCH_NATIVE_FILTERS_ONLY')=='1'
+labels=['main','main-prime','pr1'] if native_filters_only else ['main','main-prime','pr1','pr2']
+if system=='Linux' and not native_filters_only:labels.insert(2,'old24')
 def artifact(label):return root/'bindings'/('optb-binding-'+system+'-'+('main' if label=='main-prime' else label))
 manifest={'host':platform.platform(),'cpuCount':os.cpu_count(),'node':subprocess.check_output(['node','--version'],text=True).strip(),'pairs':10,'samples':[],'failures':[],'memoryGateMetrics':[p+'/'+m for p in ('cold','rebuild','revert') for m in ('peakMiB','steadyMiB')]+['wholePeakMiB'],'bindings':{k:hashlib.sha256((artifact(k)/'binding.node').read_bytes()).hexdigest() for k in labels},'commits':{k:(artifact(k)/'commit.sha').read_text().strip() for k in labels}}
 assert manifest['bindings']['main']==manifest['bindings']['main-prime']
@@ -47,8 +48,10 @@ def sample(arm,label,pair):
  manifest['samples'].append({'arm':arm,'label':label,'pair':pair,'warmup':pair==0,'seconds':time.time()-started});save()
  print(name,'PASS',round(time.time()-started,2),flush=True);return j
 
-arms=('callback','native','native-type','layer','gate') if system=='Linux' else ('native','callback')
+arms=('native-type','layer') if native_filters_only else (('callback','native','native-type','layer','gate') if system=='Linux' else ('native','callback','native-type','layer'))
+all_labels=labels
 for arm in arms:
+ labels=['main','main-prime','pr1'] if arm in ('native-type','layer') else all_labels
  pairs=[]
  for i in range(11):
   order=labels if i%2 else list(reversed(labels));data={label:sample(arm,label,i) for label in order}
@@ -56,10 +59,11 @@ for arm in arms:
    expected=[r[field] for r in data['main']['records']]
    assert all([r[field] for r in data[label]['records']]==expected for label in labels),(arm,i,field,'CORRECTNESS FAILURE')
   field='counts' if arm=='gate' else 'callbacks'
-  assert all([r[field] for r in data[label]['records']]==[r[field] for r in data['main']['records']] for label in ('main-prime','pr1','pr2')),(arm,i,'callback counts','CORRECTNESS FAILURE')
+  assert all([r[field] for r in data[label]['records']]==[r[field] for r in data['main']['records']] for label in labels if label!='old24'),(arm,i,'callback counts','CORRECTNESS FAILURE')
   if i:pairs.append(data)
- comps=[('AA','main','main-prime'),('main-pr1','main','pr1'),('main-pr2','main','pr2'),('pr1-pr2','pr1','pr2')]
- if system=='Linux':comps += [('main-24','main','old24'),('24-pr2','old24','pr2'),('24-pr1','old24','pr1')]
+ comps=[('AA','main','main-prime'),('main-pr1','main','pr1')]
+ if 'pr2' in labels:comps += [('main-pr2','main','pr2'),('pr1-pr2','pr1','pr2')]
+ if 'old24' in labels:comps += [('main-24','main','old24'),('24-pr2','old24','pr2'),('24-pr1','old24','pr1')]
  metrics={}
  def row(label,phase,pair):return next(r for r in pair[label]['records'] if r.get('build',r.get('phase'))==phase)
  getters={'wallMs':lambda r:r['wallMs'],'processCacheGroupsMs':lambda r:r['processCacheGroupsMs']}
@@ -71,17 +75,16 @@ for arm in arms:
   metrics['wholePeakMiB']={key:summarize([x[a]['processPeakBytes']/2**20 for x in pairs],[x[b]['processPeakBytes']/2**20 for x in pairs]) for key,a,b in comps}
   def cpu(label,x):return sum(row(label,p,x)['cpuUserMs']+row(label,p,x)['cpuSystemMs'] for p in ('cold','rebuild'))
   metrics['cold+rebuild/cpuMs']={key:summarize([cpu(a,x) for x in pairs],[cpu(b,x) for x in pairs]) for key,a,b in comps}
-  increases=[(m,k) for m in manifest['memoryGateMetrics'] for k in ('main-pr1','main-pr2') if metrics[m][k]['increase']]
+  increases=[(m,k) for m in manifest['memoryGateMetrics'] for k in ('main-pr1','main-pr2') if k in metrics[m] and metrics[m][k]['increase']]
   summary['contract']['memoryIncrease']|=bool(increases)
   if increases:summary['failures'] += [{'arm':arm,'memoryIncrease':increases}]
  summary['comparisons'][arm]=metrics
  (results/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
  print('ARM_FINISHED',arm,'memoryIncrease',summary['contract']['memoryIncrease'],flush=True)
-if system=='Linux':
- cb=summary['comparisons']['callback'];native=summary['comparisons']['native-type'];layer=summary['comparisons']['layer']
+if system=='Linux' and not native_filters_only:
+ cb=summary['comparisons']['callback']
  keep=cb['cold+rebuild/cpuMs']['main-pr2']['hl']/cb['cold+rebuild/cpuMs']['main-24']['hl'] if cb['cold+rebuild/cpuMs']['main-24']['hl']<0 else None
- nativeKeep={m:native[m]['main-pr1']['hl']/native[m]['main-24']['hl'] if native[m]['main-24']['hl']<0 else None for m in ('cold/wallMs','cold/cpuMs','cold+rebuild/cpuMs')}
- summary['deciding']={'cpuSavingRetained':keep,'callbackRebuildWallIncrease':cb['rebuild/wallMs']['24-pr2']['increase'],'gateEditTimerIncrease':summary['comparisons']['gate']['edit/processCacheGroupsMs']['24-pr2']['increase'],'nativeTypeSavingRetained':nativeKeep,'layerSavingRetained':{m:layer[m]['main-pr1']['hl']/layer[m]['main-24']['hl'] if layer[m]['main-24']['hl']<0 else None for m in ('cold/wallMs','cold/cpuMs')}}
+ summary['deciding']={'cpuSavingRetained':keep,'callbackRebuildWallIncrease':cb['rebuild/wallMs']['24-pr2']['increase'],'gateEditTimerIncrease':summary['comparisons']['gate']['edit/processCacheGroupsMs']['24-pr2']['increase']}
  (results/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
  print('DECIDING',json.dumps(summary['deciding']),flush=True)
 print('ALL_ARMS_FINISHED',flush=True)
