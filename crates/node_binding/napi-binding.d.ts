@@ -1938,6 +1938,7 @@ export interface RawCacheGroupOptions {
   key: string
   priority?: number
   test?: RegExp | string | Function
+  testBatch?: ((modules: Module[]) => (boolean | undefined)[] | { results: (boolean | undefined)[]; thrown: number[]; error: unknown })
   filename?: JsFilename
   idHint?: string
   /** What kind of chunks should be selected. */

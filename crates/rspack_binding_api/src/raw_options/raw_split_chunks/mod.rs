@@ -1,3 +1,4 @@
+mod batch;
 mod raw_split_chunk_cache_group_test;
 mod raw_split_chunk_chunks;
 mod raw_split_chunk_name;
@@ -14,12 +15,13 @@ use raw_split_chunk_name::{
 };
 use rspack_core::{DEFAULT_DELIMITER, Filename, SourceType};
 use rspack_napi::string::JsStringExt;
-use rspack_plugin_split_chunks::{ChunkNameGetter, SplitChunksNameBatchFn};
+use rspack_plugin_split_chunks::{ChunkNameGetter, SplitChunksNameBatchFn, SplitChunksTestBatchFn};
 use rspack_regex::RspackRegex;
 
 use self::{
   raw_split_chunk_cache_group_test::{
-    RawCacheGroupTest, default_cache_group_test, normalize_raw_cache_group_test,
+    RawCacheGroupTest, RawCacheGroupTestBatch, default_cache_group_test,
+    normalize_raw_cache_group_test, normalize_raw_cache_group_test_batch, test_batch_adapter,
   },
   raw_split_chunk_chunks::{Chunks, create_chunks_filter},
   raw_split_chunk_name::default_chunk_option_name,
@@ -74,6 +76,11 @@ pub struct RawCacheGroupOptions<'a> {
   #[napi(ts_type = "RegExp | string | Function")]
   #[debug(skip)]
   pub test: Option<RawCacheGroupTest>,
+  #[napi(
+    ts_type = "((modules: Module[]) => (boolean | undefined)[] | { results: (boolean | undefined)[]; thrown: number[]; error: unknown })"
+  )]
+  #[debug(skip)]
+  pub test_batch: Option<RawCacheGroupTestBatch>,
   pub filename: Option<JsFilename>,
   //   pub enforce: bool,
   pub id_hint: Option<String>,
@@ -117,6 +124,7 @@ pub struct RawCacheGroupOptions<'a> {
 pub(crate) struct NormalizedSplitChunksOptions {
   pub options: rspack_plugin_split_chunks::PluginOptions,
   pub name_batch_getters: Vec<Option<SplitChunksNameBatchFn>>,
+  pub test_batch_getters: Vec<Option<SplitChunksTestBatchFn>>,
 }
 
 impl<'a> RawSplitChunksOptions<'a> {
@@ -125,6 +133,7 @@ impl<'a> RawSplitChunksOptions<'a> {
 
     let mut cache_groups = vec![];
     let mut name_batch_getters = vec![];
+    let mut test_batch_getters = vec![];
 
     let overall_filename = raw_opts.filename.map(Filename::from);
 
@@ -229,14 +238,19 @@ impl<'a> RawSplitChunksOptions<'a> {
             name_batch_getter = overall_name_batch_getter.clone();
           }
           name_batch_getters.push(name_batch_getter);
+          let test_batch_getter = v.test_batch.map(normalize_raw_cache_group_test_batch);
+          let test = match (&test_batch_getter, v.test) {
+            (Some(getter), _) => test_batch_adapter(getter),
+            (None, Some(test)) => normalize_raw_cache_group_test(test),
+            (None, None) => default_cache_group_test(),
+          };
+          test_batch_getters.push(test_batch_getter);
           rspack_plugin_split_chunks::CacheGroup {
             id_hint: v.id_hint.unwrap_or_else(|| v.key.clone()),
             key: v.key,
             name,
             priority: v.priority.unwrap_or(0) as f64,
-            test: v.test.map_or(default_cache_group_test(), |test| {
-              normalize_raw_cache_group_test(test)
-            }),
+            test,
             chunk_filter: v.chunks.map_or_else(
               || {
                 overall_chunk_filter
@@ -310,6 +324,7 @@ impl<'a> RawSplitChunksOptions<'a> {
         hide_path_info: raw_opts.hide_path_info,
       },
       name_batch_getters,
+      test_batch_getters,
     }
   }
 }

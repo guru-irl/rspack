@@ -15,4 +15,7 @@ pub use options::{
   cache_group_test::{CacheGroupTest, CacheGroupTestFnCtx},
   chunk_name::{ChunkNameGetter, ChunkNameGetterFnCtx},
 };
-pub use plugin::{PluginOptions, SplitChunksNameBatchFn, SplitChunksPlugin, max_size, min_size};
+pub use plugin::{
+  PluginOptions, SplitChunksNameBatchFn, SplitChunksPlugin, SplitChunksTestBatchFn, max_size,
+  min_size,
+};
