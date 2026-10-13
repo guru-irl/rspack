@@ -1,0 +1,43 @@
+name: SplitChunks match-once measurements
+on:
+  push:
+    branches: [bench/split-chunks-match-once]
+    paths: ['.github/workflows/bench-split-chunks-match-once.yml', 'scripts/split-chunks-match-once-bench/**']
+permissions:
+  contents: read
+concurrency:
+  group: split-chunks-match-once-measurements
+  cancel-in-progress: false
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            runner: macos-15
+          - platform: Windows
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Build and measure alternating treatment and same-binary pairs
+        shell: bash
+        run: bash scripts/split-chunks-match-once-bench/build.sh
+      - name: Upload raw measurements and paired summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: split-chunks-match-once-${{ matrix.platform }}
+          path: .bench-split-chunks-match-once/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
