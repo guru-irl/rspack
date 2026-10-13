@@ -5,6 +5,7 @@ on:
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: split-chunks-option-b-measurements
   cancel-in-progress: false
@@ -18,12 +19,6 @@ jobs:
           - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: old24, ref: 297daff0ace33197c5e89f1c06359a5a0274fb71 }
           - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr1, ref: 379a84ca907322486c58a575073f81d1e6790543 }
           - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr2, ref: c870aa3b16e628df78e8fb1575bec28c2c1fa6a4 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: main, ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr1, ref: 379a84ca907322486c58a575073f81d1e6790543 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr2, ref: c870aa3b16e628df78e8fb1575bec28c2c1fa6a4 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: main, ref: f2903b6482cb7a0fcdca912d23062bd94d3d5636 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr1, ref: 379a84ca907322486c58a575073f81d1e6790543 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr2, ref: c870aa3b16e628df78e8fb1575bec28c2c1fa6a4 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -33,7 +28,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.18.0
+          node-version: 22.23.3
           cache: pnpm
       - name: Build exact production release source
         shell: bash
@@ -67,10 +62,18 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.18.0
+          node-version: 22.23.3
           cache: pnpm
       - uses: actions/download-artifact@v4
+        if: matrix.platform == 'Linux'
         with:
+          pattern: optb-binding-Linux-*
+          path: .bench-split-chunks-option-b/bindings/
+      - uses: actions/download-artifact@v4
+        if: matrix.platform != 'Linux'
+        with:
+          run-id: 38410411312
+          github-token: ${{ github.token }}
           pattern: optb-binding-${{ matrix.platform }}-*
           path: .bench-split-chunks-option-b/bindings/
       - name: Measure alternating pairs with same-binary calibration
