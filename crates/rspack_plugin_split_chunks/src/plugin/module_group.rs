@@ -251,7 +251,7 @@ struct PendingNameRequest {
 }
 
 // Keep each N-API payload bounded while amortizing the fixed cost of crossing into JavaScript.
-const JS_CHUNK_NAME_BATCH_SIZE: usize = 128;
+const JS_CHUNK_NAME_BATCH_SIZE: usize = 1024;
 
 const JS_TEST_BATCH_SIZE: usize = 2048;
 
