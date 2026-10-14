@@ -15,15 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: base38, ref: 3482b2a8876fbb570a260137933110ff352d0306 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: name1024, ref: 9f33615e8ddd9f1070dc3219f4d77f86993994d5 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: rounds, ref: f6e4ff3f55d54489301ecb0cee93bff17aec7eaa }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: base38, ref: 3482b2a8876fbb570a260137933110ff352d0306 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: name1024, ref: 9f33615e8ddd9f1070dc3219f4d77f86993994d5 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: rounds, ref: f6e4ff3f55d54489301ecb0cee93bff17aec7eaa }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: base38, ref: 3482b2a8876fbb570a260137933110ff352d0306 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: name1024, ref: 9f33615e8ddd9f1070dc3219f4d77f86993994d5 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: rounds, ref: f6e4ff3f55d54489301ecb0cee93bff17aec7eaa }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: old24, ref: 297daff0ace33197c5e89f1c06359a5a0274fb71 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -55,9 +47,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-24.04 }
           - { platform: macOS, runner: macos-15 }
-          - { platform: Windows, runner: windows-2025 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
@@ -71,25 +61,24 @@ jobs:
           cache: pnpm
       - uses: actions/download-artifact@v4
         with:
-          pattern: optb-binding-${{ matrix.platform }}-*
-          path: .bench-split-chunks-option-b/bindings/
-      - uses: actions/download-artifact@v4
-        if: matrix.platform == 'Linux'
-        with:
-          run-id: 38412612623
-          github-token: ${{ github.token }}
-          name: optb-binding-Linux-old24
-          path: .bench-split-chunks-option-b/bindings/optb-binding-Linux-old24/
+          name: optb-binding-macOS-old24
+          path: .bench-split-chunks-option-b/bindings/optb-binding-macOS-old24/
       - uses: actions/download-artifact@v4
         with:
-          run-id: ${{ matrix.platform == 'Linux' && '38412612623' || '38410411312' }}
+          run-id: 38490941078
           github-token: ${{ github.token }}
-          name: optb-binding-${{ matrix.platform }}-main
-          path: .bench-split-chunks-option-b/bindings/optb-binding-${{ matrix.platform }}-main/
+          name: optb-binding-macOS-name1024
+          path: .bench-split-chunks-option-b/bindings/optb-binding-macOS-name1024/
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 38490941078
+          github-token: ${{ github.token }}
+          name: optb-binding-macOS-rounds
+          path: .bench-split-chunks-option-b/bindings/optb-binding-macOS-rounds/
       - name: Measure alternating pairs with same-binary calibration
         shell: bash
         env:
-          BENCH_FOLLOWUPS: '1'
+          BENCH_FOLLOWUPS_REPLICATION: '1'
         run: bash scripts/split-chunks-option-b-bench/measure.sh
       - uses: actions/upload-artifact@v4
         if: always()
