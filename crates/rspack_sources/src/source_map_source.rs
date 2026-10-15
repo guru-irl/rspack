@@ -10,7 +10,6 @@ use crate::{
     Chunks, StreamChunks, TextSpan, get_map, stream_chunks_of_combined_source_map,
     stream_chunks_of_source_map,
   },
-  object_pool::ObjectPool,
 };
 
 /// Options for [SourceMapSource::new].
@@ -139,19 +138,15 @@ impl Source for SourceMapSource {
     self.value.len()
   }
 
-  fn map<'a>(&'a self, object_pool: &ObjectPool, options: &MapOptions) -> Option<SourceMap<'a>> {
+  fn map<'a>(&'a self, options: &MapOptions) -> Option<SourceMap<'a>> {
     if self.inner_source_map.is_none() {
       return Some(self.source_map.as_borrowed());
     }
     let chunks = self.stream_chunks();
-    get_map(object_pool, chunks.as_ref(), options).map(SourceMap::from_fields)
+    get_map(chunks.as_ref(), options).map(SourceMap::from_fields)
   }
 
-  fn map_static(
-    self: Arc<Self>,
-    object_pool: &ObjectPool,
-    options: &MapOptions,
-  ) -> Option<SourceMap<'static>> {
+  fn map_static(self: Arc<Self>, options: &MapOptions) -> Option<SourceMap<'static>> {
     match Arc::try_unwrap(self) {
       Ok(mut source) => {
         if source.inner_source_map.is_none() {
@@ -165,7 +160,7 @@ impl Source for SourceMapSource {
         let source = Arc::new(source);
         let owner = source.clone();
         let chunks = SourceMapSourceChunks::new(source.as_ref(), &value);
-        get_map(object_pool, &chunks, options)
+        get_map(&chunks, options)
           .map(SourceMap::from_fields)
           .map(|map| map.into_static(owner))
       }
@@ -173,7 +168,7 @@ impl Source for SourceMapSource {
         let owner = source.clone();
         source
           .as_ref()
-          .map(object_pool, options)
+          .map(options)
           .map(|map| map.into_static(owner))
       }
     }
@@ -271,7 +266,6 @@ impl<'source, 'value> SourceMapSourceChunks<'source, 'value> {
 impl<'source, 'value> Chunks<'source> for SourceMapSourceChunks<'source, 'value> {
   fn stream<'chunk>(
     &'chunk self,
-    object_pool: &ObjectPool,
     options: &MapOptions,
     on_chunk: crate::helpers::OnChunk<'_, 'chunk>,
     on_source: crate::helpers::OnSource<'_, 'source>,
@@ -280,7 +274,6 @@ impl<'source, 'value> Chunks<'source> for SourceMapSourceChunks<'source, 'value>
     if let Some(inner_source_map) = self.inner_source_map {
       stream_chunks_of_combined_source_map(
         options,
-        object_pool,
         self.value,
         self.source_map.fields(),
         self.name,
@@ -294,7 +287,6 @@ impl<'source, 'value> Chunks<'source> for SourceMapSourceChunks<'source, 'value>
     } else {
       stream_chunks_of_source_map(
         options,
-        object_pool,
         TextSpan::new(self.value),
         self.source_map.fields(),
         on_chunk,
@@ -342,9 +334,7 @@ mod tests {
       name: "text",
       source_map: SourceMap::from_json(source_map_str.to_string()).unwrap(),
       original_source: Some(inner_source.source().into_string_lossy().into()),
-      inner_source_map: inner_source
-        .clone()
-        .map_static(&ObjectPool::default(), &MapOptions::default()),
+      inner_source_map: inner_source.clone().map_static(&MapOptions::default()),
       remove_original_source: false,
     });
     let sms2 = SourceMapSource::new(SourceMapSourceOptions {
@@ -352,18 +342,14 @@ mod tests {
       name: "text",
       source_map: SourceMap::from_json(source_map_str.to_string()).unwrap(),
       original_source: Some(inner_source.source().into_string_lossy().into()),
-      inner_source_map: inner_source
-        .clone()
-        .map_static(&ObjectPool::default(), &MapOptions::default()),
+      inner_source_map: inner_source.clone().map_static(&MapOptions::default()),
       remove_original_source: true,
     });
     let expected_content = "Translated: Hallo Welt\nist ein test Text\nAnderer Text";
     assert_eq!(sms1.source().into_string_lossy(), expected_content);
     assert_eq!(sms2.source().into_string_lossy(), expected_content);
     assert_eq!(
-      sms1
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      sms1.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "YAAAA,K,CAAMC;AACN,O,MAAU;ACCC,O,CAAM",
@@ -380,9 +366,7 @@ mod tests {
       .unwrap(),
     );
     assert_eq!(
-      sms2
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      sms2.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "YAAAA,K,CAAMC;AACN,O,MAAU",
@@ -434,9 +418,7 @@ mod tests {
       "hi world\nhi world\nhi world\n"
     );
     assert_eq!(
-      source
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      source.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "AAAA;;ACAA,CAAC,CAAI",
@@ -450,9 +432,7 @@ mod tests {
       .unwrap()
     );
     assert_eq!(
-      source
-        .map(&ObjectPool::default(), &MapOptions::new(false))
-        .unwrap(),
+      source.map(&MapOptions::new(false)).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "AAAA;;ACAA",
@@ -548,9 +528,7 @@ mod tests {
       a,
       b,
     ]);
-    let map = source
-      .map(&ObjectPool::default(), &MapOptions::default())
-      .unwrap();
+    let map = source.map(&MapOptions::default()).unwrap();
     assert_eq!(
       map.mappings(),
       "AAAA;AAAA;ACAA,ICAA,EDAA,ECAA,EFAA;AEAA,EFAA;ACAA",
@@ -574,12 +552,10 @@ mod tests {
       .into_owned());
     test_cached!(source, |s: BoxSource| Source::map_static(
       s,
-      &ObjectPool::default(),
       &MapOptions::default()
     ));
     test_cached!(source, |s: BoxSource| Source::map_static(
       s,
-      &ObjectPool::default(),
       &MapOptions::new(false)
     ));
   }
@@ -614,9 +590,7 @@ mod tests {
       remove_original_source: false,
     });
     assert_eq!(
-      source
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      source.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "AAAA",
@@ -666,9 +640,7 @@ mod tests {
     );
     assert_eq!(source.size(), 13);
     assert_eq!(
-      source
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      source.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "AAAAA,SCAA,ECAMC,C",
@@ -720,9 +692,7 @@ mod tests {
       ).unwrap()),
       remove_original_source: true,
     });
-    let map = source
-      .map(&ObjectPool::default(), &MapOptions::default())
-      .unwrap();
+    let map = source.map(&MapOptions::default()).unwrap();
     assert_eq!(
       map,
       SourceMap::from_json(
@@ -744,7 +714,7 @@ mod tests {
       name: "a.js",
       source_map: OriginalSource::new("console.log('a')\n", "a.js")
         .boxed()
-        .map_static(&ObjectPool::default(), &MapOptions::new(false))
+        .map_static(&MapOptions::new(false))
         .unwrap(),
     });
     let source = ConcatSource::new([
@@ -753,9 +723,7 @@ mod tests {
       RawStringSource::from("\n").boxed(),
       source.boxed(),
     ]);
-    let map = source
-      .map(&ObjectPool::default(), &MapOptions::new(false))
-      .unwrap();
+    let map = source.map(&MapOptions::new(false)).unwrap();
     assert_eq!(map.mappings(), ";;;AAAA");
   }
 
@@ -781,13 +749,14 @@ mod tests {
         .to_string(),
     )
     .unwrap();
-    let inner_source_map = inner_source
-      .clone()
-      .map_static(&ObjectPool::default(), &MapOptions::default())
-      .map(|mut map| {
-        map.set_source_root(Some("/path/to/folder/".to_string().into()));
-        map
-      });
+    let inner_source_map =
+      inner_source
+        .clone()
+        .map_static(&MapOptions::default())
+        .map(|mut map| {
+          map.set_source_root(Some("/path/to/folder/".to_string().into()));
+          map
+        });
     let sms = SourceMapSource::new(SourceMapSourceOptions {
       value: source_r_code,
       name: "text",
@@ -797,9 +766,7 @@ mod tests {
       remove_original_source: false,
     });
     assert_eq!(
-      sms
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      sms.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "YAAAA,K,CAAMC;AACN,O,MAAU;ACCC,O,CAAM",
@@ -849,9 +816,7 @@ mod tests {
       remove_original_source: false,
     });
     assert_eq!(
-      source
-        .map(&ObjectPool::default(), &MapOptions::new(false))
-        .unwrap(),
+      source.map(&MapOptions::new(false)).unwrap(),
       SourceMap::from_json(
         r#"{
           "mappings": "AAAA",
@@ -896,9 +861,7 @@ mod tests {
       remove_original_source: false,
     });
     assert_eq!(
-      source
-        .map(&ObjectPool::default(), &MapOptions::default())
-        .unwrap(),
+      source.map(&MapOptions::default()).unwrap(),
       SourceMap::from_json(
         r#"{
           "version": 3,
