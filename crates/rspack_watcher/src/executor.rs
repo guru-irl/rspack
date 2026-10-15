@@ -1,5 +1,5 @@
 use std::sync::{
-  Arc, Mutex as SyncMutex,
+  Arc,
   atomic::{AtomicBool, Ordering},
 };
 
@@ -15,37 +15,22 @@ use crate::EventBatch;
 type ThreadSafetyReceiver<T> = ThreadSafety<UnboundedReceiver<T>>;
 type ThreadSafety<T> = Arc<Mutex<T>>;
 
+/// watchpack's `aggregatedChanges` / `aggregatedRemovals`: the events that
+/// have arrived since the last aggregated batch was delivered. Guarded by a
+/// synchronous mutex so a paused watcher can be drained from JS.
 #[derive(Debug, Default)]
 pub(crate) struct FilesData {
-  changed: HashSet<String>,
-  deleted: HashSet<String>,
+  pub(crate) changed: HashSet<String>,
+  pub(crate) deleted: HashSet<String>,
 }
 
 impl FilesData {
   fn is_empty(&self) -> bool {
     self.changed.is_empty() && self.deleted.is_empty()
   }
-
-  /// Returns the changed and deleted files, reporting a path in both sets by
-  /// its state on disk. Call it after releasing the lock: it stats paths.
-  pub(crate) fn into_final(mut self) -> (HashSet<String>, HashSet<String>) {
-    // A path in both sets was unlinked and re-created (e.g. git checkout), or
-    // the reverse, within this window. Event order is unreliable (FSEvents
-    // merges flags), so report its state on disk, like watchpack.
-    let deleted = &mut self.deleted;
-    self.changed.retain(|path| {
-      if !deleted.contains(path) {
-        return true;
-      }
-      let exists = std::fs::symlink_metadata(path).is_ok();
-      if exists {
-        deleted.remove(path);
-      }
-      exists
-    });
-    (self.changed, self.deleted)
-  }
 }
+
+pub(crate) type Aggregated = Arc<std::sync::Mutex<FilesData>>;
 
 /// `WatcherExecutor` is responsible for managing the execution of file system event handlers,
 /// aggregating file change and delete events, and invoking the provided event handler after
@@ -54,7 +39,7 @@ impl FilesData {
 pub struct Executor {
   aggregate_timeout: u32,
   rx: ThreadSafetyReceiver<EventBatch>,
-  files_data: Arc<SyncMutex<FilesData>>,
+  files_data: Aggregated,
   exec_aggregate_tx: UnboundedSender<ExecAggregateEvent>,
   exec_aggregate_rx: ThreadSafetyReceiver<ExecAggregateEvent>,
   exec_tx: UnboundedSender<ExecEvent>,
@@ -92,7 +77,6 @@ impl Executor {
     rx: UnboundedReceiver<EventBatch>,
     aggregate_timeout: Option<u32>,
     paused: Arc<AtomicBool>,
-    files_data: Arc<SyncMutex<FilesData>>,
   ) -> Self {
     let (exec_aggregate_tx, exec_aggregate_rx) = mpsc::unbounded_channel::<ExecAggregateEvent>();
     let (exec_tx, exec_rx) = mpsc::unbounded_channel::<ExecEvent>();
@@ -102,7 +86,7 @@ impl Executor {
       aggregate_running: Arc::new(AtomicBool::new(false)),
       paused,
       rx: Arc::new(Mutex::new(rx)),
-      files_data,
+      files_data: Default::default(),
       exec_aggregate_tx,
       exec_aggregate_rx: Arc::new(Mutex::new(exec_aggregate_rx)),
       exec_rx: Arc::new(Mutex::new(exec_rx)),
@@ -111,6 +95,11 @@ impl Executor {
       execute_handle: None,
       aggregate_timeout: aggregate_timeout.unwrap_or(DEFAULT_AGGREGATE_TIMEOUT),
     }
+  }
+
+  /// The pending aggregated sets, shared with [`crate::FsWatcher`].
+  pub fn aggregated(&self) -> Aggregated {
+    Arc::clone(&self.files_data)
   }
 
   /// Abort all executor.
@@ -156,29 +145,19 @@ impl Executor {
 
       let future = async move {
         while let Some(events) = rx.lock().await.recv().await {
-          for event in &events {
-            let path = event.path.to_string_lossy().to_string();
-            match event.kind {
-              FsEventKind::Change => {
-                files_data
-                  .lock()
-                  .expect("should lock files data")
-                  .changed
-                  .insert(path);
-              }
-              FsEventKind::Remove => {
-                files_data
-                  .lock()
-                  .expect("should lock files data")
-                  .deleted
-                  .insert(path);
-              }
-              FsEventKind::Create => {
-                files_data
-                  .lock()
-                  .expect("should lock files data")
-                  .changed
-                  .insert(path);
+          {
+            let mut files_data = files_data.lock().expect("aggregated sets poisoned");
+            for event in &events {
+              let path = event.path.to_string_lossy().to_string();
+              match event.kind {
+                FsEventKind::Change | FsEventKind::Create => {
+                  files_data.deleted.remove(&path);
+                  files_data.changed.insert(path);
+                }
+                FsEventKind::Remove => {
+                  files_data.changed.remove(&path);
+                  files_data.deleted.insert(path);
+                }
               }
             }
           }
@@ -212,7 +191,7 @@ impl Executor {
     if !self
       .files_data
       .lock()
-      .expect("should lock files data")
+      .expect("aggregated sets poisoned")
       .is_empty()
     {
       let _ = self.exec_aggregate_tx.send(ExecAggregateEvent::Execute);
@@ -230,6 +209,7 @@ impl Executor {
       Arc::clone(&self.files_data),
       self.aggregate_timeout as u64,
       Arc::clone(&self.aggregate_running),
+      Arc::clone(&self.paused),
     ));
 
     self.execute_handle = Some(create_execute_task(
@@ -276,9 +256,10 @@ fn create_execute_task(
 fn create_execute_aggregate_task(
   event_handler: Box<dyn EventAggregateHandler + Send>,
   exec_aggregate_rx: ThreadSafetyReceiver<ExecAggregateEvent>,
-  files: Arc<SyncMutex<FilesData>>,
+  files: Aggregated,
   aggregate_timeout: u64,
   running: Arc<AtomicBool>,
+  paused: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
   let future = async move {
     loop {
@@ -297,9 +278,14 @@ fn create_execute_aggregate_task(
         // Wait for the aggregate timeout before executing the handler
         tokio::time::sleep(tokio::time::Duration::from_millis(aggregate_timeout)).await;
 
+        if paused.load(Ordering::Relaxed) {
+          running.store(false, Ordering::Relaxed);
+          continue;
+        }
+
         // Get the files to process
         let files = {
-          let mut files = files.lock().expect("should lock files data");
+          let mut files = files.lock().expect("aggregated sets poisoned");
           if files.is_empty() {
             running.store(false, Ordering::Relaxed);
             continue;
@@ -307,9 +293,9 @@ fn create_execute_aggregate_task(
           std::mem::take(&mut *files)
         };
 
-        // Resolve the batch after releasing the lock: `into_final` stats paths.
-        let (changed, deleted) = files.into_final();
-        event_handler.on_event_handle(changed, deleted);
+        // A path is in one set only: `Trigger` reports each event by the
+        // path's state on disk, and a later event replaces an earlier one.
+        event_handler.on_event_handle(files.changed, files.deleted);
         running.store(false, Ordering::Relaxed);
       }
     }

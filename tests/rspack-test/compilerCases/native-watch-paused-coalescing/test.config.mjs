@@ -140,10 +140,11 @@ async function runScenario() {
         await drainAcknowledged;
         await setTimeout(settle, undefined, { signal });
         acknowledgement = undefined;
-        const first = node.handle.getInfo();
-        const second = node.handle.getInfo();
-        expect(first.changes.has(valueFile), "first getInfo must consume the paused change").toBe(true);
-        expect({ changes: second.changes.size, removals: second.removals.size }, "second getInfo must return empty sets").toEqual({ changes: 0, removals: 0 });
+        const consume = Object.getOwnPropertySymbols(node.handle).find(symbol => symbol.description === "consumeWatcherInfo");
+        const first = node.handle[consume]();
+        const second = node.handle[consume]();
+        expect(first.changes.has(valueFile), "first consume must take the paused change").toBe(true);
+        expect({ changes: second.changes.size, removals: second.removals.size }, "second consume must return empty sets").toEqual({ changes: 0, removals: 0 });
       })(),
     ]);
     succeeded = true;
