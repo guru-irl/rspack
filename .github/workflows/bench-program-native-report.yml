@@ -65,6 +65,7 @@ jobs:
           python3 scripts/program-native/analyze.py cpu bench-data/results/validation.cpuprofile bench-data/results/validation.json
           python3 scripts/program-native/analyze.py native bench-data/results
           python3 scripts/program-native/detail.py bench-data/results
+          python3 scripts/program-native/map-lines.py bench-data/results
       - name: Preserve raw scripts, folded stacks and source mappings
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
