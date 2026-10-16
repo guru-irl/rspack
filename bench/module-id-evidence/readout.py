@@ -39,8 +39,18 @@ assert rename['fullHash'].startswith(rename['oldId'])
 assert any(rename['oldId'] in x['manifest']['m'] for x in rename['manifests'])
 assert rename['runtime']['renameValue']=='new' and rename['runtime']['removedDisposed']==1
 assert rename['runtime']['navigations']==rename['runtime']['contentRevision']==rename['runtime']['queryRevision']==1
-print('HMR_BASE',json.dumps(base))
-print('HMR_PR',json.dumps(pr))
+def bounded_hmr(value):
+    result=dict(value)
+    result['compilations']=[]
+    for item in value['compilations']:
+        item=dict(item)
+        names=item['processedFixtureModules']
+        item['processedFixtureModuleCount']=len(names)
+        item['processedFixtureModules']=names[:4]
+        result['compilations'].append(item)
+    return result
+print('HMR_BASE',json.dumps(bounded_hmr(base)))
+print('HMR_PR',json.dumps(bounded_hmr(pr)))
 lines=['## Performance','','GitHub-hosted runners, Node 22.23.3, a generated 19,005-module development fixture and matched optimized builds. Linux uses ten interleaved four-process A/A blocks; macOS and Windows use ten alternating pairs. Values are base → PR medians; percentages use those medians.','','| Metric | Base | PR | Change |','| --- | ---: | ---: | ---: |']
 def row(label,platform,key,unit):
     m=summaries[platform]['metrics'][key]
