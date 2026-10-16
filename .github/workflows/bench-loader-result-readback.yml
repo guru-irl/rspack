@@ -1,17 +1,15 @@
 name: Loader Result Readback
 on:
-  push:
-    branches: ['bench/loader-result-readback']
   workflow_dispatch:
     inputs:
       platform:
         type: choice
-        default: xplat
-        options: [xplat, ubuntu]
+        default: windows
+        options: [xplat, ubuntu, windows]
 permissions:
   contents: read
 concurrency:
-  group: loader-result-readback
+  group: loader-result-readback-${{ github.ref }}-${{ inputs.platform }}
   cancel-in-progress: false
 jobs:
   ubuntu:
@@ -112,24 +110,14 @@ jobs:
             scripts/program-native/run.mjs
           compression-level: 1
   memory:
-    if: github.event_name == 'push' || inputs.platform == 'xplat'
+    if: inputs.platform != 'ubuntu'
     name: Memory (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            os: darwin
-            arch: arm64
-            binding: rspack.darwin-arm64.node
-            cache: aarch64-apple-darwin-ci
-          - runner: windows-2025
-            os: win32
-            arch: x64
-            binding: rspack.win32-x64-msvc.node
-            cache: x86_64-pc-windows-msvc-ci
+        runner: ${{ fromJSON(inputs.platform == 'windows' && '["windows-2025"]' || '["macos-15", "windows-2025"]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 165
+    timeout-minutes: 135
     defaults:
       run:
         shell: bash
@@ -139,8 +127,9 @@ jobs:
       TMPDIR: ${{ github.workspace }}/bench-data/temp
       BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
       PR: 29b16ecd9bbb55357080ad40f1d6ccfe77ef5a58
-      EXPECTED_OS: ${{ matrix.os }}
-      EXPECTED_ARCH: ${{ matrix.arch }}
+      EXPECTED_OS: ${{ matrix.runner == 'macos-15' && 'darwin' || 'win32' }}
+      EXPECTED_ARCH: ${{ matrix.runner == 'macos-15' && 'arm64' || 'x64' }}
+      NATIVE_FILE: ${{ matrix.runner == 'macos-15' && 'rspack.darwin-arm64.node' || 'rspack.win32-x64-msvc.node' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -149,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p bench-data/temp bench-data/results bench-data/bindings
-          echo "BINDING_PATH=$GITHUB_WORKSPACE/crates/node_binding/${{ matrix.binding }}" >> "$GITHUB_ENV"
+          echo "BINDING_PATH=$GITHUB_WORKSPACE/crates/node_binding/$NATIVE_FILE" >> "$GITHUB_ENV"
       - uses: ./.github/actions/pnpm/setup
       - name: Install dependencies
         run: |
@@ -158,7 +147,7 @@ jobs:
           npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
       - uses: ./.github/actions/rustup
         with:
-          key: ${{ matrix.cache }}
+          key: ${{ matrix.runner == 'macos-15' && 'aarch64-apple-darwin-ci' || 'x86_64-pc-windows-msvc-ci' }}
           save-if: true
       - name: Environment and source identity
         run: |
@@ -176,7 +165,6 @@ jobs:
           git merge-base "$BASE" "$PR" | tee bench-data/results/merge-base.txt
           test "$(git merge-base "$BASE" "$PR")" = "$BASE"
           git diff "$BASE" "$PR" > bench-data/results/source.diff
-          cargo fmt --all --check
       - name: Build base and JavaScript artifacts
         run: |
           set -euo pipefail
