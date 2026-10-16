@@ -213,6 +213,10 @@ impl DefineHookInput {
           self.common.tap_stages()
         }
 
+        pub fn interceptor_count(&self) -> usize {
+          self.common.interceptor_count()
+        }
+
         pub fn tap(&mut self, tap: impl #trait_name + Send + Sync + 'static) {
           let stage = tap.stage();
           let index = self.common.tap_insert_position(stage);
