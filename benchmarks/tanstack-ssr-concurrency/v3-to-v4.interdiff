@@ -1,0 +1,72 @@
+--- v3/dist/esm/rsbuild/plugin.js
++++ v4/dist/esm/rsbuild/plugin.js
+@@ -50,6 +50,9 @@
+ 	const coldOverlapMode = process.env.TSS_SSR_COLD_OVERLAP;
+ 	const coldOverlap = coldOverlapMode === "1";
+ 	const coldAfterMake = coldOverlapMode === "after-make";
++	const coldAfterSeal = coldOverlapMode === "after-seal";
++	const coldAfterEmit = coldOverlapMode === "after-emit";
++	const coldAfterClientPhase = coldAfterMake || coldAfterSeal || coldAfterEmit;
+ 	let releaseFirstClientMake;
+ 	let firstClientMake;
+ 	let clientMakeComplete = false;
+@@ -313,10 +316,10 @@
+ 			const logConcurrencyState = (compiler) => {
+ 				if (api.context.action !== "dev") return;
+ 				const concurrentSwitch = process.env.TSS_SSR_CONCURRENT;
+-				if (coldOverlapMode !== undefined && !["0", "after-make", "1"].includes(coldOverlapMode)) api.logger.warn(`[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=${coldOverlapMode}`);
++				if (coldOverlapMode !== undefined && !["0", "after-make", "after-seal", "after-emit", "1"].includes(coldOverlapMode)) api.logger.warn(`[tss-ssr-concurrency] ignored TSS_SSR_COLD_OVERLAP=${coldOverlapMode}`);
+ 				if (concurrentSwitch !== undefined && !["0", "1"].includes(concurrentSwitch)) api.logger.warn(`[tss-ssr-concurrency] ignored TSS_SSR_CONCURRENT=${concurrentSwitch}`);
+ 				if (concurrentSwitch === "0") api.logger.info("[tss-ssr-concurrency] disengaged reason=switch (TSS_SSR_CONCURRENT=0) gate=on");
+-				else if (concurrentDev) api.logger.info(`[tss-ssr-concurrency] engaged mode=${coldAfterMake ? "after-make" : coldOverlap ? "1" : "default"} gate=on`);
++				else if (concurrentDev) api.logger.info(`[tss-ssr-concurrency] engaged mode=${coldAfterClientPhase ? coldOverlapMode : coldOverlap ? "1" : "default"} gate=on`);
+ 				else {
+ 					const reason = rscEnabled ? "rsc" : !ssrIsProvider || serverFnProviderEnv !== RSBUILD_ENVIRONMENT_NAMES.server ? "provider" : !("compilers" in compiler) || !compiler.compilers.some((c) => c.name === RSBUILD_ENVIRONMENT_NAMES.client) || !compiler.compilers.some((c) => c.name === RSBUILD_ENVIRONMENT_NAMES.server) ? "names" : "user-dependency";
+ 					api.logger.info(`[tss-ssr-concurrency] disengaged reason=topology (${reason}) gate=on`);
+@@ -393,10 +396,25 @@
+ 						firstClientManifest.catch(() => {});
+ 						firstClientMake = new Promise((resolve) => { releaseFirstClientMake = resolve; });
+ 						clientCompiler.hooks.finishMake.tap({ name: "TanStackStartClientMakeBarrier", stage: 1000 }, (compilation) => {
+-							if (compilation.compiler !== clientCompiler) return;
++							if (compilation.compiler !== clientCompiler || coldAfterSeal || coldAfterEmit) return;
+ 							clientMakeComplete = true;
+ 							releaseFirstClientMake();
+ 						});
++						if (coldAfterSeal || coldAfterEmit) {
++							const releaseColdPhase = () => {
++								clientMakeComplete = true;
++								releaseFirstClientMake();
++							};
++							if (coldAfterSeal) clientCompiler.hooks.thisCompilation.tap("TanStackStartClientColdPhaseBarrier", (compilation) => {
++								if (compilation.compiler !== clientCompiler) return;
++								compilation.hooks.afterSeal.tap("TanStackStartClientColdPhaseBarrier", releaseColdPhase);
++							});
++							if (coldAfterEmit) clientCompiler.hooks.afterEmit.tap("TanStackStartClientColdPhaseBarrier", (compilation) => {
++								if (compilation.compiler === clientCompiler) releaseColdPhase();
++							});
++							// A run may end without sealing or emitting. Never strand SSR.
++							for (const hook of ["done", "failed", "watchClose", "invalid"]) clientCompiler.hooks[hook].tap("TanStackStartClientColdPhaseBarrier", releaseColdPhase);
++						}
+ 						clientCompiler.hooks.failed.tap("TanStackStartClientManifestBarrier", (error) => rejectFirstClientManifest(error));
+ 						clientCompiler.hooks.watchClose.tap("TanStackStartClientManifestBarrier", () => {
+ 							rejectFirstClientManifest(new Error("TanStack Start: client watcher closed"));
+@@ -406,8 +424,8 @@
+ 							if (clientManifestPublished) releaseFirstClientManifest();
+ 						});
+ 						serverCompiler.hooks.watchRun.tapPromise({ name: "TanStackStartClientManifestBarrier", stage: -100 }, async () => {
+-							if (coldAfterMake && !clientMakeComplete) await Promise.race([firstClientMake, firstClientManifest]);
+-							else if (!coldOverlap && !coldAfterMake && !clientManifestPublished) await firstClientManifest;
++							if (coldAfterClientPhase && !clientMakeComplete) await Promise.race([firstClientMake, firstClientManifest]);
++							else if (!coldOverlap && !coldAfterClientPhase && !clientManifestPublished) await firstClientManifest;
+ 						});
+ 						serverCompiler.hooks.done.tap({ name: "TanStackStartSsrRevisionCheck", stage: 1000 }, () => {
+ 							if (ssrResolverRevision !== virtualModuleState.getResolverWriteRevision(serverFnProviderEnv)) invalidateSsr();
+@@ -477,7 +495,7 @@
+ 					if (concurrentDev) {
+ 						clientManifestPublished = true;
+ 						resolverRevision = virtualModuleState.getResolverWriteRevision(serverFnProviderEnv);
+-						if (resolverRevision !== ssrResolverRevision && !ssrCompiler.watching?.running && (coldOverlap || coldAfterMake || ssrResolverRevision >= 0)) invalidateSsr();
++						if (resolverRevision !== ssrResolverRevision && !ssrCompiler.watching?.running && (coldOverlap || coldAfterClientPhase || ssrResolverRevision >= 0)) invalidateSsr();
+ 					}
+ 				}
+ 			});
