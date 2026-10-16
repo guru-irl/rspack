@@ -1,0 +1,256 @@
+name: Pack v2.2.9 loader env 33
+
+on:
+  push:
+    branches: [bench/pack-v229-env-33-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      TMPDIR: ${{ github.workspace }}/.spider/scratch/pack-v229-env-33/tmp
+      npm_config_cache: ${{ github.workspace }}/.spider/scratch/pack-v229-env-33/npm-cache
+      OUT: ${{ github.workspace }}/.spider/scratch/pack-v229-env-33/out
+      BASE: 428b70684309de4068e32baf81d28194441dd64e
+      PACK_HEAD: bd53568ce79d8fef83eb2f3b78fd71dc98b1052c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Initialize scratch
+        run: mkdir -p "$TMPDIR" "$OUT" "$npm_config_cache"
+
+      - name: Check out B by exact SHA
+        uses: actions/checkout@v4
+        with:
+          ref: bd53568ce79d8fef83eb2f3b78fd71dc98b1052c
+          path: B-source
+          fetch-depth: 6
+          persist-credentials: false
+
+      - name: Check out A by exact SHA
+        uses: actions/checkout@v4
+        with:
+          ref: 428b70684309de4068e32baf81d28194441dd64e
+          path: A-source
+          persist-credentials: false
+
+      - name: Set up Node 22.18.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Install pnpm 11.28.5 and record provenance
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@11.28.5
+          test "$(node --version)" = v22.18.0
+          test "$(pnpm --version)" = 11.28.5
+          {
+            node --version
+            npm --version
+            pnpm --version
+            uname -a
+          } | tee "$OUT/tool-versions.txt"
+          {
+            echo "base $BASE"
+            echo "pack-head $PACK_HEAD"
+            echo "pack-tree $(git -C "$GITHUB_WORKSPACE/B-source" rev-parse HEAD^{tree})"
+            echo 'GDB-1-head 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2'
+            echo 'original new-cherry-pick'
+            echo 'ca2abd0732553eca8de1bc3491ad05114848a64d e382875c08e51961536b82044b21a4ff31cd19c5'
+            echo '8c7b839fe7e6241d441163b29575422302b6e202 e7612f31bd16d8aac01969fa165d373ce130390e'
+            echo '15599865990c2f842fa3d63fe08cd760aaa6f878 c4eac9408449f521552b643381b55596a2477f53'
+            echo '77630e851a1ca015e51fadd84a3e2eaf6601ccd0 c08b5c9c0c7df6069320ba6281113f2943ef6eae'
+            echo 'bfcca3ef8edb47540955f9b9bd21df38c266fa91 bd53568ce79d8fef83eb2f3b78fd71dc98b1052c'
+            git -C "$GITHUB_WORKSPACE/B-source" log -5 --format='%H %T %s'
+          } | tee "$OUT/commits.txt"
+          git -C "$GITHUB_WORKSPACE/B-source" diff --stat "$BASE" "$PACK_HEAD" | tee "$OUT/source-diff-stat.txt"
+          git -C "$GITHUB_WORKSPACE/B-source" diff "$BASE" "$PACK_HEAD" > "$OUT/source.diff"
+          git -C "$GITHUB_WORKSPACE/B-source" diff --check "$BASE" "$PACK_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/B-source" rev-parse HEAD^{tree})" = adcbd9041675b0da07f5ad9682fb85d59254d3f6
+
+      - name: Build and pack both arms
+        run: |
+          set -euo pipefail
+          for ARM in A B; do
+            mkdir -p "$OUT/$ARM"
+            cd "$GITHUB_WORKSPACE/$ARM-source"
+            pnpm install --frozen-lockfile 2>&1 | tee "$OUT/$ARM/install.log"
+            pnpm run build:js 2>&1 | tee "$OUT/$ARM/build.log"
+            git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+            cd "$GITHUB_WORKSPACE/$ARM-source/packages/rspack"
+            cp package.json "$TMPDIR/package-$ARM.json"
+            trap 'cp "$TMPDIR/package-'"$ARM"'.json" package.json' EXIT
+            node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs');
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (p.dependencies['@rspack/binding'] !== 'workspace:*') throw Error('unexpected binding dependency');
+          p.dependencies['@rspack/binding'] = '2.2.9';
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          NODE
+            npm pack --pack-destination "$OUT/$ARM" 2>&1 | tee "$OUT/$ARM/pack.log"
+            cp "$TMPDIR/package-$ARM.json" package.json
+            trap - EXIT
+            git diff --exit-code -- package.json
+          done
+          mkdir -p "$OUT/stock"
+          cd "$OUT/stock"
+          npm pack @rspack/core@2.2.9 2>&1 | tee "$OUT/stock/pack.log"
+
+      - name: Compare hashes, package files, dist and archive headers
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee "$OUT/comparison.log"
+          import difflib, gzip, hashlib, json, os, pathlib, struct, tarfile
+          out = pathlib.Path(os.environ['OUT'])
+          expected = {
+            'A': '05c6fc94bde095d7e5ea484b6019205c3b0390a5c833b28e72fceced44a4b149',
+            'B': '234b27b7c7cfaa4a535ad452deae4c2c8a4badd086297f0a0fedc2e1886f38a7',
+            'stock': 'c9a911ef70d6575f6d223a8c4f2a9e61085143ddb6bd19fad187a36896bb8ed5',
+          }
+          files, archives, hashes = {}, {}, {}
+          for arm in expected:
+            path = out / arm / 'rspack-core-2.2.9.tgz'
+            raw = path.read_bytes()
+            hashes[arm] = hashlib.sha256(raw).hexdigest()
+            destination = out / 'extracted' / arm
+            destination.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(path, 'r:gz') as tf:
+              members = tf.getmembers()
+              if any(not m.name.startswith('package/') or '..' in pathlib.PurePosixPath(m.name).parts or not m.isfile() for m in members):
+                raise RuntimeError('unexpected tar member')
+              files[arm] = {m.name.removeprefix('package/'): tf.extractfile(m).read() for m in members}
+              tf.extractall(destination, filter='data')
+              archives[arm] = {
+                'gzip_header_hex': raw[:10].hex(),
+                'gzip_mtime': struct.unpack('<I', raw[4:8])[0],
+                'gzip_uncompressed_size': len(gzip.decompress(raw)),
+                'uncompressed_tar_sha256': hashlib.sha256(gzip.decompress(raw)).hexdigest(),
+                'members': [{k: getattr(m, k) for k in ('name', 'size', 'mode', 'uid', 'gid', 'uname', 'gname', 'mtime', 'pax_headers')} for m in members],
+              }
+            for scope in ('all', 'dist'):
+              entries = sorted(files[arm]) if scope == 'all' else sorted(p for p in files[arm] if p.startswith('dist/'))
+              manifest = ''.join(f'{hashlib.sha256(files[arm][p]).hexdigest()}  {p}\n' for p in entries)
+              (out / f'{arm}-{scope}-SHA256SUMS').write_text(manifest)
+          (out / 'SHA256SUMS').write_text(''.join(f'{hashes[a]}  {a}/rspack-core-2.2.9.tgz\n' for a in expected))
+          (out / 'archive-headers.json').write_text(json.dumps(archives, indent=2) + '\n')
+          (out / 'diffs').mkdir(exist_ok=True)
+          result = {'hashes': hashes, 'expected': expected, 'hash_matches': {a: hashes[a] == expected[a] for a in expected}}
+          for other in ('B', 'stock'):
+            changed = [p for p in sorted(files['A'].keys() | files[other].keys()) if files['A'].get(p) != files[other].get(p)]
+            result[f'A-vs-{other}'] = changed
+            for scope in ('all', 'dist'):
+              pieces = []
+              for p in changed:
+                if scope == 'dist' and not p.startswith('dist/'):
+                  continue
+                left = files['A'].get(p, b'').decode('utf-8', errors='backslashreplace').splitlines(True)
+                right = files[other].get(p, b'').decode('utf-8', errors='backslashreplace').splitlines(True)
+                pieces.extend(difflib.unified_diff(left, right, fromfile=f'A/{p}', tofile=f'{other}/{p}'))
+              (out / 'diffs' / f'A-vs-{other}-{scope}.diff').write_text(''.join(pieces))
+          index_diff = (out / 'diffs' / 'A-vs-B-dist.diff').read_text()
+          result['A-dist-count'] = sum(p.startswith('dist/') for p in files['A'])
+          result['B-dist-count'] = sum(p.startswith('dist/') for p in files['B'])
+          result['stock-dist-count'] = sum(p.startswith('dist/') for p in files['stock'])
+          result['A-vs-B-hunks'] = sum(line.startswith('@@') for line in index_diff.splitlines())
+          result['A-vs-B-diff'] = index_diff
+          result['A-vs-stock-nonmanifest-changes'] = [p for p in result['A-vs-stock'] if p != 'package.json']
+          (out / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          print((out / 'SHA256SUMS').read_text())
+          assert result['A-vs-B'] == ['dist/index.js'], result['A-vs-B']
+          assert result['A-dist-count'] == result['B-dist-count'] == result['stock-dist-count'] == 270
+          assert not result['A-vs-stock-nonmanifest-changes']
+          assert result['A-vs-B-hunks'] == 3
+          assert 'WASM' in index_diff and 'MODULE_BUILD_INFO_SYMBOL' in index_diff and 'parallel' in index_diff.lower()
+          PY
+
+      - name: Smoke B with the official Linux binding
+        run: |
+          set -euo pipefail
+          SMOKE="$GITHUB_WORKSPACE/.spider/scratch/pack-v229-env-33/smoke"
+          mkdir -p "$SMOKE"
+          cd "$SMOKE"
+          printf '{"name":"pack-smoke","private":true,"version":"1.0.0"}\n' > package.json
+          npm install --save-exact @rspack/core@2.2.9 @rspack/binding@2.2.9 @rspack/binding-linux-x64-gnu@2.2.9 2>&1 | tee "$OUT/smoke-install.log"
+          rm -rf "$SMOKE/node_modules/@rspack/core"
+          cp -a "$OUT/extracted/B/package" "$SMOKE/node_modules/@rspack/core"
+          cat > "$SMOKE/index.js" <<'JS'
+          module.exports = __LOADER_VALUE__;
+          JS
+          cat > "$SMOKE/loader.cjs" <<'JS'
+          module.exports = function (source) {
+            this._module.buildInfo.packSmoke = 'loader-executed';
+            return source.replace('__LOADER_VALUE__', '42');
+          };
+          JS
+          cat > "$SMOKE/smoke.cjs" <<'JS'
+          const assert = require('node:assert/strict');
+          const path = require('node:path');
+          const binding = require('@rspack/binding');
+          assert.equal(typeof binding.MODULE_BUILD_INFO_SYMBOL, 'symbol');
+          assert.equal(require('@rspack/binding/package.json').version, '2.2.9');
+          assert.equal(require('@rspack/binding-linux-x64-gnu/package.json').version, '2.2.9');
+          assert.equal(require('@rspack/core/package.json').version, '2.2.9');
+          const core = require('@rspack/core');
+          assert.equal(core.rspackVersion, '2.2.9');
+          console.log('MODULE_BUILD_INFO_SYMBOL:', typeof binding.MODULE_BUILD_INFO_SYMBOL);
+          console.log('core, binding and linux-x64-gnu versions: 2.2.9');
+          let sawBuildInfo = false;
+          const compiler = core.rspack({
+            context: __dirname,
+            mode: 'development',
+            target: 'node',
+            devtool: false,
+            entry: './index.js',
+            output: { path: path.join(__dirname, 'output'), filename: 'bundle.cjs', library: { type: 'commonjs2' } },
+            module: { rules: [{ test: /index\.js$/, use: [path.join(__dirname, 'loader.cjs')] }] },
+            plugins: [{ apply(compiler) {
+              compiler.hooks.compilation.tap('PackSmoke', compilation => {
+                compilation.hooks.finishModules.tap('PackSmoke', modules => {
+                  for (const m of modules) if (m.resource === path.join(__dirname, 'index.js')) {
+                    assert.equal(m.buildInfo.packSmoke, 'loader-executed');
+                    sawBuildInfo = true;
+                  }
+                });
+              });
+            } }],
+          });
+          compiler.run((error, stats) => {
+            compiler.close(closeError => {
+              if (error || closeError) throw error || closeError;
+              assert.ok(stats && !stats.hasErrors(), stats?.toString({ all: false, errors: true }));
+              assert.equal(sawBuildInfo, true);
+              assert.equal(require('./output/bundle.cjs'), 42);
+              console.log('PASS: JS loader ran, custom buildInfo read back, emitted bundle returns 42');
+            });
+          });
+          JS
+          node "$SMOKE/smoke.cjs" 2>&1 | tee "$OUT/smoke.log"
+          cp "$SMOKE/smoke.cjs" "$SMOKE/loader.cjs" "$SMOKE/index.js" "$OUT/"
+
+      - name: Enforce original GDB-1 tarball hashes
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          result = json.loads((pathlib.Path(os.environ['OUT']) / 'comparison.json').read_text())
+          assert all(result['hash_matches'].values()), result['hash_matches']
+          print('PASS: A, B and stock tarballs match all three GDB-1 SHA-256 values')
+          PY
+
+      - name: Upload packs and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-v2.2.9-loader-env-33-gha
+          path: ${{ env.OUT }}
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
