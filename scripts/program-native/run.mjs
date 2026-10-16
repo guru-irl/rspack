@@ -3,14 +3,24 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { performance, PerformanceObserver } from 'node:perf_hooks';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { rspack } from '../../packages/rspack/dist/index.js';
 const [rootArg, resultArg] = process.argv.slice(2);
 const root = path.resolve(rootArg);
 const resultPath = path.resolve(resultArg);
 const marks = {};
 const mark = name => { marks[name] = Number(process.hrtime.bigint()) / 1e9; };
-const bindingPath = process.env.BINDING_PATH;
-const bindingSha256 = createHash('sha256').update(fs.readFileSync(bindingPath)).digest('hex');
+const bindingPath = fs.realpathSync(process.env.BINDING_PATH);
+const require = createRequire(import.meta.url);
+const loadedBindings = Object.keys(require.cache).filter(file => path.basename(file).startsWith('rspack.') && file.endsWith('.node'));
+if (loadedBindings.length !== 1) throw new Error(`Expected one loaded native binding, found ${JSON.stringify(loadedBindings)}`);
+const loadedBindingPath = fs.realpathSync(loadedBindings[0]);
+if (loadedBindingPath !== bindingPath) throw new Error(`Wrong loaded binding: ${loadedBindingPath}`);
+const bindingSha256 = createHash('sha256').update(fs.readFileSync(loadedBindingPath)).digest('hex');
+if (bindingSha256 !== process.env.EXPECTED_BINDING_SHA256) throw new Error('Loaded binding does not match its arm manifest');
+const mappedBinding = process.platform === 'linux' ? fs.readFileSync('/proc/self/maps', 'utf8').split('\n').filter(line => line.endsWith(` ${loadedBindingPath}`)) : [];
+if (process.platform === 'linux' && !mappedBinding.length) throw new Error('Expected binding is not mapped into this process');
+const bindingIdentity = {loadedBindingPath, bindingSha256, verifiedInRequireCache: true, verifiedInMaps: process.platform === 'linux', mappedSegments: mappedBinding.length};
 const mainTicks = () => {
   if (process.platform !== 'linux') return null;
   const fields = fs.readFileSync(`/proc/self/task/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ');
@@ -69,7 +79,7 @@ function hashFiles(dir) {
 }
 hashFiles(outputRoot);
 if (!outputFiles.length) throw new Error('No emitted files');
-const result = {bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
+const result = {bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 console.log(JSON.stringify({...result, gc: undefined}));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
