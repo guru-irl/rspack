@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: loader-result-readback
+  group: loader-result-readback-${{ inputs.platform }}
   cancel-in-progress: false
 jobs:
   ubuntu:
