@@ -1,0 +1,39 @@
+name: Compact hashed evidence readout
+on:
+  push:
+    branches: [bench/compact-hashed-evidence-20261016]
+    paths: [.github/workflows/compact-hashed-evidence-readout.yml, bench/module-id-evidence/readout.py]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  readout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Download completed raw evidence and recompute
+        run: |
+          set -euo pipefail
+          mkdir -p bench/module-id-evidence/readout/tmp
+          export TMPDIR="$GITHUB_WORKSPACE/bench/module-id-evidence/readout/tmp"
+          for platform in linux macos windows; do
+            target="bench/module-id-evidence/readout/$platform"
+            gh run download 38974134725 --repo guru-irl/rspack --name compact-hashed-evidence-$platform-results --dir "$target/data"
+            cp "$target/data/summary.json" "$target/original.json"
+            cp bench/module-id-evidence/analyze.py "$target/analyze.py"
+            python "$target/analyze.py"
+          done
+          gh run download 38975614676 --repo guru-irl/rspack --name compact-hashed-dev-server-results --dir bench/module-id-evidence/readout/hmr
+          python bench/module-id-evidence/readout.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compact-hashed-evidence-verified-readout
+          path: bench/module-id-evidence/readout/
+          retention-days: 30
