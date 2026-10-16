@@ -103,7 +103,7 @@ async function run(arm, trial) {
       if (step >= names.length) return finish(new Error('Unexpected extra watch rebuild'));
       try {
         const json = stats.toJson({ all: false, ids: true, modules: true, cachedModules: true, runtimeModules: true, nestedModules: true, timings: true, errors: true, warnings: true, logging: 'verbose', loggingDebug: [/^rspack\.(Compilation|incremental)/], groupModulesByAttributes: false, groupModulesByCacheStatus: false, groupModulesByExtension: false, groupModulesByLayer: false, groupModulesByPath: false, groupModulesByType: false, groupModulesByEmitStatus: false });
-        const modules = flatten(json.modules);
+        const modules = flatten(json.modules).filter(m => m.moduleType !== 'runtime');
         const ids = new Map(modules.filter(m => m.id !== null && m.id !== undefined).map(m => [m.identifier, m.id]));
         if (new Set(ids.values()).size !== ids.size) {
           const buckets = new Map();
