@@ -50,7 +50,7 @@ jobs:
           perf version
           sha256sum crates/node_binding/rspack.linux-x64-gnu.node
           head -1 bench-data/results/binding.sha256
-          find bench-data/results/repeat-1 -maxdepth 1 -type f -printf '%f %s bytes\n' | head -12
+          find bench-data/results/repeat-1 -maxdepth 1 -type f -printf '%f %s bytes\n' | awk 'NR <= 12 { print }'
       - name: Inspect stack format
         if: always()
         run: |
