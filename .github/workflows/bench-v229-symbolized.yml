@@ -6,186 +6,32 @@ on:
 permissions:
   contents: read
   actions: read
-concurrency:
-  group: v229-symbolized-gnu
-  cancel-in-progress: false
 jobs:
-  verify:
+  export:
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
       TMPDIR: ${{ github.workspace }}/bench-data/temp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - name: Download final profiling binary without rebuilding
+      - name: Restore completed binary, parity checks and FP recording
         run: |
-          set -euo pipefail
-          mkdir -p bench-data/temp bench-data/results bench-data/pack
-          gh run download 38970089360 --name v229-symbolized-pack-thin --dir bench-data
-          sha256sum bench-data/pack/rspack.linux-x64-gnu.node | tee bench-data/results/native-sha256.txt
-          test "$(git diff --name-only 428b70684309de4068e32baf81d28194441dd64e HEAD)" = .github/workflows/bench-v229-symbolized.yml
-      - uses: ./.github/actions/pnpm/setup
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Verify symbols, line tables and frame pointers
+          mkdir -p bench-data/temp
+          gh run download 38970405248 --name v229-symbolized-final --dir bench-data
+          cat bench-data/results/binary-verification.json
+          cat bench-data/results/overhead.json
+          grep -E 'JsLoaderContext|call_js_cb|_RN' bench-data/results/smoke.perf.script | head -6 | cut -c1-1200 || true
+          c++filt -s rust < bench-data/results/smoke.perf.script > bench-data/results/smoke.demangled.perf.script
+          c++filt -s rust < bench-data/results/smoke.main-inclusive.report > bench-data/results/smoke.main-inclusive.demangled.report
+          grep -E 'JsLoaderContext|call_js_cb' bench-data/results/smoke.demangled.perf.script | head -6 | cut -c1-1200 || true
+      - name: Validate executing main thread frames
         run: |
-          set -euo pipefail
-          file bench-data/pack/rspack.linux-x64-gnu.node | tee bench-data/results/file.txt
-          readelf -SW bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/sections.txt
-          readelf -n bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/notes.txt
-          readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/versions.txt
-          nm -C --defined-only bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/symbols.txt
-          wc -l bench-data/results/symbols.txt | tee bench-data/results/symbol-count.txt
-          python3 - <<'PY'
-          import json,pathlib,re,subprocess
-          r=pathlib.Path('bench-data/results')
-          assert 'not stripped' in (r/'file.txt').read_text()
-          sections=(r/'sections.txt').read_text()
-          assert all(s in sections for s in ('.symtab','.debug_info','.debug_line'))
-          glibc=sorted(set(re.findall(r'GLIBC_(\d+\.\d+)',(r/'versions.txt').read_text())),key=lambda x:tuple(map(int,x.split('.'))))
-          assert tuple(map(int,glibc[-1].split('.'))) <= (2,35),glibc
-          lines=(r/'symbols.txt').read_text().splitlines()
-          targets={
-            'context_to':r'^<rspack_binding_api::plugins::js_loader::context::JsLoaderContext as .*ToNapiValue>::to_napi_value',
-            'context_from':r'^<rspack_binding_api::plugins::js_loader::context::JsLoaderContext as .*FromNapiValue>::from_napi_value',
-            'module_to':r'^<rspack_binding_api::module::ModuleObject as .*ToNapiValue>::to_napi_value',
-            'callback':r'^napi::threadsafe_function::call_js_cb(?:::)?<.*JsLoaderContext',
-          }
-          selected={}
-          for key,pattern in targets.items():
-            found=[line.split(maxsplit=2) for line in lines if len(line.split(maxsplit=2))==3 and re.search(pattern,line.split(maxsplit=2)[2])]
-            if not found:
-              assert key=='module_to',(key,'missing required definition')
-              selected[key]={'defined':False,'note':'Conversion may be inlined into the outgoing context; not a delivery blocker.'}
-              continue
-            address,kind,name=found[0]
-            dis=subprocess.check_output(['objdump','-d','--start-address='+str(int(address,16)),'--stop-address='+str(int(address,16)+48),'bench-data/pack/rspack.linux-x64-gnu.node'],text=True)
-            (r/(key+'-prologue.txt')).write_text(name+'\n'+dis)
-            assert re.search(r'push\s+%rbp',dis) and re.search(r'mov\s+%rsp,%rbp',dis),(key,dis)
-            selected[key]={'defined':True,'address':address,'name':name,'frame_pointer':True}
-          (r/'selected-symbols.json').write_text(json.dumps(selected,indent=2)+'\n')
-          result={'defined_symbol_count':len(lines),'maximum_glibc':glibc[-1],'selected':selected}
-          (r/'binary-verification.json').write_text(json.dumps(result,indent=2)+'\n')
-          print(json.dumps(result,indent=2))
-          PY
-      - name: Package GNU replacement and build exact B core
-        run: |
-          set -euo pipefail
-          npm pack @rspack/binding-linux-x64-gnu@2.2.9 --pack-destination bench-data --ignore-scripts
-          echo '11e6a686ef2756332fe6d29acc4f8c2c8c2bf2c59ea593e2381d9a52b0121d89  bench-data/rspack-binding-linux-x64-gnu-2.2.9.tgz' | sha256sum -c -
-          mkdir -p bench-data/official bench-data/replacement
-          tar xzf bench-data/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/official
-          cp -a bench-data/official/package bench-data/replacement/package
-          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/replacement/package/rspack.linux-x64-gnu.node
-          tar czf bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/replacement package
-          python3 - <<'PY'
-          import json,pathlib
-          p=json.loads(pathlib.Path('bench-data/replacement/package/package.json').read_text())
-          assert p['name']=='@rspack/binding-linux-x64-gnu' and p['version']=='2.2.9'
-          PY
-          git fetch origin 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
-          git checkout --detach 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
-          test "$(git rev-parse HEAD)" = 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
-          pnpm --filter @rspack/core build
-          git diff --exit-code
-          git rev-parse HEAD > bench-data/results/core-source.txt
-          (cd bench-data/pack && sha256sum *.node *.tgz > SHA256SUMS)
-      - name: Install perf and source resolver
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y llvm linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" || sudo apt-get install -y llvm linux-tools-generic
-          PERF=$(find -L /usr/lib/linux-tools -name perf -type f | sort -V | tail -1)
-          test -n "$PERF"
-          echo "PERF=$PERF" >> "$GITHUB_ENV"
-          sudo sysctl kernel.perf_event_paranoid=-1
-          sudo sysctl kernel.kptr_restrict=0
-          { "$PERF" version; node --version; uname -a; ldd --version; lscpu; df -h .; } > bench-data/results/verification-environment.txt
-          python3 - <<'PY'
-          import json,pathlib,subprocess
-          r=pathlib.Path('bench-data/results')
-          selected=json.loads((r/'selected-symbols.json').read_text())
-          for key in ('context_to','context_from'):
-            result=subprocess.check_output(['llvm-symbolizer','--obj=bench-data/pack/rspack.linux-x64-gnu.node','--inlines','--demangle','0x'+selected[key]['address']],text=True,timeout=20)
-            (r/(key+'-source.txt')).write_text(result)
-            print(key,result)
-          PY
-      - name: Generate JS-loader fixture
-        run: |
-          cat > bench-data/prepare.cjs <<'JS'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const root = path.resolve('bench-data/fixture');
-          fs.mkdirSync(path.join(root, 'src'), {recursive:true});
-          const count = 24000;
-          const entries = [];
-          for (let i=0;i<count;i++) {
-            fs.writeFileSync(path.join(root,'src',`m${i}.js`), `module.exports = ${i};\n`);
-            entries.push(`require('./m${i}.js')`);
-          }
-          fs.writeFileSync(path.join(root,'src','index.js'), `module.exports = [${entries.join(',')}].reduce((a,b)=>a+b,0);\n`);
-          fs.writeFileSync(path.join(root,'loader.cjs'), `module.exports = function(source) { global.__loaderCalls = (global.__loaderCalls || 0)+1; this.cacheable(true); this.callback(null, source); };\n`);
-          JS
-          node bench-data/prepare.cjs
-          cat > bench-data/run.cjs <<'JS'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const assert = require('node:assert/strict');
-          const {performance} = require('node:perf_hooks');
-          const core = require('../packages/rspack/dist/index.js');
-          const label = process.argv[2];
-          const root = path.resolve('bench-data/fixture');
-          const out = path.resolve('bench-data/output-'+label);
-          const started = performance.now();
-          const compiler = core.rspack({context:root, mode:'development', target:'node', cache:false, devtool:false,
-            entry:'./src/index.js', output:{path:out,filename:'main.js',library:{type:'commonjs2'}},
-            optimization:{minimize:false,concatenateModules:false,moduleIds:'deterministic',chunkIds:'deterministic'},
-            module:{rules:[{test:/\.js$/,use:[path.join(root,'loader.cjs')]}]}});
-          compiler.run((err,stats)=>{
-            if(err) throw err;
-            assert(!stats.hasErrors(),stats.toString({all:false,errors:true}));
-            const elapsedMs=performance.now()-started;
-            assert.equal(global.__loaderCalls,24001);
-            assert.equal(require(path.join(out,'main.js')),23999*24000/2);
-            const maps=fs.readFileSync('/proc/self/maps','utf8').split('\n').filter(x=>x.includes('.node'));
-            assert(maps.some(x=>x.includes(fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH))));
-            const data={label,pid:process.pid,elapsedMs,loaderCalls:global.__loaderCalls,maps};
-            fs.writeFileSync(`bench-data/results/${label}.json`,JSON.stringify(data,null,2)+'\n');
-            console.log(JSON.stringify(data));
-            compiler.close(err=>{if(err) throw err;});
-          });
-          JS
-      - name: Output parity and n equals one profiling cost diagnostic
-        run: |
-          set -euo pipefail
-          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/official/package/rspack.linux-x64-gnu.node" node bench-data/run.cjs official
-          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/pack/rspack.linux-x64-gnu.node" node bench-data/run.cjs symbolized
-          diff -r bench-data/output-official bench-data/output-symbolized
-          sha256sum bench-data/output-{official,symbolized}/main.js | tee bench-data/results/output-sha256.txt
-          python3 - <<'PY'
-          import json,pathlib
-          r=pathlib.Path('bench-data/results')
-          a=json.loads((r/'official.json').read_text())['elapsedMs']
-          b=json.loads((r/'symbolized.json').read_text())['elapsedMs']
-          result={'n':1,'official_ms':a,'symbolized_ms':b,'overhead_percent':100*(b/a-1),'output_identical':True,'use':'Profiling cost diagnostic only; different LTO settings prohibit wall-time performance comparisons.'}
-          (r/'overhead.json').write_text(json.dumps(result,indent=2)+'\n')
-          print(result)
-          PY
-      - name: Frame pointer perf smoke and main thread assertions
-        run: |
-          set -euo pipefail
-          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/pack/rspack.linux-x64-gnu.node" "$PERF" record -e cpu-clock -F 999 -g --call-graph fp -o bench-data/results/smoke.perf.data -- node bench-data/run.cjs perf
-          "$PERF" script --no-inline -i bench-data/results/smoke.perf.data -F comm,pid,tid,time,event,ip,sym,dso > bench-data/results/smoke.perf.script 2> bench-data/results/perf-script-stderr.txt
-          "$PERF" report --no-inline --stdio --no-children -i bench-data/results/smoke.perf.data --sort comm,dso,symbol > bench-data/results/smoke.perf.report 2> bench-data/results/perf-report-stderr.txt
-          PID=$(python3 -c 'import json; print(json.load(open("bench-data/results/perf.json"))["pid"])')
-          "$PERF" report --no-inline --stdio --children -t "$PID" -i bench-data/results/smoke.perf.data --sort dso,symbol > bench-data/results/smoke.main-inclusive.report 2> bench-data/results/perf-inclusive-stderr.txt
           python3 - <<'PY'
           import json,pathlib,re
           r=pathlib.Path('bench-data/results')
           pid=json.loads((r/'perf.json').read_text())['pid']
-          blocks=re.split(r'\n\s*\n',(r/'smoke.perf.script').read_text())
+          blocks=re.split(r'\n\s*\n',(r/'smoke.demangled.perf.script').read_text())
           main=[]
           for b in blocks:
             lines=b.splitlines()
@@ -205,12 +51,14 @@ jobs:
           print(json.dumps(result,indent=2))
           assert main,'no tid == pid samples parsed'
           assert all(counts[key] for key in ('context_to','context_from','callback')),counts
+          assert json.loads((r/'overhead.json').read_text())['output_identical']
           PY
-      - name: Preserve final delivery and verification evidence
+          (cd bench-data/pack && sha256sum -c SHA256SUMS)
+      - name: Preserve delivery and resolved evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: v229-symbolized-final
+          name: v229-symbolized-resolved
           path: |
             bench-data/pack/
             bench-data/results/
