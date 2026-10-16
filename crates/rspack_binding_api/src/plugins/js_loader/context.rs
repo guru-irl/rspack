@@ -30,12 +30,38 @@ pub struct JsLoaderItem {
 }
 
 // Only execution state is read back; Rust keeps the original loader metadata.
-#[napi(object, object_to_js = false, skip_typescript)]
 pub struct JsLoaderItemResult {
   pub data: serde_json::Value,
   pub normal_executed: bool,
   pub pitch_executed: bool,
   pub no_pitch: bool,
+}
+
+impl FromNapiValue for JsLoaderItemResult {
+  unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+    // Use the generated object's field helpers to preserve required/optional
+    // validation and error messages without exporting another JS-facing type.
+    unsafe {
+      let _ = Object::from_napi_value(env, napi_val)?;
+      let get = |field: &std::ffi::CStr| get_named_property_raw(env, napi_val, field.as_ptr());
+      Ok(Self {
+        data: from_raw_required_field(env, get(c"data")?, "JsLoaderItem", "data")?,
+        normal_executed: from_raw_required_field(
+          env,
+          get(c"normalExecuted")?,
+          "JsLoaderItem",
+          "normalExecuted",
+        )?,
+        pitch_executed: from_raw_required_field(
+          env,
+          get(c"pitchExecuted")?,
+          "JsLoaderItem",
+          "pitchExecuted",
+        )?,
+        no_pitch: from_raw_required_field(env, get(c"noPitch")?, "JsLoaderItem", "noPitch")?,
+      })
+    }
+  }
 }
 
 impl From<&rspack_loader_runner::LoaderItem<RunnerContext>> for JsLoaderItem {
@@ -211,19 +237,83 @@ pub struct JsLoaderContext {
 
 // Keep the outgoing context intact, but only convert fields consumed by the
 // scheduler when the JavaScript runner resolves its Promise.
-#[napi(object, object_to_js = false, skip_typescript)]
 pub struct JsLoaderContextResult {
   pub content: Either3<String, Buffer, Null>,
   pub additional_data: Option<ThreadsafeOneShotRef>,
-  #[napi(js_name = "__internal__parseMeta")]
   pub parse_meta: HashMap<String, String>,
   pub source_map: Option<Buffer>,
   pub cacheable: bool,
   pub dependencies: JsLoaderDependencies,
   pub loader_items: Vec<JsLoaderItemResult>,
   pub loader_index: i32,
-  #[napi(js_name = "__internal__error")]
   pub error: Option<RspackError>,
+}
+
+impl FromNapiValue for JsLoaderContextResult {
+  unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+    unsafe {
+      let _ = Object::from_napi_value(env, napi_val)?;
+      let get = |field: &std::ffi::CStr| get_named_property_raw(env, napi_val, field.as_ptr());
+      Ok(Self {
+        content: from_raw_required_field(env, get(c"content")?, "JsLoaderContext", "content")?,
+        additional_data: from_raw_optional_field(
+          env,
+          get(c"additionalData")?,
+          "JsLoaderContext",
+          "additionalData",
+        )?,
+        parse_meta: from_raw_required_field(
+          env,
+          get(c"__internal__parseMeta")?,
+          "JsLoaderContext",
+          "__internal__parseMeta",
+        )?,
+        source_map: from_raw_optional_field(
+          env,
+          get(c"sourceMap")?,
+          "JsLoaderContext",
+          "sourceMap",
+        )?,
+        cacheable: from_raw_required_field(env, get(c"cacheable")?, "JsLoaderContext", "cacheable")?,
+        dependencies: from_raw_required_field(
+          env,
+          get(c"dependencies")?,
+          "JsLoaderContext",
+          "dependencies",
+        )?,
+        added_dependencies: from_raw_required_field(
+          env,
+          get(c"addedDependencies")?,
+          "JsLoaderContext",
+          "addedDependencies",
+        )?,
+        removed_dependencies: from_raw_required_field(
+          env,
+          get(c"removedDependencies")?,
+          "JsLoaderContext",
+          "removedDependencies",
+        )?,
+        loader_items: from_raw_required_field(
+          env,
+          get(c"loaderItems")?,
+          "JsLoaderContext",
+          "loaderItems",
+        )?,
+        loader_index: from_raw_required_field(
+          env,
+          get(c"loaderIndex")?,
+          "JsLoaderContext",
+          "loaderIndex",
+        )?,
+        error: from_raw_optional_field(
+          env,
+          get(c"__internal__error")?,
+          "JsLoaderContext",
+          "__internal__error",
+        )?,
+      })
+    }
+  }
 }
 
 impl TryFrom<&mut LoaderContext<RunnerContext>> for JsLoaderContext {
