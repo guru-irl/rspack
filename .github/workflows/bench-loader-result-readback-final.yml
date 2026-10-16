@@ -1,0 +1,62 @@
+name: Loader Result Readback Final Evidence
+on:
+  push:
+    branches: ['bench/loader-result-readback-final']
+permissions:
+  actions: read
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Download validated evidence
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/temp bench-data/evidence
+          gh run download 38967994320 --repo "$GITHUB_REPOSITORY" --name loader-result-readback-ubuntu --dir bench-data/evidence
+          root=$(find bench-data/evidence -name parity.json -print -quit)
+          echo "RESULT_ROOT=$(dirname "$root")" >> "$GITHUB_ENV"
+          python3 scripts/loader-result-readback/summary.py "$(dirname "$root")" > bench-data/reanalysis.txt
+      - name: Readable report
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee bench-data/readable.md
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['RESULT_ROOT'])
+          summary = json.loads((root / 'summary.json').read_text())
+          print('| Metric | Base median | PR median | Change | Paired HL | Exact 95% | Bootstrap 95% |')
+          print('| --- | ---: | ---: | ---: | ---: | --- | --- |')
+          for row in summary['rows']:
+              scale, unit = (1048576, 'MiB') if row['metric'].endswith('Rss') else (1000, 's')
+              def value(x): return f'{x/scale:+.3f}'
+              exact = ', '.join(value(x) for x in row['exact95'])
+              boot = ', '.join(value(x) for x in row['pairedBootstrap95'])
+              print(f"| {row['metric']} ({unit}) | {row['baseMedian']/scale:.3f} | {row['prMedian']/scale:.3f} | {row['percent']:+.2f}% | {value(row['hodgesLehmann'])} | [{exact}] | [{boot}] |")
+          checked = 0
+          for arm in ['base', 'pr']:
+              for label in ['warmup'] + [f'pair-{i}' for i in range(1, 11)]:
+                  result = json.loads((root / f'{label}-{arm}.json').read_text())
+                  assert result['bindingSha256'] == summary['parity']['bindings'][arm]
+                  assert result['bindingIdentity']['verifiedInMaps'] and result['bindingIdentity']['verifiedInRequireCache']
+                  checked += 1
+          print(f"Runtime native identity verified in all {checked} processes.")
+          print('CPU gate:', summary['cpuClearlyLower'])
+          print('Memory increase detected:', summary['memoryIncreaseDetected'])
+          print('Output parity:', json.dumps(summary['parity']))
+          PY
+          cat bench-data/readable.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-result-readback-final-evidence
+          path: |
+            bench-data/readable.md
+            bench-data/reanalysis.txt
+          compression-level: 1
