@@ -1,0 +1,25 @@
+name: Compact hashed evidence inspection
+on:
+  push:
+    branches: [bench/compact-hashed-evidence-20261016]
+    paths: [.github/workflows/compact-hashed-evidence-inspect.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Inspect failed warmup
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench/module-id-evidence/inspection
+          export TMPDIR="$GITHUB_WORKSPACE/bench/module-id-evidence/inspection"
+          gh run download 38968793497 --repo guru-irl/rspack --name compact-hashed-evidence-windows-results --dir bench/module-id-evidence/inspection
+          tail -80 bench/module-id-evidence/inspection/block-0-base-warmup.log
+          cat bench/module-id-evidence/inspection/metadata.json
