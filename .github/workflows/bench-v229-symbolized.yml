@@ -40,6 +40,11 @@ jobs:
         uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
           tool-cache: false
+      - name: Ensure C and C++ compiler after cleanup
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang
+          clang --version
       - name: Build release with symbols and rebuilt standard library
         run: |
           set -euo pipefail
