@@ -1,0 +1,78 @@
+name: Program Native Attribution
+on:
+  push:
+    branches: ['bench/program-native']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: program-native
+  cancel-in-progress: false
+jobs:
+  profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      RUSTFLAGS: '-Cforce-frame-pointers=yes -Cforce-unwind-tables=yes -Csymbol-mangling-version=v0'
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Scratch directory
+        run: mkdir -p bench-data/temp bench-data/results
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
+      - uses: ./.github/actions/rustup
+        with:
+          key: program-native-profiling
+          save-if: true
+      - name: Free disk space
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Build symbol-enabled binding
+        run: |
+          cargo codegen
+          cargo build --profile profiling -p rspack_node --no-default-features --features plugin,info-level
+          cp target/profiling/librspack_node.so crates/node_binding/rspack.linux-x64-gnu.node
+          readelf -S crates/node_binding/rspack.linux-x64-gnu.node | grep -E 'debug_info|debug_line|symtab'
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node > bench-data/results/binding.sha256
+          pnpm run build:js
+      - name: Preserve symbol-enabled binding
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: program-native-binding
+          path: crates/node_binding/rspack.linux-x64-gnu.node
+          compression-level: 1
+      - name: Install perf
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          PERF=$(find /usr/lib/linux-tools -name perf -type f | sort -V | tail -1)
+          echo "PERF=$PERF" >> "$GITHUB_ENV"
+          sudo sysctl kernel.perf_event_paranoid=-1
+          sudo sysctl kernel.kptr_restrict=0
+          { "$PERF" version; node --version; uname -a; lscpu; df -h .; git rev-parse HEAD; } | tee bench-data/results/environment.txt
+      - name: Generate generic fixture
+        run: node scripts/program-native/prepare.mjs bench-data/fixture
+      - name: Validate V8 profile first
+        run: |
+          node --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=bench-data/results --cpu-prof-name=validation.cpuprofile scripts/program-native/run.mjs bench-data/fixture bench-data/results/validation.json
+          python3 scripts/program-native/analyze.py cpu bench-data/results/validation.cpuprofile bench-data/results/validation.json
+      - name: Main-thread native stacks, three repeats
+        run: bash scripts/program-native/record.sh
+      - name: Analyze native samples
+        run: python3 scripts/program-native/analyze.py native bench-data/results
+      - name: Preserve raw profiles, scripts and folded stacks
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: program-native-results
+          path: |
+            bench-data/results/
+            scripts/program-native/
+          compression-level: 1
