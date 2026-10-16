@@ -7,7 +7,8 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-pub use context::{JsLoaderContext, JsLoaderContextResult, JsLoaderDependencies, JsLoaderItem};
+pub(crate) use context::JsLoaderContextResult;
+pub use context::{JsLoaderContext, JsLoaderDependencies, JsLoaderItem};
 use napi::{
   bindgen_prelude::*,
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -23,7 +24,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use crate::{COMPILER_REFERENCES, error::RspackResultToNapiResultExt};
 
-pub type JsLoaderRunner = ThreadsafeFunction<
+pub(crate) type JsLoaderRunner = ThreadsafeFunction<
   JsLoaderContext,
   Promise<JsLoaderContextResult>,
   JsLoaderContext,
@@ -77,7 +78,7 @@ impl JsLoaderRunnerGetter {
     })
   }
 
-  pub async fn call(&self, compiler_id: &CompilerId) -> napi::Result<JsLoaderRunner> {
+  pub(crate) async fn call(&self, compiler_id: &CompilerId) -> napi::Result<JsLoaderRunner> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let status = {
       let ts_fn = self.ts_fn.lock().expect("should get lock");
