@@ -20,7 +20,7 @@ jobs:
       CARGO_BUILD_JOBS: '4'
       TMPDIR: ${{ github.workspace }}/bench-data/temp
       BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
-      PR: 0ea4fb0a8f5dd41b92fac17f9b7585bb7e0f7428
+      PR: 29b16ecd9bbb55357080ad40f1d6ccfe77ef5a58
       BINDING_PATH: ${{ github.workspace }}/crates/node_binding/rspack.linux-x64-gnu.node
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
