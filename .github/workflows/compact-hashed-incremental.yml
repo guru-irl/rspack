@@ -7,6 +7,7 @@ permissions:
   contents: read
 jobs:
   baseline:
+    if: ${{ !contains(github.event.head_commit.message, '[red]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -63,4 +64,46 @@ jobs:
           path: |
             bench/module-id-incremental/baseline/
             bench/module-id-incremental/data/
+          retention-days: 7
+  reproduce:
+    if: ${{ contains(github.event.head_commit.message, '[red]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TMPDIR: ${{ github.workspace }}/bench/module-id-incremental/tmp
+      npm_config_registry: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: mkdir -p "$TMPDIR" bench/module-id-incremental/data
+      - uses: ./.github/actions/pnpm/setup
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare exact main and probe collision names
+        run: |
+          mkdir -p bench/module-id-incremental/toolchain
+          printf '{"private":true}\n' > bench/module-id-incremental/toolchain/package.json
+          npm install --prefix bench/module-id-incremental/toolchain --no-audit --no-fund @rspack-canary/core@2.2.10-canary-96dcd72d-20261016173339 react@19.2.0
+          cp bench/module-id-incremental/toolchain/node_modules/@rspack/binding-linux-x64-gnu/rspack.linux-x64-gnu.node crates/node_binding/
+          pnpm run build:js
+          cd tests/rspack-test
+          node <<'NODE'
+          const { h64 } = require('xxhashjs');
+          const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+          const first = name => chars[BigInt('0x' + h64(name, 0).toString(16)) % 52n];
+          const target = first('./module7.js');
+          console.log('target', target, 'entry', first('./index.js'), 'edited', first('./edited.js'));
+          for (let i = 8; i < 1000; i++) if (first(`./module${i}.js`) === target) { console.log('collision', `module${i}.js`); break; }
+          NODE
+      - name: Reproduce content-edit failure
+        run: |
+          set +e
+          pnpm --dir tests/rspack-test run test --project base -t 'watchCases/module-ids/compact-hashed-incremental' > bench/module-id-incremental/data/red.log 2>&1
+          rc=$?
+          tail -130 bench/module-id-incremental/data/red.log
+          test "$rc" -ne 0
+          grep -q 'AssertionError' bench/module-id-incremental/data/red.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compact-hashed-red
+          path: bench/module-id-incremental/data/
           retention-days: 7
