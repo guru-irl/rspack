@@ -25,6 +25,8 @@ jobs:
       TMPDIR: ${{ github.workspace }}/bench-data/temp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - name: Scratch directory
         run: mkdir -p bench-data/temp bench-data/results bench-data/pack
       - uses: ./.github/actions/pnpm/setup
@@ -41,7 +43,7 @@ jobs:
       - name: Build release with symbols and rebuilt standard library
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = 428b70684309de4068e32baf81d28194441dd64e
+          test "$(git diff --name-only 428b70684309de4068e32baf81d28194441dd64e HEAD)" = .github/workflows/bench-v229-symbolized.yml
           git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e -- crates Cargo.toml Cargo.lock
           rustup component add rust-src
           { date -u; rustc -Vv; cargo -V; clang --version; ldd --version; uname -a; lscpu; df -h .; env | sort | grep -E '^(RUSTFLAGS|CARGO_PROFILE_RELEASE|CARGO_BUILD_JOBS|CFLAGS|CXXFLAGS|CC=|CXX=)'; } > bench-data/results/environment.txt
