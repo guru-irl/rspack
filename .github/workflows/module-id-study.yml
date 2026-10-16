@@ -8,6 +8,7 @@ permissions:
   contents: read
 jobs:
   measure:
+    if: ${{ !contains(github.event.head_commit.message, '[audit]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -68,4 +69,27 @@ jobs:
         with:
           name: module-id-study-raw
           path: bench/module-id-study/data/
+          retention-days: 7
+  audit:
+    if: ${{ contains(github.event.head_commit.message, '[audit]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Audit every benchmark revision, log and raw artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$TMPDIR"
+          python3 bench/module-id-study/artifact-audit.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: module-id-study-audit
+          path: bench/module-id-study/data/audit-manifest.json
           retention-days: 7
