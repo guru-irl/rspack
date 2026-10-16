@@ -1,7 +1,5 @@
-import collections
 import json
 import pathlib
-import random
 import re
 import statistics
 
@@ -77,26 +75,4 @@ for tag in ['plain', 'eval']:
     sample = next(r for r in rows if r['scenario'] == 'content-1')
     (target / 'sample-logging.json').write_text(json.dumps(sample.get('logging'), indent=2))
 
-# This is a uniform-hash model, NOT measurements of the application.
-# Count only unescaped require arguments; eval transport adds escaping overhead.
-rng = random.Random(20261016)
-models = {}
-for arm, alphabet, minimum in [('hashed', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', 4), ('compact-hashed', 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 1)]:
-    occupied = set()
-    lengths = collections.Counter()
-    for i in range(73600):
-        if arm == 'compact-hashed':
-            full = rng.choice(alphabet[:52]) + ''.join(rng.choices(alphabet, k=10))
-        else:
-            full = ''.join(rng.choices(alphabet, k=24))
-        n = minimum
-        while full[:n] in occupied:
-            n += 1
-        occupied.add(full[:n])
-        lengths[n] += 1
-    models[arm] = {'modules': 73600, 'unweightedIDLengths': dict(lengths), 'meanQuotedTokenBytes': sum((n+2)*v for n,v in lengths.items()) / 73600}
-models['deterministic'] = {'modules': 73600, 'range': 10000000, 'uniformMeanNumericDigits': (1*10 + sum(n*9*10**(n-1) for n in range(2,8))) / 10000000}
-(root / 'data' / 'uniform-model.json').write_text(json.dumps(models, indent=2))
-emit('\n## Uniform-hash size model at 73,600 modules (not application measurements)')
-emit(json.dumps(models, sort_keys=True))
 (root / 'data' / 'summary.md').write_text('\n'.join(lines) + '\n')
