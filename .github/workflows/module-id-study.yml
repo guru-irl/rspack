@@ -1,0 +1,73 @@
+name: Module ID development study
+on:
+  push:
+    branches:
+      - bench/hashed-module-ids-20261016
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TMPDIR: ${{ github.workspace }}/bench/module-id-study/tmp
+      npm_config_registry: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Prepare scratch and published toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-study"
+          mkdir -p "$ROOT/tmp" "$ROOT/toolchain" "$ROOT/data"
+          printf '{"private":true}\n' > "$ROOT/toolchain/package.json"
+          node --version
+          uname -a
+          lscpu
+          df -h "$ROOT"
+          PKG=@rspack-canary/core
+          if ! VER=$(npm view "$PKG@latest" version); then
+            PKG=@rspack/core
+            VER=$(npm view "$PKG@latest" version)
+          fi
+          echo "CORE_PACKAGE=$PKG" >> "$GITHUB_ENV"
+          printf 'Selected %s@%s\n' "$PKG" "$VER"
+          npm view "$PKG@$VER" version gitHead dist --json > "$ROOT/data/package-metadata.json"
+          npm view "$PKG@$VER" version gitHead --json
+          npm install --prefix "$ROOT/toolchain" --no-audit --no-fund "$PKG@$VER" react@19.2.0
+          npm ls --prefix "$ROOT/toolchain" --all --json > "$ROOT/data/dependency-tree.json"
+          node --check "$ROOT/benchmark.cjs"
+      - name: Alternate all four arms in five warm-process blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-study"
+          export TMPDIR="$ROOT/tmp"
+          /usr/bin/time -v node "$ROOT/benchmark.cjs" > "$ROOT/data/plain-run.log" 2>&1
+          python3 "$ROOT/summarize.py" | tee "$ROOT/data/summary-plain.md"
+      - name: Eval devtool sensitivity, one block
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-study"
+          export TMPDIR="$ROOT/tmp"
+          DEVTOOL=eval TRIALS=1 /usr/bin/time -v node "$ROOT/benchmark.cjs" > "$ROOT/data/eval-run.log" 2>&1
+          python3 "$ROOT/summarize.py"
+      - name: Preserve complete raw results in logs
+        if: always()
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-study"
+          for FILE in "$ROOT/data/package-metadata.json" "$ROOT/data/dependency-tree.json" "$ROOT/data/plain-run.log" "$ROOT/data/eval-run.log" "$ROOT/data/plain/sample-logging.json"; do
+            if [ -f "$FILE" ]; then
+              printf '\n===== %s =====\n' "${FILE#"$GITHUB_WORKSPACE/"}"
+              head -c 20000000 "$FILE"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: module-id-study-raw
+          path: bench/module-id-study/data/
+          retention-days: 7
