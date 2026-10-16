@@ -29,6 +29,15 @@ pub struct JsLoaderItem {
   pub no_pitch: bool,
 }
 
+// Only execution state is read back; Rust keeps the original loader metadata.
+#[napi(object, object_to_js = false, skip_typescript)]
+pub struct JsLoaderItemResult {
+  pub data: serde_json::Value,
+  pub normal_executed: bool,
+  pub pitch_executed: bool,
+  pub no_pitch: bool,
+}
+
 impl From<&rspack_loader_runner::LoaderItem<RunnerContext>> for JsLoaderItem {
   fn from(value: &rspack_loader_runner::LoaderItem<RunnerContext>) -> Self {
     JsLoaderItem {
@@ -198,6 +207,23 @@ pub struct JsLoaderContext {
     ts_type = "JsLoaderCache | undefined"
   )]
   pub loader_cache: Option<JsLoaderCacheObject>,
+}
+
+// Keep the outgoing context intact, but only convert fields consumed by the
+// scheduler when the JavaScript runner resolves its Promise.
+#[napi(object, object_to_js = false, skip_typescript)]
+pub struct JsLoaderContextResult {
+  pub content: Either3<String, Buffer, Null>,
+  pub additional_data: Option<ThreadsafeOneShotRef>,
+  #[napi(js_name = "__internal__parseMeta")]
+  pub parse_meta: HashMap<String, String>,
+  pub source_map: Option<Buffer>,
+  pub cacheable: bool,
+  pub dependencies: JsLoaderDependencies,
+  pub loader_items: Vec<JsLoaderItemResult>,
+  pub loader_index: i32,
+  #[napi(js_name = "__internal__error")]
+  pub error: Option<RspackError>,
 }
 
 impl TryFrom<&mut LoaderContext<RunnerContext>> for JsLoaderContext {

@@ -4,7 +4,7 @@ use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rspack_hook::plugin_hook;
 use rspack_loader_runner::State as LoaderState;
 
-use super::{JsLoaderContext, JsLoaderRspackPlugin, JsLoaderRspackPluginInner};
+use super::{JsLoaderContextResult, JsLoaderRspackPlugin, JsLoaderRspackPluginInner};
 
 impl JsLoaderRspackPlugin {
   async fn update_loaders_without_pitch(&self, list: Vec<String>) {
@@ -65,7 +65,7 @@ pub(crate) async fn loader_yield(
 
 pub(crate) fn merge_loader_context(
   to: &mut LoaderContext<RunnerContext>,
-  mut from: JsLoaderContext,
+  mut from: JsLoaderContextResult,
 ) -> Result<()> {
   to.cacheable = from.cacheable;
   to.replace_dependencies(from.dependencies.into());
@@ -125,7 +125,7 @@ pub(crate) fn merge_loader_context(
 
 fn collect_loaders_without_pitch(
   ctx: &LoaderContext<RunnerContext>,
-  js_ctx: &JsLoaderContext,
+  js_ctx: &JsLoaderContextResult,
 ) -> Vec<String> {
   let mut list = Vec::new();
   for (js_loader_item, loader_item) in js_ctx.loader_items.iter().zip(ctx.loader_items.iter()) {

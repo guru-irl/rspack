@@ -9,7 +9,7 @@ use std::{
 };
 
 pub use cache::{JsLoaderCache, JsLoaderCacheEntry};
-pub use context::{JsLoaderContext, JsLoaderDependencies, JsLoaderItem};
+pub use context::{JsLoaderContext, JsLoaderContextResult, JsLoaderDependencies, JsLoaderItem};
 use napi::{
   bindgen_prelude::*,
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -27,7 +27,7 @@ use crate::{COMPILER_REFERENCES, error::RspackResultToNapiResultExt};
 
 pub type JsLoaderRunner = ThreadsafeFunction<
   JsLoaderContext,
-  Promise<JsLoaderContext>,
+  Promise<JsLoaderContextResult>,
   JsLoaderContext,
   Status,
   false,
