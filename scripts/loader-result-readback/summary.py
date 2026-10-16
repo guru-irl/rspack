@@ -34,11 +34,14 @@ cpu = next((r for r in rows if r['metric'] == 'mainCpuMs'), None)
 memory = [r for r in rows if r['metric'] in ['peakRss', 'steadyRss', 'idleRss']]
 summary = dict(rows=rows, parity=parity, cpuClearlyLower=cpu is not None and cpu['exact95'][1] is not None and cpu['exact95'][1] < 0, memoryIncreaseDetected=any(r['exact95'][0] is not None and r['exact95'][0] > 0 for r in memory))
 (root / 'summary.json').write_text(json.dumps(summary, indent=2))
-text = '| Metric | Base median | PR median | Change |\n| --- | ---: | ---: | ---: |\n'
+text = '| Metric | Base median | PR median | Change | Paired median delta | HL delta | Exact 95% interval | Verdict |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |\n'
 for r in rows:
     scale = 1024 * 1024 if r['metric'].endswith('Rss') else 1000
     unit = 'MiB' if scale > 1000 else 's'
-    text += f"| {r['metric']} | {r['baseMedian']/scale:.3f} {unit} | {r['prMedian']/scale:.3f} {unit} | {r['percent']:+.2f}% |\n"
+    low, high = r['exact95']
+    verdict = 'INCREASED' if low is not None and low > 0 else 'DECREASED' if high is not None and high < 0 else 'No increase detected'
+    interval = f'[{low/scale:+.3f}, {high/scale:+.3f}] {unit}' if low is not None and high is not None else str(r['exact95'])
+    text += f"| {r['metric']} | {r['baseMedian']/scale:.3f} {unit} | {r['prMedian']/scale:.3f} {unit} | {r['percent']:+.2f}% | {r['pairedMedian']/scale:+.3f} {unit} | {r['hodgesLehmann']/scale:+.3f} {unit} | {interval} | {verdict} |\n"
 (root / 'summary.md').write_text(text)
 print(text)
 print(json.dumps(summary, indent=2))

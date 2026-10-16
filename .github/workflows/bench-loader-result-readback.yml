@@ -3,6 +3,11 @@ on:
   push:
     branches: ['bench/loader-result-readback']
   workflow_dispatch:
+    inputs:
+      platform:
+        type: choice
+        default: xplat
+        options: [xplat, ubuntu]
 permissions:
   contents: read
 concurrency:
@@ -10,6 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   ubuntu:
+    if: github.event_name == 'workflow_dispatch' && inputs.platform == 'ubuntu'
     runs-on: ubuntu-24.04
     timeout-minutes: 170
     defaults:
@@ -27,7 +33,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Scratch directory
-        run: mkdir -p bench-data/temp bench-data/results bench-data/bindings
+        run: set -euo pipefail; mkdir -p bench-data/temp bench-data/results bench-data/bindings
       - uses: ./.github/actions/pnpm/setup
       - name: Install dependencies
         run: |
@@ -81,7 +87,7 @@ jobs:
           pnpm --dir tests/rspack-test run test --project base -t css-extract 2>&1 | tee bench-data/results/pr-css-extract.log
           pnpm --dir tests/rspack-test run test --project base -t build-info 2>&1 | tee bench-data/results/pr-build-info.log
       - name: Generate unchanged native-study fixture
-        run: node scripts/program-native/prepare.mjs bench-data/fixture
+        run: set -euo pipefail; node scripts/program-native/prepare.mjs bench-data/fixture
       - name: Two warmups and ten alternating pairs
         run: set -euo pipefail; node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
       - name: Summarize
@@ -99,6 +105,125 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: loader-result-readback-ubuntu
+          path: |
+            bench-data/results/
+            scripts/loader-result-readback/
+            scripts/program-native/prepare.mjs
+            scripts/program-native/run.mjs
+          compression-level: 1
+  memory:
+    if: github.event_name == 'push' || inputs.platform == 'xplat'
+    name: Memory (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            binding: rspack.darwin-arm64.node
+            cache: aarch64-apple-darwin-ci
+          - runner: windows-2025
+            os: win32
+            arch: x64
+            binding: rspack.win32-x64-msvc.node
+            cache: x86_64-pc-windows-msvc-ci
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 165
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+      BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
+      PR: 29b16ecd9bbb55357080ad40f1d6ccfe77ef5a58
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Scratch directory and binding path
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/temp bench-data/results bench-data/bindings
+          echo "BINDING_PATH=$GITHUB_WORKSPACE/crates/node_binding/${{ matrix.binding }}" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
+      - uses: ./.github/actions/rustup
+        with:
+          key: ${{ matrix.cache }}
+          save-if: true
+      - name: Environment and source identity
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import os from "node:os";
+            import {createHash} from "node:crypto";
+            if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Wrong runner architecture");
+            const fixtureScripts = Object.fromEntries(["scripts/program-native/prepare.mjs", "scripts/program-native/run.mjs", "scripts/loader-result-readback/pairs.mjs", "scripts/loader-result-readback/exact.py"].map(file => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
+            const value = {started: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version, os: os.version(), release: os.release(), cpus: os.cpus(), ram: os.totalmem(), image: process.env.ImageOS, imageVersion: process.env.ImageVersion, base: process.env.BASE, pr: process.env.PR, fixtureScripts};
+            fs.writeFileSync("bench-data/results/environment.json", JSON.stringify(value, null, 2));
+            console.log(JSON.stringify(value, null, 2));'
+          { uname -a; rustc -Vv; git rev-parse HEAD; df -h .; } | tee bench-data/results/environment.txt
+          git merge-base "$BASE" "$PR" | tee bench-data/results/merge-base.txt
+          test "$(git merge-base "$BASE" "$PR")" = "$BASE"
+          git diff "$BASE" "$PR" > bench-data/results/source.diff
+          cargo fmt --all --check
+      - name: Build base and JavaScript artifacts
+        run: |
+          set -euo pipefail
+          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
+          git diff --exit-code "$BASE" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
+          cargo codegen
+          rm -f "$BINDING_PATH"
+          pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
+          cp "$BINDING_PATH" bench-data/bindings/base.node
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+      - name: Build candidate with identical settings
+        run: |
+          set -euo pipefail
+          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
+          rm -f "$BINDING_PATH"
+          pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
+          cp "$BINDING_PATH" bench-data/bindings/pr.node
+          git diff --exit-code "$BASE" -- crates/node_binding/napi-binding.d.ts
+      - name: Native identity gate before timing
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import {createHash} from "node:crypto";
+            const hashes = Object.fromEntries(["base", "pr"].map(arm => [arm, createHash("sha256").update(fs.readFileSync(`bench-data/bindings/${arm}.node`)).digest("hex")]));
+            fs.writeFileSync("bench-data/results/build-identities.json", JSON.stringify(hashes, null, 2));
+            console.log(hashes);
+            if (hashes.base === hashes.pr) throw new Error("Identical arm binaries: refusing timing");'
+      - name: Generate unchanged native-study fixture
+        run: |
+          set -euo pipefail
+          node scripts/program-native/prepare.mjs bench-data/fixture
+      - name: Two warmups and ten alternating fresh-process pairs
+        run: |
+          set -euo pipefail
+          node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
+      - name: Exact paired analysis
+        run: |
+          set -euo pipefail
+          python3 scripts/loader-result-readback/summary.py 2>&1 | tee bench-data/results/analysis.log
+          cat bench-data/results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          date -u '+%Y-%m-%dT%H:%M:%SZ' > bench-data/results/finished.txt
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-result-readback-${{ matrix.runner }}
           path: |
             bench-data/results/
             scripts/loader-result-readback/
