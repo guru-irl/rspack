@@ -1,0 +1,83 @@
+name: Compact hashed evidence
+on:
+  push:
+    branches: [bench/compact-hashed-evidence-20261016]
+    paths: [.github/workflows/compact-hashed-evidence.yml, bench/module-id-evidence/**]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux
+            native: rspack.linux-x64-gnu.node
+          - runner: macos-latest
+            platform: macos
+            native: rspack.darwin-arm64.node
+          - runner: windows-latest
+            platform: windows
+            native: rspack.win32-x64-msvc.node
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_RUN: 38967996933
+      npm_config_registry: https://registry.npmjs.org
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/bench/module-id-evidence/browsers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set durable scratch
+        run: |
+          set -euo pipefail
+          mkdir -p bench/module-id-evidence/tmp bench/module-id-evidence/data bench/module-id-evidence/toolchain
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench/module-id-evidence/tmp" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/pnpm/setup
+      - name: Prepare matching JavaScript dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          printf '{"private":true}\n' > bench/module-id-evidence/toolchain/package.json
+          npm install --prefix bench/module-id-evidence/toolchain --no-audit --no-fund react@19.2.0 playwright@1.56.1
+      - name: Prepare browser on Linux
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          node bench/module-id-evidence/toolchain/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Require successful matched native builds
+        run: |
+          set -euo pipefail
+          gh run watch "$BUILD_RUN" --repo guru-irl/rspack --exit-status --interval 60 > bench/module-id-evidence/data/build-watch.log 2>&1
+          gh run download "$BUILD_RUN" --repo guru-irl/rspack --name compact-hashed-evidence-${{ matrix.platform }}-bindings --dir bench/module-id-evidence/build
+          cp bench/module-id-evidence/build/pr/${{ matrix.native }} crates/node_binding/
+          pnpm run build:js
+      - name: Check harness syntax before samples
+        run: |
+          set -euo pipefail
+          node --check bench/module-id-evidence/benchmark.cjs
+          node --check bench/module-id-evidence/run.cjs
+          node --check bench/module-id-evidence/hmr.cjs
+          python -m py_compile bench/module-id-evidence/analyze.py
+      - name: Measure fixed alternating schedule and exact intervals
+        run: |
+          set -euo pipefail
+          node bench/module-id-evidence/run.cjs 2>&1 | tee bench/module-id-evidence/data/measurement.log
+          python bench/module-id-evidence/analyze.py 2>&1 | tee bench/module-id-evidence/data/analysis.log
+      - name: Real dev server HMR and ProgressPlugin
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          node bench/module-id-evidence/hmr.cjs 2>&1 | tee bench/module-id-evidence/data/hmr.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compact-hashed-evidence-${{ matrix.platform }}-results
+          path: bench/module-id-evidence/data/
+          retention-days: 7
