@@ -2,7 +2,7 @@ use derive_more::Debug;
 use rayon::prelude::*;
 use rspack_core::{
   ChunkGraph, Compilation, CompilationModuleIds, ModuleIdsArtifact, Plugin,
-  incremental::IncrementalPasses,
+  incremental::{IncrementalPasses, Mutation},
 };
 use rspack_error::{Diagnostic, Result, error};
 use rspack_hook::{plugin, plugin_hook};
@@ -49,25 +49,56 @@ async fn module_ids(
   preserved_module_ids: &ModuleIdsArtifact,
   diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<()> {
-  if let Some(diagnostic) = compilation.incremental.disable_passes(
-    IncrementalPasses::MODULE_IDS | IncrementalPasses::MODULES_HASHES,
-    "CompactHashedModuleIdsPlugin (optimization.moduleIds = \"compact-hashed\")",
-    "it requires calculating the id of all the modules, which is a global effect",
-  ) {
-    if let Some(diagnostic) = diagnostic {
-      diagnostics.push(diagnostic);
-    }
-    module_ids.retain(|module, _| preserved_module_ids.contains_key(module));
-  }
-
   validate_min_length(
     self.min_length,
     FULL_IDENTIFIER_LENGTH,
     "CompactHashedModuleIdsPlugin",
   )?;
 
-  let (used_ids, modules) =
+  let mut removed_ids = vec![];
+  if let Some(mutations) = compilation
+    .incremental
+    .mutations_read(IncrementalPasses::MODULE_IDS)
+  {
+    for mutation in mutations.iter() {
+      if let Mutation::ModuleRemove { module } = mutation
+        && let Some(id) = module_ids.remove(module)
+      {
+        removed_ids.push(id);
+      }
+    }
+  }
+
+  let (mut used_ids, mut modules) =
     get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
+  let retain_ids = compilation
+    .incremental
+    .mutations_readable(IncrementalPasses::MODULE_IDS)
+    && !module_ids.is_empty()
+    // Equal counts mean every retained id belongs to a live module that needs one
+    // and no id is shared. Duplicates and stale entries only shrink used_ids,
+    // so they cannot cancel out.
+    && used_ids.len() == module_ids.len();
+
+  if !retain_ids
+    && let Some(diagnostic) = compilation.incremental.disable_passes(
+      IncrementalPasses::MODULE_IDS | IncrementalPasses::MODULES_HASHES,
+      "CompactHashedModuleIdsPlugin (optimization.moduleIds = \"compact-hashed\")",
+      "module ids cannot be retained safely for this rebuild",
+    )
+  {
+    if let Some(diagnostic) = diagnostic {
+      diagnostics.push(diagnostic);
+    }
+    module_ids.retain(|module, _| preserved_module_ids.contains_key(module));
+    (used_ids, modules) =
+      get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
+  }
+
+  if retain_ids {
+    // HMR must see removed modules as removals, not updates of new modules.
+    used_ids.extend(removed_ids.into_iter().map(|id| id.to_string()));
+  }
 
   let mut module_ids_map = std::mem::take(module_ids);
   let context = compilation.options.context.as_ref();
@@ -91,6 +122,9 @@ async fn module_ids(
   });
 
   let mut id_assigner = CompactHashedIdAssigner::new(self.min_length, used_ids);
+  let mut mutations = retain_ids
+    .then(|| compilation.incremental.mutations_write())
+    .flatten();
   for (module, hash, name) in modules_with_hashes {
     let Some(module_id) = id_assigner.assign(&name, hash, hash_identifier) else {
       return Err(error!(
@@ -99,7 +133,13 @@ async fn module_ids(
       ));
     };
 
-    ChunkGraph::set_module_id(&mut module_ids_map, module.identifier(), module_id.into());
+    if ChunkGraph::set_module_id(&mut module_ids_map, module.identifier(), module_id.into())
+      && let Some(mutations) = &mut mutations
+    {
+      mutations.add(Mutation::ModuleSetId {
+        module: module.identifier(),
+      });
+    }
   }
 
   *module_ids = module_ids_map;
