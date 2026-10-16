@@ -2,7 +2,7 @@ use derive_more::Debug;
 use rayon::prelude::*;
 use rspack_core::{
   ChunkGraph, Compilation, CompilationModuleIds, ModuleIdsArtifact, Plugin,
-  incremental::IncrementalPasses,
+  incremental::{IncrementalPasses, Mutation},
 };
 use rspack_error::{Diagnostic, Result, error};
 use rspack_hook::{plugin, plugin_hook};
@@ -49,15 +49,44 @@ async fn module_ids(
   preserved_module_ids: &ModuleIdsArtifact,
   diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<()> {
-  if let Some(diagnostic) = compilation.incremental.disable_passes(
-    IncrementalPasses::MODULE_IDS | IncrementalPasses::MODULES_HASHES,
-    "CompactHashedModuleIdsPlugin (optimization.moduleIds = \"compact-hashed\")",
-    "it requires calculating the id of all the modules, which is a global effect",
-  ) {
+  if let Some(mutations) = compilation
+    .incremental
+    .mutations_read(IncrementalPasses::MODULE_IDS)
+  {
+    for mutation in mutations.iter() {
+      if let Mutation::ModuleRemove { module } = mutation {
+        module_ids.remove(module);
+      }
+    }
+  }
+
+  let (mut used_ids, mut modules) =
+    get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
+  let module_ids_hook = &compilation.plugin_driver.compilation_hooks.module_ids;
+  let retain_ids = compilation
+    .incremental
+    .mutations_readable(IncrementalPasses::MODULE_IDS)
+    && !module_ids.is_empty()
+    // Hook assignments have already been merged and reported as ModuleSetId.
+    // A duplicate reservation can steal a retained module's id, requiring global reassignment.
+    && used_ids.len() == module_ids.len()
+    // Another moduleIds tap or interceptor could overwrite reservations after this plugin.
+    && module_ids_hook.tap_stages().len() == 1
+    && module_ids_hook.interceptor_count() == 0;
+
+  if !retain_ids
+    && let Some(diagnostic) = compilation.incremental.disable_passes(
+      IncrementalPasses::MODULE_IDS | IncrementalPasses::MODULES_HASHES,
+      "CompactHashedModuleIdsPlugin (optimization.moduleIds = \"compact-hashed\")",
+      "module ids cannot be retained safely for this rebuild",
+    )
+  {
     if let Some(diagnostic) = diagnostic {
       diagnostics.push(diagnostic);
     }
     module_ids.retain(|module, _| preserved_module_ids.contains_key(module));
+    (used_ids, modules) =
+      get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
   }
 
   validate_min_length(
@@ -65,9 +94,6 @@ async fn module_ids(
     FULL_IDENTIFIER_LENGTH,
     "CompactHashedModuleIdsPlugin",
   )?;
-
-  let (used_ids, modules) =
-    get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
 
   let mut module_ids_map = std::mem::take(module_ids);
   let context = compilation.options.context.as_ref();
@@ -91,6 +117,9 @@ async fn module_ids(
   });
 
   let mut id_assigner = CompactHashedIdAssigner::new(self.min_length, used_ids);
+  let mut mutations = retain_ids
+    .then(|| compilation.incremental.mutations_write())
+    .flatten();
   for (module, hash, name) in modules_with_hashes {
     let Some(module_id) = id_assigner.assign(&name, hash, hash_identifier) else {
       return Err(error!(
@@ -99,7 +128,13 @@ async fn module_ids(
       ));
     };
 
-    ChunkGraph::set_module_id(&mut module_ids_map, module.identifier(), module_id.into());
+    if ChunkGraph::set_module_id(&mut module_ids_map, module.identifier(), module_id.into())
+      && let Some(mutations) = &mut mutations
+    {
+      mutations.add(Mutation::ModuleSetId {
+        module: module.identifier(),
+      });
+    }
   }
 
   *module_ids = module_ids_map;
