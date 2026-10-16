@@ -5,10 +5,25 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: v229-symbolized-gnu
   cancel-in-progress: false
 jobs:
+  inspect_previous:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Inspect preserved thin LTO symbols
+        run: |
+          mkdir -p bench-data/temp
+          gh run download 38967183357 --name v229-symbolized-pack-thin --dir bench-data
+          grep -E ' [tT] <rspack_binding_api::(plugins::js_loader::context::JsLoaderContext|module::ModuleObject)' bench-data/results/symbols.txt || true
+          grep -E 'ModuleObject.*ToNapiValue.*to_napi_value' bench-data/results/symbols.txt | cut -c1-1600 || true
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
@@ -17,7 +32,7 @@ jobs:
       CARGO_BUILD_JOBS: '4'
       CARGO_PROFILE_PROFILING_DEBUG: '1'
       CARGO_PROFILE_PROFILING_STRIP: 'none'
-      RUSTFLAGS: '-Zshare-generics=y -Zthreads=8 -Csymbol-mangling-version=v0 -Zlocation-detail=none -Cforce-unwind-tables=no -Cforce-frame-pointers=yes -Cdebuginfo=1'
+      RUSTFLAGS: '-Cforce-frame-pointers=yes -Cforce-unwind-tables=yes -Csymbol-mangling-version=v0 -Cdebuginfo=1'
       CC: clang
       CXX: clang++
       CFLAGS: '-fno-omit-frame-pointer'
@@ -186,6 +201,8 @@ jobs:
           NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/pack/rspack.linux-x64-gnu.node" "$PERF" record -e cpu-clock -F 999 -g --call-graph fp -o bench-data/results/smoke.perf.data -- node bench-data/run.cjs perf
           "$PERF" script --no-inline -i bench-data/results/smoke.perf.data -F comm,pid,tid,time,event,ip,sym,dso > bench-data/results/smoke.perf.script 2> bench-data/results/perf-script-stderr.txt
           "$PERF" report --no-inline --stdio --no-children -i bench-data/results/smoke.perf.data --sort comm,dso,symbol > bench-data/results/smoke.perf.report 2> bench-data/results/perf-report-stderr.txt
+          PID=$(python3 -c 'import json; print(json.load(open("bench-data/results/perf.json"))["pid"])')
+          "$PERF" report --no-inline --stdio --children -t "$PID" -i bench-data/results/smoke.perf.data --sort dso,symbol > bench-data/results/smoke.main-inclusive.report 2> bench-data/results/perf-inclusive-stderr.txt
           python3 - <<'PY'
           import json,pathlib,re
           r=pathlib.Path('bench-data/results')
