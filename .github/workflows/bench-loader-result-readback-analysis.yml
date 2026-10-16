@@ -1,0 +1,74 @@
+name: Loader Result Readback Exact Analysis
+on:
+  push:
+    branches: ['bench/loader-result-readback-analysis']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  exact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Scratch directory
+        run: mkdir -p bench-data/temp bench-data/exact
+      - name: Verify exact interval implementation
+        run: |
+          python3 - <<'PY'
+          import sys
+          from collections import Counter
+          from fractions import Fraction
+          sys.path.insert(0, 'scripts/loader-result-readback')
+          from exact import paired_location, signed_rank_p
+          assert signed_rank_p([Fraction(x) for x in range(1, 11)]) == Fraction(1, 512)
+          assert signed_rank_p([Fraction(0)] * 10) == 1
+          d = [1 << i for i in range(10)]
+          distribution = Counter({0: 1})
+          for rank in range(1, 11):
+              updated = distribution.copy()
+              for total, count in distribution.items():
+                  updated[total + rank] += count
+              distribution = updated
+          critical = max(t for t in distribution if sum(c for s, c in distribution.items() if s <= t) * 40 <= 1024)
+          walsh = sorted((a + b) / 2 for i, a in enumerate(d) for b in d[i:])
+          result = paired_location([0] * 10, d)
+          assert result['exact95'] == [walsh[critical], walsh[-critical - 1]], result
+          assert paired_location([0] * 10, [-x for x in d])['exact95'][1] < 0
+          assert paired_location([0] * 10, [0] * 10)['exact95'] == [0, 0]
+          print('Exact enumeration agrees with the no-tie Walsh order-statistic interval; sign, zero and tied-data checks passed.')
+          PY
+      - name: Download completed artifacts and calculate exact intervals
+        run: |
+          set -euo pipefail
+          for spec in '38962495808:loader-result-readback-ubuntu' '38962587598:loader-result-readback-macos-15' '38962587598:loader-result-readback-windows-2025'; do
+            run_id=${spec%%:*}
+            artifact=${spec#*:}
+            available=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" --jq ".artifacts[] | select(.name == \"$artifact\") | .id")
+            if [[ -z "$available" ]]; then
+              echo "$artifact pending" | tee -a bench-data/exact/pending.txt
+              continue
+            fi
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir "bench-data/exact/$artifact"
+            root=$(find "bench-data/exact/$artifact" -name parity.json -print -quit)
+            if [[ -z "$root" ]]; then
+              echo "$artifact has no completed pairs" | tee -a bench-data/exact/pending.txt
+              continue
+            fi
+            python3 scripts/loader-result-readback/summary.py "$(dirname "$root")" | tee "bench-data/exact/$artifact/analysis.txt"
+            cat "$(dirname "$root")/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Preserve exact results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-result-readback-exact
+          path: |
+            bench-data/exact/
+            scripts/loader-result-readback/exact.py
+            scripts/loader-result-readback/summary.py
+          compression-level: 1
