@@ -1,0 +1,78 @@
+name: Program Native Capture
+on:
+  push:
+    branches: ['bench/program-native-analysis']
+  workflow_dispatch:
+    inputs:
+      source_run:
+        type: string
+        default: '38950775914'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+      SOURCE_RUN: ${{ inputs.source_run || '38950775914' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: mkdir -p bench-data/temp bench-data/results
+      - uses: ./.github/actions/pnpm/setup
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e
+        with:
+          name: program-native-binding
+          path: crates/node_binding
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN }}
+      - name: Build JavaScript only
+        run: |
+          pnpm install --frozen-lockfile
+          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
+          pnpm run build:js
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node > bench-data/results/binding.sha256
+      - name: Install perf
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          PERF=$(command -v perf)
+          if ! "$PERF" version; then
+            PERF=$(find -L /usr/lib/linux-tools -name perf -type f | sort -V | tail -1)
+          fi
+          test -n "$PERF"
+          "$PERF" version
+          echo "PERF=$PERF" >> "$GITHUB_ENV"
+          sudo sysctl kernel.perf_event_paranoid=-1
+          sudo sysctl kernel.kptr_restrict=0
+          { "$PERF" version; node --version; uname -a; lscpu; getconf CLK_TCK; df -h .; git rev-parse HEAD; } | tee bench-data/results/environment.txt
+      - name: Prepare generic fixture
+        run: node scripts/program-native/prepare.mjs bench-data/fixture
+      - name: Validate V8 profile before perf
+        run: |
+          node --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=bench-data/results --cpu-prof-name=validation.cpuprofile scripts/program-native/run.mjs bench-data/fixture bench-data/results/validation.json
+          python3 scripts/program-native/analyze.py cpu bench-data/results/validation.cpuprofile bench-data/results/validation.json
+      - name: Three main-thread captures
+        run: bash scripts/program-native/record.sh
+      - name: Inspect raw stack format
+        if: always()
+        run: |
+          for file in bench-data/results/repeat-*/record.log bench-data/results/repeat-*/inject.log bench-data/results/repeat-*/script.log; do
+            if test -f "$file"; then echo "=== $file ==="; tail -10 "$file"; fi
+          done
+          for file in bench-data/results/repeat-*/perf.script; do
+            if test -f "$file"; then echo "=== $file ==="; head -65 "$file"; fi
+          done
+      - name: Native attribution
+        run: python3 scripts/program-native/analyze.py native bench-data/results
+      - name: Preserve raw profiles and attribution
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: program-native-results
+          path: |
+            bench-data/results/
+            scripts/program-native/
+          compression-level: 1

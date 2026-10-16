@@ -50,9 +50,11 @@ jobs:
           compression-level: 1
       - name: Install perf
         run: |
+          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
-          PERF=$(find /usr/lib/linux-tools -name perf -type f | sort -V | tail -1)
+          PERF=$(command -v perf)
+          "$PERF" version
           echo "PERF=$PERF" >> "$GITHUB_ENV"
           sudo sysctl kernel.perf_event_paranoid=-1
           sudo sysctl kernel.kptr_restrict=0
