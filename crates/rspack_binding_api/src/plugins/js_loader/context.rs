@@ -274,7 +274,12 @@ impl FromNapiValue for JsLoaderContextResult {
           "JsLoaderContext",
           "sourceMap",
         )?,
-        cacheable: from_raw_required_field(env, get(c"cacheable")?, "JsLoaderContext", "cacheable")?,
+        cacheable: from_raw_required_field(
+          env,
+          get(c"cacheable")?,
+          "JsLoaderContext",
+          "cacheable",
+        )?,
         dependencies: from_raw_required_field(
           env,
           get(c"dependencies")?,
