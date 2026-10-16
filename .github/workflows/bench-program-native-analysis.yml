@@ -55,7 +55,19 @@ jobs:
           node --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=bench-data/results --cpu-prof-name=validation.cpuprofile scripts/program-native/run.mjs bench-data/fixture bench-data/results/validation.json
           python3 scripts/program-native/analyze.py cpu bench-data/results/validation.cpuprofile bench-data/results/validation.json
       - name: Three main-thread captures
-        run: bash scripts/program-native/record.sh
+        timeout-minutes: 5
+        run: bash scripts/program-native/record.sh record
+      - name: Preserve raw captures before export
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: program-native-raw
+          path: |
+            bench-data/results/
+            scripts/program-native/
+          compression-level: 1
+      - name: Export native stacks
+        timeout-minutes: 15
+        run: bash scripts/program-native/record.sh export
       - name: Inspect raw stack format
         if: always()
         run: |
