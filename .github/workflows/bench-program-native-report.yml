@@ -21,10 +21,10 @@ jobs:
           node-version: '22'
       - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e
         with:
-          name: program-native-raw
+          name: program-native-report
           path: capture
           github-token: ${{ github.token }}
-          run-id: '38957105145'
+          run-id: '38958320683'
       - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e
         with:
           name: program-native-binding
@@ -51,9 +51,6 @@ jobs:
           sha256sum crates/node_binding/rspack.linux-x64-gnu.node
           head -1 bench-data/results/binding.sha256
           find bench-data/results/repeat-1 -maxdepth 1 -type f -printf '%f %s bytes\n' | head -12
-      - name: Export existing main-thread recordings
-        timeout-minutes: 20
-        run: bash scripts/program-native/record.sh export
       - name: Inspect stack format
         if: always()
         run: |

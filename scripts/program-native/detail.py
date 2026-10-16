@@ -4,7 +4,7 @@ import pathlib
 import re
 import statistics
 import sys
-from analyze import samples, js_frame, OPERATIONS
+from analyze import samples, js_frame, category, OPERATIONS
 
 root = pathlib.Path(sys.argv[1])
 runs = []
@@ -18,6 +18,7 @@ for directory in sorted(root.glob('repeat-*')):
     sides = collections.Counter()
     depths = []
     unknown = 0
+    unknown_dsos = collections.Counter()
     for t, frames in samples(directory / 'perf.script'):
         if not m['marks']['buildStart'] <= t <= m['marks']['buildEnd']:
             continue
@@ -30,17 +31,30 @@ for directory in sorted(root.glob('repeat-*')):
         if active:
             leaves[side][active[0][0]] += 1
             unknown += active[0][0] == '[unknown]'
+            if active[0][0] == '[unknown]':
+                unknown_dsos[active[0][1]] += 1
         joined = '\n'.join(s for s, d in active)
         for symbol in set(s for s, d in active):
             counter[symbol] += 1
+        matched = set()
         for operation, pattern in OPERATIONS.items():
-            if re.search(pattern, joined):
+            if re.search(pattern, joined, re.M):
+                matched.add(operation)
                 operations[operation] += 1
                 if operation not in representatives:
                     representatives[operation] = [s for s, d in frames[:22]]
+        direct = category(active) not in {'GC', 'kernel / unresolved', 'empty / unwound', 'other / unresolved'}
+        if 'ModuleObject to-JS including lookup' in matched and direct:
+            operations['outbound module direct user non-GC'] += 1
+        if {'JsLoaderContext to-JS', 'JsLoaderContext from-JS'} & matched:
+            operations['all context conversion union'] += 1
+            if 'ModuleObject to-JS including lookup' not in matched:
+                operations['context conversion excluding outbound module'] += 1
+                if direct:
+                    operations['non-module context direct user non-GC'] += 1
     if not total:
         raise SystemExit(f'No build samples in {directory}')
-    print('QUALITY', directory.name, 'buildSamples', total, 'sides', dict(sides), 'unknownLeaf', unknown, 'medianDepth', statistics.median(depths), 'maxDepth', max(depths))
+    print('QUALITY', directory.name, 'buildSamples', total, 'sides', dict(sides), 'unknownLeaf', unknown, 'medianDepth', statistics.median(depths), 'maxDepth', max(depths), 'unknownDso', dict(unknown_dsos))
     print('LEAVES', directory.name)
     for side, counts in leaves.items():
         for symbol, count in counts.most_common(15):
@@ -57,7 +71,7 @@ for symbol in interesting[:40]:
     cpu_ms = [r['metrics']['mainCpuMs'] * count / r['total'] for count, r in zip(counts, runs)]
     print('SYMBOL', json.dumps(symbol), 'counts', counts, 'percent', [round(v, 3) for v in percentages], 'medianCpuMs', round(statistics.median(cpu_ms), 3))
 print('OPERATION CEILINGS: overlapping')
-for operation in OPERATIONS:
+for operation in [*OPERATIONS, 'all context conversion union', 'context conversion excluding outbound module', 'outbound module direct user non-GC', 'non-module context direct user non-GC']:
     counts = [r['operations'][operation] for r in runs]
     percentages = [100 * count / r['total'] for count, r in zip(counts, runs)]
     cpu_ms = [r['metrics']['mainCpuMs'] * count / r['total'] for count, r in zip(counts, runs)]
@@ -69,8 +83,12 @@ for directory in sorted(root.glob('repeat-*')):
     if not source.exists():
         continue
     lines = collections.Counter()
+    print('SOURCE FILE', directory.name, 'bytes', source.stat().st_size)
+    log = directory / 'source-lines.log'
+    if log.exists():
+        print('SOURCE LOG', log.read_text(errors='replace')[:500])
     for line in source.read_text(errors='replace').splitlines():
-        if re.search(r'(?:rspack_binding_api|rspack_napi)/src/.*:\d+', line):
+        if re.search(r'\.rs:\d+', line):
             lines[line.strip()] += 1
     for line, count in lines.most_common(18):
         print(directory.name, count, line)

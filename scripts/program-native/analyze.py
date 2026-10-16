@@ -69,10 +69,10 @@ GC = r'CollectGarbage|Scaveng|MarkCompact|GarbageCollect|Sweeper|MinorGC|MajorGC
 MEMORY = r'malloc|calloc|realloc|free\b|mi_|memcpy|memmove|memset|AllocateRaw|MemoryAllocator'
 NAPI = r'\bnapi_(?!call_threadsafe|create_threadsafe|release_threadsafe)|::(?:to_napi_value|from_napi_value)|napi::bindgen_runtime::js_values'
 OPERATIONS = {
-    'module materialization': r'NormalModule::into_module_instance|define_module_properties|define_shared_properties|::new_inherited',
+    'module materialization': r'into_module_instance|define_module_properties|define_shared_properties|::new_inherited',
     'ModuleObject to-JS including lookup': r'ModuleObject.*to_napi_value',
-    'JsLoaderContext to-JS': r'JsLoaderContext.*to_napi_value',
-    'JsLoaderContext from-JS': r'JsLoaderContext.*from_napi_value',
+    'JsLoaderContext to-JS': r'^<rspack_binding_api::plugins::js_loader::context::JsLoaderContext as [^\n]+::ToNapiValue>::to_napi_value$',
+    'JsLoaderContext from-JS': r'^<rspack_binding_api::plugins::js_loader::context::JsLoaderContext as [^\n]+::FromNapiValue>::from_napi_value$',
     'JsLoaderItem conversion': r'JsLoaderItem.*(?:to_napi_value|from_napi_value)',
     'N-API object property operations': r'\bnapi_(?:define_properties|set_named_property|get_named_property|has_named_property|create_object|new_instance|wrap|unwrap)',
     'N-API string operations': r'\bnapi_(?:create_string|get_value_string)|napi::.*(?:string|String).*napi_value',
@@ -81,10 +81,37 @@ OPERATIONS = {
     'TSFN dispatch inclusive of work': r'ThreadSafeFunction::(?:Dispatch|DispatchOne)|napi::threadsafe_function::call_js_cb',
     'get_loader_runner': r'get_loader_runner|JsLoaderRunnerGetter',
     'UTF-8 validation': r'validate_utf8|run_utf8_validation|simdutf8|from_utf8',
+    'V8 key lookup': r'StringTable::LookupKey',
+    'V8 property definition': r'DefineOwnProperty|DefineProperties|DefineProperty|MigrateToMap|ToPropertyDescriptor',
+    'V8 UTF-8 decode or encode': r'Utf8Decoder|WriteUtf8|NewStringFromUtf8',
 }
 
 
+def outer_function(symbol):
+    depth = 0
+    result = []
+    for char in symbol:
+        if char == '<':
+            depth += 1
+        elif char == '>':
+            depth = max(0, depth - 1)
+        elif not depth:
+            result.append(char)
+    return ''.join(result)
+
+
+def is_napi_operation(symbol):
+    function = outer_function(symbol)
+    if 'raw_promise_then_callback' in function:
+        return False
+    return bool(re.search(r'^napi_(?!call_threadsafe|create_threadsafe|release_threadsafe)|^napi::bindgen_runtime::js_values|::(?:to_napi_value|from_napi_value)(?:::|$)', function))
+
+
 def category(frames):
+    if not frames:
+        return 'empty / unwound'
+    if frames[0][1] == '[kernel.kallsyms]':
+        return 'kernel / unresolved'
     syms = [f[0] for f in frames]
     joined = '\n'.join(syms)
     leaf = syms[0] if syms else '[unknown]'
@@ -93,7 +120,9 @@ def category(frames):
     if re.search(MEMORY, leaf):
         return 'allocator / memory movement'
     for sym in syms:
-        if re.search(NAPI, sym):
+        if is_napi_operation(sym):
+            if sym.startswith('<alloc::vec::Vec'):
+                return 'N-API: arrays'
             if re.search(r'string|String|utf8|utf16|Utf8|Utf16', sym):
                 return 'N-API: strings'
             if re.search(r'buffer|Buffer|typedarray|arraybuffer', sym):
@@ -105,7 +134,7 @@ def category(frames):
             return 'N-API: other operations'
     if re.search(r'rspack_binding_api|rspack_napi|rspack_node', leaf):
         return 'Rspack binding symbols'
-    if re.search(r'ThreadSafeFunction|ThreadsafeFunction|threadsafe_function|uv_|node::Environment::Run|node::SpinEventLoop', leaf):
+    if re.search(r'ThreadSafeFunction|ThreadsafeFunction|threadsafe_function|raw_promise_then_callback|uv_|node::Environment::Run|node::SpinEventLoop', leaf):
         return 'ThreadsafeFunction / libuv'
     if re.search(r'v8::|Builtins?_|Builtin:|BytecodeHandler|RegExp|regexp|Compile|IC::', joined):
         return 'V8 runtime / compile / IC / regexp'
@@ -156,7 +185,7 @@ def native(root):
                 g['samples'] += 1
                 g['empty'] += not bool(frames)
                 g['depth'][len(frames)] += 1
-                bucket = category(active_native) if first_js else 'JavaScript self'
+                bucket = category(active_native) if first_js or not frames else 'JavaScript self'
                 g['buckets'][bucket] += 1
                 if frames:
                     if first_js:
@@ -165,11 +194,16 @@ def native(root):
                         g['inclusive'][s] += 1
                     active_symbols = '\n'.join(s for s, d in active_native)
                     for operation, pattern in OPERATIONS.items():
-                        if re.search(pattern, active_symbols):
+                        if re.search(pattern, active_symbols, re.M):
                             g['operations'][operation] += 1
                     g['stacks'][';'.join(s.replace(';', ':') for s, d in reversed(frames))] += 1
         if all_count < 100:
             raise SystemExit(f'Insufficient parsed samples in {directory}: {all_count}')
+        build_count = sum(groups[('build', side)]['samples'] for side in ['no-js-frame', 'under-js-frame'])
+        if abs(build_count * 1000 / 499 - m['mainCpuMs']) > m['mainCpuMs'] * 0.08:
+            raise SystemExit(f'Main-thread sample clock disagrees with task CPU in {directory}')
+        if groups[('build', 'no-js-frame')]['buckets']['JavaScript self']:
+            raise SystemExit('JavaScript self sample classified without a JavaScript frame')
         output = {'repeat': directory.name, 'metrics': m, 'parsedSamples': all_count, 'groups': {}}
         for (phase, side), g in groups.items():
             (directory / f'{phase}-{side}.folded').write_text(''.join(f'{s} {count}\n' for s, count in g['stacks'].items()))
