@@ -57,7 +57,7 @@ async function main(){
   fs.writeFileSync(path.join(fixture,'index.jsx'),entry());
   fs.writeFileSync(path.join(fixture,'public/index.html'),'<!doctype html><html><body><script src="/main.js"></script></body></html>');
   let progressEvents=0;
-  const compiler=rspack({context:fixture,mode:'development',target:'web',devtool:false,entry:'./index.jsx',cache:true,resolve:{modules:[path.join(root,'toolchain/node_modules')]},output:{path:path.join(root,'hmr-output'),filename:'main.js',publicPath:'/'},optimization:{moduleIds:'compact-hashed',chunkIds:'named',minimize:false,concatenateModules:false},plugins:[new rspack.ProgressPlugin(()=>{progressEvents++;})],module:{rules:[{test:/\.jsx$/,use:{loader:'builtin:swc-loader',options:{jsc:{target:'es2020',parser:{syntax:'ecmascript',jsx:true},transform:{react:{runtime:'automatic',development:true}}}}}}]},watchOptions:{aggregateTimeout:150},infrastructureLogging:{level:'error'}});
+  const compiler=rspack({context:fixture,mode:'development',target:'web',devtool:false,entry:'./index.jsx',cache:true,resolve:{modules:[path.join(root,'toolchain/node_modules'),'node_modules']},output:{path:path.join(root,'hmr-output'),filename:'main.js',publicPath:'/'},optimization:{moduleIds:'compact-hashed',chunkIds:'named',minimize:false,concatenateModules:false},plugins:[new rspack.ProgressPlugin(()=>{progressEvents++;})],module:{rules:[{test:/\.jsx$/,use:{loader:'builtin:swc-loader',options:{jsc:{target:'es2020',parser:{syntax:'ecmascript',jsx:true},transform:{react:{runtime:'automatic',development:true}}}}}}]},watchOptions:{aggregateTimeout:150},infrastructureLogging:{level:'error'}});
   let start=0,waiter=null;
   const completed=[];
   const summaries=[];
@@ -84,7 +84,7 @@ async function main(){
     if(new Set(ids.values()).size!==ids.size)throw Error('Duplicate module IDs');
     const generated=modules.filter(m=>m.codeGenerated);
     const assets=item.stats.compilation.getAssets().map(a=>a.name);
-    const record={label,elapsedMs:item.elapsedMs,modules:modules.length,codeGenerated:generated.length,processedFixtureModules:generated.filter(m=>m.identifier.startsWith(fixture)).map(m=>m.name),assets,hash:item.stats.hash,progressEvents};
+    const record={label,elapsedMs:item.elapsedMs,modules:modules.length,codeGenerated:generated.length,processedFixtureModules:generated.filter(m=>m.identifier.split('!').pop().startsWith(fixture)).map(m=>m.name),assets,hash:item.stats.hash,progressEvents};
     summaries.push(record);
     fs.writeFileSync(path.join(data,`hmr-${arm}-${label}-ids.json`),JSON.stringify([...ids]));
     return {record,ids,generated};
@@ -113,7 +113,7 @@ async function main(){
     if(progressEvents<=beforeProgress)throw Error('ProgressPlugin did not run on content edit');
     if(arm==='pr'){
       const allowed=new Set([path.join(fixture,'index.jsx'),path.join(fixture,'src',file(0)),path.join(fixture,'src',file(0))+'?variant']);
-      if(content.generated.length<2||content.generated.some(m=>!allowed.has(m.identifier)))throw Error('Content edit processed unrelated codegen modules');
+      if(content.generated.length<2||content.generated.some(m=>!allowed.has(m.identifier.split('!').pop())))throw Error('Content edit processed unrelated codegen modules');
     }else if(content.generated.length<19005)throw Error('Base did not exercise global codegen processing');
     async function manifests(snap){
       const names=snap.record.assets.filter(n=>n.endsWith('.hot-update.json'));
