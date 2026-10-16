@@ -27,10 +27,7 @@ jobs:
           lscpu
           df -h "$ROOT"
           PKG=@rspack-canary/core
-          if ! VER=$(npm view "$PKG@latest" version); then
-            PKG=@rspack/core
-            VER=$(npm view "$PKG@latest" version)
-          fi
+          VER=2.2.10-canary-96dcd72d-20261016173339
           echo "CORE_PACKAGE=$PKG" >> "$GITHUB_ENV"
           printf 'Selected %s@%s\n' "$PKG" "$VER"
           npm view "$PKG@$VER" version gitHead dist --json > "$ROOT/data/package-metadata.json"
@@ -44,6 +41,7 @@ jobs:
           set -euo pipefail
           ROOT="$GITHUB_WORKSPACE/bench/module-id-study"
           export TMPDIR="$ROOT/tmp"
+          SOURCE_COUNT=100 TRIALS=1 BENCH_TAG=probe node "$ROOT/benchmark.cjs" > "$ROOT/data/probe-run.log" 2>&1
           /usr/bin/time -v node "$ROOT/benchmark.cjs" > "$ROOT/data/plain-run.log" 2>&1
           python3 "$ROOT/summarize.py" | tee "$ROOT/data/summary-plain.md"
       - name: Eval devtool sensitivity, one block
@@ -59,7 +57,7 @@ jobs:
         shell: bash
         run: |
           ROOT="$GITHUB_WORKSPACE/bench/module-id-study"
-          for FILE in "$ROOT/data/package-metadata.json" "$ROOT/data/dependency-tree.json" "$ROOT/data/plain-run.log" "$ROOT/data/eval-run.log" "$ROOT/data/plain/sample-logging.json"; do
+          for FILE in "$ROOT/data/package-metadata.json" "$ROOT/data/dependency-tree.json" "$ROOT/data/probe-run.log" "$ROOT/data/plain-run.log" "$ROOT/data/eval-run.log" "$ROOT/data/plain/sample-logging.json"; do
             if [ -f "$FILE" ]; then
               printf '\n===== %s =====\n' "${FILE#"$GITHUB_WORKSPACE/"}"
               head -c 20000000 "$FILE"

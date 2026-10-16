@@ -11,7 +11,7 @@ const trials = Number(process.env.TRIALS || 5);
 const count = Number(process.env.SOURCE_COUNT || 10000);
 const variants = Math.floor(count * 0.9);
 const devtool = process.env.DEVTOOL === 'eval' ? 'eval' : false;
-const tag = devtool || 'plain';
+const tag = process.env.BENCH_TAG || devtool || 'plain';
 const dataDir = path.join(root, 'data', tag);
 fs.mkdirSync(dataDir, { recursive: true });
 const allRows = [];
@@ -81,6 +81,19 @@ async function run(arm, trial) {
     module: { rules: [{ test: /\.jsx$/, use: { loader: 'builtin:swc-loader', options: { jsc: { target: 'es2020', parser: { syntax: 'ecmascript', jsx: true }, transform: { react: { runtime: 'automatic', development: true } } } } } }] },
     infrastructureLogging: { level: 'error' },
   });
+  // Use the public watchFileSystem interface, but supply one explicit change
+  // notification per edit. This avoids treating duplicate native fs events as
+  // separate benchmark scenarios. Compilation itself still runs in watch mode.
+  let notify = null;
+  compiler.watchFileSystem = {
+    watch(_files, _dirs, _missing, _start, _options, callback) {
+      notify = callback;
+      return {
+        close() {}, pause() {},
+        getInfo() { return { changes: new Set(), removals: new Set(), fileTimeInfoEntries: new Map(), contextTimeInfoEntries: new Map() }; },
+      };
+    },
+  };
   let start = 0;
   compiler.hooks.watchRun.tap('ScratchBenchmarkClock', () => { start = performance.now(); });
   let previous = null, initial = null, step = 0, watching;
@@ -115,6 +128,8 @@ async function run(arm, trial) {
           throw new Error('Duplicate module IDs: ' + JSON.stringify([...buckets].filter(([, items]) => items.length > 1).slice(0, 8)));
         }
         if (step === 0 && ids.size < count + variants) throw new Error(`Incomplete module stats: ${ids.size}`);
+        const expectedIds = initial ? initial.size + (step === 7 ? 10 : step === 8 ? 1010 : step === 9 ? 1011 : 0) : ids.size;
+        if (ids.size !== expectedIds) throw new Error(`Wrong topology for ${names[step]}: expected ${expectedIds}, got ${ids.size}`);
         const changed = previous ? [...previous].filter(([key, id]) => ids.has(key) && ids.get(key) !== id) : [];
         const common = previous ? [...previous.keys()].filter(key => ids.has(key)).length : 0;
         const changedInitial = initial ? [...initial].filter(([key, id]) => ids.has(key) && ids.get(key) !== id) : [];
@@ -135,20 +150,25 @@ async function run(arm, trial) {
         previous = ids;
         step++;
         if (step === names.length) return finish();
-        setTimeout(() => {
+        setImmediate(() => {
           try {
+            const changed = new Set();
+            function write(filename, contents) { fs.writeFileSync(filename, contents); changed.add(filename); }
             if (step <= 6) {
-              fs.writeFileSync(path.join(fixture, 'src', file(0)), component(0, step));
+              write(path.join(fixture, 'src', file(0)), component(0, step));
             } else if (step === 9) {
-              fs.writeFileSync(path.join(fixture, 'leaves', 'Inserted.js'), 'export default 99999;\n');
-              fs.writeFileSync(path.join(fixture, 'index.jsx'), "import Inserted from './leaves/Inserted.js';\n" + entrySource(1010) + '\nglobalThis.components.push(Inserted);\n');
+              write(path.join(fixture, 'leaves', 'Inserted.js'), 'export default 99999;\n');
+              write(path.join(fixture, 'index.jsx'), "import Inserted from './leaves/Inserted.js';\n" + entrySource(1010) + '\nglobalThis.components.push(Inserted);\n');
             } else {
               const extra = step === 7 ? 10 : 1010;
-              for (let i = 0; i < extra; i++) fs.writeFileSync(path.join(fixture, 'leaves', `Leaf${i}.js`), `export default ${i};\n`);
-              fs.writeFileSync(path.join(fixture, 'index.jsx'), entrySource(extra));
+              for (let i = step === 7 ? 0 : 10; i < extra; i++) write(path.join(fixture, 'leaves', `Leaf${i}.js`), `export default ${i};\n`);
+              write(path.join(fixture, 'index.jsx'), entrySource(extra));
             }
+            if (!notify) throw new Error('Watch callback was not registered');
+            compiler.inputFileSystem.purge([...changed]);
+            notify(null, new Map(), new Map(), changed, new Set());
           } catch (e) { finish(e); }
-        }, 100);
+        });
       } catch (e) { finish(e); }
     });
   });

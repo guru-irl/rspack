@@ -2,6 +2,7 @@ import collections
 import json
 import pathlib
 import random
+import re
 import statistics
 
 root = pathlib.Path(__file__).parent
@@ -39,6 +40,21 @@ for tag in ['plain', 'eval']:
             if not group:
                 continue
             emit(f"| {arm} | {scenario} | {len(group)} | {median(group,'elapsedMs'):.2f} [{min(r['elapsedMs'] for r in group):.2f},{max(r['elapsedMs'] for r in group):.2f}] | {median(group,'statsTimeMs'):.1f} | {median(group,'idModules'):g} | {median(group,'codeGenerated'):g} | {median(group,'changedExisting'):g}/{median(group,'commonExisting'):g} | {median(group,'totalJsBytes'):g} |")
+    emit('\n### Median pass times, ms')
+    emit('| Arm | Scenario | Module IDs | Module hashes | Codegen | Runtime requirements |')
+    emit('| --- | --- | ---: | ---: | ---: | ---: |')
+    for arm in arms:
+        for scenario in ['content', 'add10', 'add1000']:
+            group = [r for r in rows if r['arm'] == arm and (r['scenario'].startswith('content-') if scenario == 'content' else r['scenario'] == scenario)]
+            cells = []
+            for name in ['module ids', 'create module hashes', 'code generation', 'runtime requirements']:
+                values = []
+                for row in group:
+                    message = passes(row).get(name, '')
+                    match = re.search(r': ([0-9.]+) ms$', message)
+                    if match: values.append(float(match[1]))
+                cells.append(f'{statistics.median(values):.3f}' if values else 'N/A')
+            emit('| ' + arm + ' | ' + scenario + ' | ' + ' | '.join(cells) + ' |')
     emit('\n### Initial reference bytes')
     emit('| Arm | Require references | Token bytes/reference | Raw ID bytes/reference | Initial JS bytes | Relative to deterministic |')
     emit('| --- | ---: | ---: | ---: | ---: | ---: |')
