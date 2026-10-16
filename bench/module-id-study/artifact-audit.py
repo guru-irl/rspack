@@ -8,10 +8,10 @@ import statistics
 import zipfile
 
 repo = 'guru-irl/rspack'
-runs = [38944519067, 38944711948, 38944867155, 38945918425, 38946089938, 38947282645]
+runs = [38944519067, 38944711948, 38944867155, 38945918425, 38946089938, 38947282645, 38947545550]
 base = '96dcd72db4d25a89c37d22d514285ab82fc46a3d'
 allowed_files = {'.github/workflows/module-id-study.yml', 'bench/module-id-study/benchmark.cjs', 'bench/module-id-study/summarize.py', 'bench/module-id-study/artifact-audit.py'}
-allowed_hosts = {'api.github.com', 'github.com', 'registry.npmjs.org', 'npmjs.org', 'www.npmjs.com', 'npmjs.com', 'rspack.dev', 'react.dev', 'nodejs.org', 'docs.github.com', 'help.github.com', 'opensource.org', 'www.opensource.org', 'opencollective.com', 'git.io', 'support.github.com', 'npm.im', 'docs.npmjs.com', 'developer.github.com', 'aka.ms', 'securitylab.github.com', 'github.blog'}
+allowed_hosts = {'api.github.com', 'github.com', 'registry.npmjs.org', 'npmjs.org', 'www.npmjs.com', 'npmjs.com', 'rspack.dev', 'rspack.rs', 'slsa.dev', 'react.dev', 'nodejs.org', 'docs.github.com', 'help.github.com', 'opensource.org', 'www.opensource.org', 'opencollective.com', 'git.io', 'support.github.com', 'npm.im', 'docs.npmjs.com', 'developer.github.com', 'aka.ms', 'securitylab.github.com', 'github.blog'}
 manifest, findings, measurement_rows = [], [], []
 
 def gh(endpoint):
