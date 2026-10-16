@@ -19,7 +19,7 @@ jobs:
         run: |
           mkdir -p bench-data/temp
           gh run download 38963607468 --name v229-symbolized-pack --dir bench-data
-          grep -E 'JsLoaderContext|ModuleObject' bench-data/results/symbols.txt | cut -c1-1200 | head -30 || true
-          grep -E 'to_napi_value|from_napi_value' bench-data/results/symbols.txt | cut -c1-800 | head -20 || true
+          grep -E ' [tT] <rspack_binding_api::(plugins::js_loader::context::JsLoaderContext|module::ModuleObject)' bench-data/results/symbols.txt || true
+          grep -E 'JsLoaderContext|ModuleObject' bench-data/results/symbols.txt | grep -E 'to_napi_value|from_napi_value|call_js_cb' | cut -c1-1600 || true
           nm --defined-only bench-data/pack/rspack.linux-x64-gnu.node | head -8 || true
           readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -5
