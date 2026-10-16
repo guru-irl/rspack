@@ -1,0 +1,78 @@
+name: Loader Result Readback Memory
+on:
+  push:
+    branches: ['bench/loader-result-readback-xplat']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  memory:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            binding: rspack.darwin-arm64.node
+            cache: aarch64-apple-darwin-ci
+          - runner: windows-2025
+            binding: rspack.win32-x64-msvc.node
+            cache: x86_64-pc-windows-msvc-ci
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 190
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+      BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
+      PR: 639df2f645e037ddfbf788c5f099dc1553785249
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Scratch directory and binding path
+        run: |
+          mkdir -p bench-data/temp bench-data/results bench-data/bindings
+          echo "BINDING_PATH=$GITHUB_WORKSPACE/crates/node_binding/${{ matrix.binding }}" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
+      - uses: ./.github/actions/rustup
+        with:
+          key: ${{ matrix.cache }}
+          save-if: true
+      - name: Environment
+        run: |
+          { node --version; uname -a; node -e 'const os=require("node:os"); console.log(JSON.stringify({cpus:os.cpus(),ram:os.totalmem(),arch:os.arch()}))'; rustc -Vv; git rev-parse HEAD; } | tee bench-data/results/environment.txt
+      - name: Build both bindings with identical settings
+        run: |
+          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
+          cargo codegen
+          pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
+          cp "$BINDING_PATH" bench-data/bindings/base.node
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
+          pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
+          cp "$BINDING_PATH" bench-data/bindings/pr.node
+          git diff --exit-code "$BASE" -- crates/node_binding/napi-binding.d.ts
+      - name: Existing loader cases
+        run: pnpm --dir tests/rspack-test run test --project base -t loader 2>&1 | tee bench-data/results/pr-loaders.log
+      - name: Generate unchanged native-study fixture
+        run: node scripts/program-native/prepare.mjs bench-data/fixture
+      - name: Two warmups and ten alternating pairs
+        run: node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
+      - name: Summarize
+        run: |
+          python scripts/loader-result-readback/summary.py
+          cat bench-data/results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-result-readback-${{ matrix.runner }}
+          path: bench-data/results/
+          compression-level: 1
