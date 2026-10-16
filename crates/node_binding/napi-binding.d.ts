@@ -1005,6 +1005,20 @@ export interface JsLoaderContext {
   __internal__loaderCache?: JsLoaderCache | undefined
 }
 
+export interface JsLoaderContextResult {
+  content: string | Buffer | null
+  additionalData?: any
+  __internal__parseMeta: Record<string, string>
+  sourceMap?: Buffer
+  cacheable: boolean
+  dependencies: JsLoaderDependencies
+  addedDependencies: JsLoaderDependencies
+  removedDependencies: JsLoaderDependencies
+  loaderItems: Array<JsLoaderItemResult>
+  loaderIndex: number
+  __internal__error?: RspackError
+}
+
 export interface JsLoaderDependencies {
   fileDependencies: Array<string>
   contextDependencies: Array<string>
@@ -1016,6 +1030,13 @@ export interface JsLoaderItem {
   loader: string
   type: string
   cache: boolean
+  data: any
+  normalExecuted: boolean
+  pitchExecuted: boolean
+  noPitch: boolean
+}
+
+export interface JsLoaderItemResult {
   data: any
   normalExecuted: boolean
   pitchExecuted: boolean
