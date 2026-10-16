@@ -22,8 +22,8 @@ jobs:
           cat bench-data/results/binary-verification.json
           cat bench-data/results/overhead.json
           grep -E 'JsLoaderContext|call_js_cb|_RN' bench-data/results/smoke.perf.script | head -6 | cut -c1-1200 || true
-          c++filt -s rust < bench-data/results/smoke.perf.script > bench-data/results/smoke.demangled.perf.script
-          c++filt -s rust < bench-data/results/smoke.main-inclusive.report > bench-data/results/smoke.main-inclusive.demangled.report
+          c++filt --no-verbose -s rust < bench-data/results/smoke.perf.script > bench-data/results/smoke.demangled.perf.script
+          c++filt --no-verbose -s rust < bench-data/results/smoke.main-inclusive.report > bench-data/results/smoke.main-inclusive.demangled.report
           grep -E 'JsLoaderContext|call_js_cb' bench-data/results/smoke.demangled.perf.script | head -6 | cut -c1-1200 || true
       - name: Diagnose native frame export
         run: |
