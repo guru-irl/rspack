@@ -1,8 +1,5 @@
 name: Compact hashed evidence
 on:
-  push:
-    branches: [bench/compact-hashed-evidence-20261016]
-    paths: [.github/workflows/compact-hashed-evidence.yml, bench/module-id-evidence/**]
   workflow_dispatch:
 permissions:
   contents: read

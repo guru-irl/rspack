@@ -1,0 +1,49 @@
+name: Compact hashed dev server evidence
+on:
+  push:
+    branches: [bench/compact-hashed-evidence-20261016]
+    paths: [.github/workflows/compact-hashed-evidence-hmr.yml, bench/module-id-evidence/hmr.cjs]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  hmr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      npm_config_registry: https://registry.npmjs.org
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/bench/module-id-evidence/browsers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Durable scratch
+        run: |
+          set -euo pipefail
+          mkdir -p bench/module-id-evidence/tmp bench/module-id-evidence/data bench/module-id-evidence/toolchain
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench/module-id-evidence/tmp" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/pnpm/setup
+      - name: Prepare matching JavaScript and browser
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          gh run download 38967996933 --repo guru-irl/rspack --name compact-hashed-evidence-linux-bindings --dir bench/module-id-evidence/build
+          cp bench/module-id-evidence/build/pr/rspack.linux-x64-gnu.node crates/node_binding/
+          pnpm run build:js
+          printf '{"private":true}\n' > bench/module-id-evidence/toolchain/package.json
+          npm install --prefix bench/module-id-evidence/toolchain --no-audit --no-fund react@19.2.0 playwright@1.56.1
+          node bench/module-id-evidence/toolchain/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Exercise real HMR path with native identity checks
+        run: |
+          set -euo pipefail
+          node --check bench/module-id-evidence/hmr.cjs
+          node bench/module-id-evidence/hmr.cjs 2>&1 | tee bench/module-id-evidence/data/hmr.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compact-hashed-dev-server-results
+          path: bench/module-id-evidence/data/
+          retention-days: 7

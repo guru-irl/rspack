@@ -62,11 +62,13 @@ async function main(){
   const completed=[];
   const summaries=[];
   const fatalErrors=[];
-  compiler.hooks.watchRun.tap('EvidenceClock',()=>{start=performance.now();});
+  compiler.hooks.invalid.tap('EvidenceTrace',filename=>console.log(JSON.stringify({event:'invalid',filename})));
+  compiler.hooks.watchRun.tap('EvidenceClock',()=>{start=performance.now();console.log(JSON.stringify({event:'watchRun',modified:[...(compiler.modifiedFiles||[])],removed:[...(compiler.removedFiles||[])]}));});
   compiler.hooks.done.tap('EvidenceStats',stats=>{
     const elapsedMs=performance.now()-start;
     if(stats.hasErrors()){const e=Error(stats.toString({all:false,errors:true}));fatalErrors.push(e);if(waiter){waiter.reject(e);waiter=null;}return;}
     const item={stats,elapsedMs};completed.push(item);
+    console.log(JSON.stringify({event:'done',number:completed.length,hash:stats.hash,elapsedMs,modified:[...(compiler.modifiedFiles||[])],removed:[...(compiler.removedFiles||[])]}));
     if(waiter){waiter.resolve(item);waiter=null;}
   });
   function nextCompilation(){
