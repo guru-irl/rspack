@@ -24,7 +24,7 @@ jobs:
           mkdir -p bench/module-id-incremental/toolchain
           printf '{"private":true}\n' > bench/module-id-incremental/toolchain/package.json
           npm install --prefix bench/module-id-incremental/toolchain --no-audit --no-fund @rspack-canary/core@2.2.10-canary-96dcd72d-20261016173339 react@19.2.0
-          cp bench/module-id-incremental/toolchain/node_modules/@rspack-canary/binding-linux-x64-gnu/rspack.linux-x64-gnu.node crates/node_binding/
+          cp bench/module-id-incremental/toolchain/node_modules/@rspack/binding-linux-x64-gnu/rspack.linux-x64-gnu.node crates/node_binding/
           pnpm run build:js
       - name: Select a literal collision fixture
         working-directory: tests/rspack-test
