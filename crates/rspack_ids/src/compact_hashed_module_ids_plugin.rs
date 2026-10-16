@@ -49,30 +49,36 @@ async fn module_ids(
   preserved_module_ids: &ModuleIdsArtifact,
   diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<()> {
+  validate_min_length(
+    self.min_length,
+    FULL_IDENTIFIER_LENGTH,
+    "CompactHashedModuleIdsPlugin",
+  )?;
+
+  let mut removed_ids = vec![];
   if let Some(mutations) = compilation
     .incremental
     .mutations_read(IncrementalPasses::MODULE_IDS)
   {
     for mutation in mutations.iter() {
-      if let Mutation::ModuleRemove { module } = mutation {
-        module_ids.remove(module);
+      if let Mutation::ModuleRemove { module } = mutation
+        && let Some(id) = module_ids.remove(module)
+      {
+        removed_ids.push(id);
       }
     }
   }
 
   let (mut used_ids, mut modules) =
     get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
-  let module_ids_hook = &compilation.plugin_driver.compilation_hooks.module_ids;
   let retain_ids = compilation
     .incremental
     .mutations_readable(IncrementalPasses::MODULE_IDS)
     && !module_ids.is_empty()
-    // Hook assignments have already been merged and reported as ModuleSetId.
-    // A duplicate reservation can steal a retained module's id, requiring global reassignment.
-    && used_ids.len() == module_ids.len()
-    // Another moduleIds tap or interceptor could overwrite reservations after this plugin.
-    && module_ids_hook.tap_stages().len() == 1
-    && module_ids_hook.interceptor_count() == 0;
+    // Equal counts mean every retained id belongs to a live module that needs one
+    // and no id is shared. Duplicates and stale entries only shrink used_ids,
+    // so they cannot cancel out.
+    && used_ids.len() == module_ids.len();
 
   if !retain_ids
     && let Some(diagnostic) = compilation.incremental.disable_passes(
@@ -89,11 +95,10 @@ async fn module_ids(
       get_used_module_ids_and_modules_with_artifact(compilation, module_ids, None);
   }
 
-  validate_min_length(
-    self.min_length,
-    FULL_IDENTIFIER_LENGTH,
-    "CompactHashedModuleIdsPlugin",
-  )?;
+  if retain_ids {
+    // HMR must see removed modules as removals, not updates of new modules.
+    used_ids.extend(removed_ids.into_iter().map(|id| id.to_string()));
+  }
 
   let mut module_ids_map = std::mem::take(module_ids);
   let context = compilation.options.context.as_ref();
