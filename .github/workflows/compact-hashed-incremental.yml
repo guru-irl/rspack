@@ -5,9 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   baseline:
-    if: ${{ !contains(github.event.head_commit.message, '[red]') }}
+    if: ${{ contains(github.event.head_commit.message, '[baseline]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -100,10 +101,67 @@ jobs:
           rc=$?
           tail -130 bench/module-id-incremental/data/red.log
           test "$rc" -ne 0
-          grep -q 'AssertionError' bench/module-id-incremental/data/red.log
+          grep -Fq "to deeply equal [ './edited.js' ]" bench/module-id-incremental/data/red.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: compact-hashed-red
+          path: bench/module-id-incremental/data/
+          retention-days: 7
+  compare:
+    if: ${{ contains(github.event.head_commit.message, '[measure]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TMPDIR: ${{ github.workspace }}/bench/module-id-incremental/tmp
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 4
+      npm_config_registry: https://registry.npmjs.org
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: mkdir -p "$TMPDIR" bench/module-id-incremental/data bench/module-id-incremental/treatment
+      - uses: ./.github/actions/pnpm/setup
+      - name: Fetch matching optimized main baseline
+        run: gh run download 38949675325 --repo guru-irl/rspack --name compact-hashed-main-baseline --dir bench/module-id-incremental
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: compact-hashed-incremental-linux-ci
+          save-if: true
+      - name: Build matching optimized treatment and JS
+        run: |
+          pnpm run build:binding:ci > bench/module-id-incremental/data/build-branch.log 2>&1
+          tail -35 bench/module-id-incremental/data/build-branch.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node bench/module-id-incremental/treatment/
+          git rev-parse HEAD > bench/module-id-incremental/treatment/source.txt
+          pnpm run build:js
+          mkdir -p bench/module-id-incremental/toolchain
+          printf '{"private":true}\n' > bench/module-id-incremental/toolchain/package.json
+          npm install --prefix bench/module-id-incremental/toolchain --no-audit --no-fund react@19.2.0
+      - name: Check contracts and focused watch regression
+        run: |
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-incremental"
+          ARM_LABEL=main NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/baseline/rspack.linux-x64-gnu.node" node "$ROOT/check-contracts.cjs" | tee "$ROOT/data/main-contracts.log"
+          ARM_LABEL=branch NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/treatment/rspack.linux-x64-gnu.node" node "$ROOT/check-contracts.cjs" | tee "$ROOT/data/branch-contracts.log"
+          pnpm --dir tests/rspack-test run test --project base -t 'watchCases/module-ids/compact-hashed-incremental' > "$ROOT/data/green.log" 2>&1
+          tail -45 "$ROOT/data/green.log"
+      - name: Small fixture topology probe
+        run: |
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-incremental"
+          ARM_LABEL=branch MODULE_IDS=compact-hashed TRIALS=1 SOURCE_COUNT=100 BENCH_TAG=probe NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/treatment/rspack.linux-x64-gnu.node" node --expose-gc "$ROOT/benchmark.cjs" > "$ROOT/data/probe.log" 2>&1
+      - name: Measure rotated synthetic watch blocks
+        run: bash bench/module-id-incremental/run-comparison.sh
+      - name: Report concise raw evidence
+        if: always()
+        run: |
+          ROOT="$GITHUB_WORKSPACE/bench/module-id-incremental"
+          for file in build-branch.log green.log main-contracts.log branch-contracts.log summary.md; do
+            if test -f "$ROOT/data/$file"; then echo "===== $file ====="; tail -60 "$ROOT/data/$file"; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compact-hashed-incremental-results
           path: bench/module-id-incremental/data/
           retention-days: 7
