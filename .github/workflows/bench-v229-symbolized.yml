@@ -1,0 +1,211 @@
+name: Symbolized 2.2.9 GNU Binding
+on:
+  push:
+    branches: ['bench/v2.2.9-symbolized-gnu']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: v229-symbolized-gnu
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_RELEASE_DEBUG: '1'
+      CARGO_PROFILE_RELEASE_STRIP: 'none'
+      RUSTFLAGS: '-Zshare-generics=y -Zthreads=8 -Csymbol-mangling-version=v0 -Zlocation-detail=none -Cforce-unwind-tables=no -Cforce-frame-pointers=yes -Cdebuginfo=1'
+      CC: clang
+      CXX: clang++
+      CFLAGS: '-fno-omit-frame-pointer'
+      CXXFLAGS: '-fno-omit-frame-pointer'
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Scratch directory
+        run: mkdir -p bench-data/temp bench-data/results bench-data/pack
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: v229-symbolized-release
+          use-cache: false
+      - name: Free disk space
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Build release with symbols and rebuilt standard library
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 428b70684309de4068e32baf81d28194441dd64e
+          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e -- crates Cargo.toml Cargo.lock
+          rustup component add rust-src
+          { date -u; rustc -Vv; cargo -V; clang --version; ldd --version; uname -a; lscpu; df -h .; env | sort | grep -E '^(RUSTFLAGS|CARGO_PROFILE_RELEASE|CARGO_BUILD_JOBS|CFLAGS|CXXFLAGS|CC=|CXX=)'; } > bench-data/results/environment.txt
+          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          START=$(date +%s)
+          cargo build --locked --release --target x86_64-unknown-linux-gnu -p rspack_node --no-default-features --features plugin,info-level -Zbuild-std=panic_abort,std 2>&1 | tee bench-data/results/build.log
+          echo "build_seconds=$(( $(date +%s) - START ))" | tee bench-data/results/build-time.txt
+          cp target/x86_64-unknown-linux-gnu/release/librspack_node.so bench-data/pack/rspack.linux-x64-gnu.node
+          file bench-data/pack/rspack.linux-x64-gnu.node | tee bench-data/results/file.txt
+          readelf -SW bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/sections.txt
+          readelf -n bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/notes.txt
+          readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/versions.txt
+          nm -C --defined-only bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/symbols.txt
+          wc -l bench-data/results/symbols.txt | tee bench-data/results/symbol-count.txt
+          python3 - <<'PY'
+          import json, pathlib, re, subprocess
+          root = pathlib.Path('bench-data/results')
+          lines = (root/'symbols.txt').read_text().splitlines()
+          targets = {
+            'context_to': r'^<rspack_binding_api::plugins::js_loader::context::JsLoaderContext as .*ToNapiValue>::to_napi_value',
+            'context_from': r'^<rspack_binding_api::plugins::js_loader::context::JsLoaderContext as .*FromNapiValue>::from_napi_value',
+            'module_to': r'^<rspack_binding_api::module::ModuleObject as .*ToNapiValue>::to_napi_value',
+            'callback': r'^napi::threadsafe_function::call_js_cb<.*JsLoaderContext',
+          }
+          selected = {}
+          for key, pattern in targets.items():
+            found = [line.split(maxsplit=2) for line in lines if len(line.split(maxsplit=2)) == 3 and re.search(pattern, line.split(maxsplit=2)[2])]
+            assert found, (key, 'missing symbol')
+            address, kind, name = found[0]
+            dis = subprocess.check_output(['objdump','-d','--start-address='+str(int(address,16)), '--stop-address='+str(int(address,16)+48), 'bench-data/pack/rspack.linux-x64-gnu.node'], text=True)
+            (root/(key+'-prologue.txt')).write_text(name+'\n'+dis)
+            assert re.search(r'push\s+%rbp', dis) and re.search(r'mov\s+%rsp,%rbp', dis), (key, dis)
+            selected[key] = {'address': address, 'name': name, 'frame_pointer': True}
+          (root/'selected-symbols.json').write_text(json.dumps(selected, indent=2)+'\n')
+          print(json.dumps(selected, indent=2))
+          PY
+      - name: Preserve native binary before smoke verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: v229-symbolized-native
+          path: bench-data/pack/rspack.linux-x64-gnu.node
+          compression-level: 1
+      - name: Package GNU replacement and build B core
+        run: |
+          set -euo pipefail
+          npm pack @rspack/binding-linux-x64-gnu@2.2.9 --pack-destination bench-data --ignore-scripts
+          echo '11e6a686ef2756332fe6d29acc4f8c2c8c2bf2c59ea593e2381d9a52b0121d89  bench-data/rspack-binding-linux-x64-gnu-2.2.9.tgz' | sha256sum -c -
+          mkdir -p bench-data/official bench-data/replacement
+          tar xzf bench-data/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/official
+          cp -a bench-data/official/package bench-data/replacement/package
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/replacement/package/rspack.linux-x64-gnu.node
+          tar czf bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/replacement package
+          git fetch origin 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
+          git checkout --detach 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
+          test "$(git rev-parse HEAD)" = 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
+          pnpm --filter @rspack/core build
+          git diff --exit-code
+          git rev-parse HEAD > bench-data/results/core-source.txt
+          (cd bench-data/pack && sha256sum *.node *.tgz > SHA256SUMS)
+      - name: Install perf
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          PERF=$(find -L /usr/lib/linux-tools -name perf -type f | sort -V | tail -1)
+          test -n "$PERF"
+          echo "PERF=$PERF" >> "$GITHUB_ENV"
+          sudo sysctl kernel.perf_event_paranoid=-1
+          sudo sysctl kernel.kptr_restrict=0
+          "$PERF" version | tee bench-data/results/perf-version.txt
+      - name: Generate JS-loader fixture
+        run: |
+          cat > bench-data/prepare.cjs <<'JS'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = path.resolve('bench-data/fixture');
+          fs.mkdirSync(path.join(root, 'src'), {recursive:true});
+          const count = 24000;
+          const entries = [];
+          for (let i=0;i<count;i++) {
+            fs.writeFileSync(path.join(root,'src',`m${i}.js`), `module.exports = ${i};\n`);
+            entries.push(`require('./m${i}.js')`);
+          }
+          fs.writeFileSync(path.join(root,'src','index.js'), `module.exports = [${entries.join(',')}].reduce((a,b)=>a+b,0);\n`);
+          fs.writeFileSync(path.join(root,'loader.cjs'), `module.exports = function(source) { global.__loaderCalls = (global.__loaderCalls || 0)+1; this.cacheable(true); this.callback(null, source); };\n`);
+          JS
+          node bench-data/prepare.cjs
+          cat > bench-data/run.cjs <<'JS'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const assert = require('node:assert/strict');
+          const {performance} = require('node:perf_hooks');
+          const core = require('../packages/rspack/dist/index.js');
+          const label = process.argv[2];
+          const root = path.resolve('bench-data/fixture');
+          const out = path.resolve('bench-data/output-'+label);
+          const started = performance.now();
+          const compiler = core.rspack({context:root, mode:'development', target:'node', cache:false, devtool:false,
+            entry:'./src/index.js', output:{path:out,filename:'main.js',library:{type:'commonjs2'}},
+            optimization:{minimize:false,concatenateModules:false,moduleIds:'deterministic',chunkIds:'deterministic'},
+            module:{rules:[{test:/\.js$/,use:[path.join(root,'loader.cjs')]}]}});
+          compiler.run((err,stats)=>{
+            if(err) throw err;
+            assert(!stats.hasErrors(),stats.toString({all:false,errors:true}));
+            const elapsedMs=performance.now()-started;
+            assert.equal(global.__loaderCalls,24001);
+            assert.equal(require(path.join(out,'main.js')),23999*24000/2);
+            const maps=fs.readFileSync('/proc/self/maps','utf8').split('\n').filter(x=>x.includes('.node'));
+            assert(maps.some(x=>x.includes(fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH))));
+            const data={label,pid:process.pid,elapsedMs,loaderCalls:global.__loaderCalls,maps};
+            fs.writeFileSync(`bench-data/results/${label}.json`,JSON.stringify(data,null,2)+'\n');
+            console.log(JSON.stringify(data));
+            compiler.close(err=>{if(err) throw err;});
+          });
+          JS
+      - name: Output parity and n equals one wall overhead
+        run: |
+          set -euo pipefail
+          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/official/package/rspack.linux-x64-gnu.node" node bench-data/run.cjs official
+          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/pack/rspack.linux-x64-gnu.node" node bench-data/run.cjs symbolized
+          diff -r bench-data/output-official bench-data/output-symbolized
+          sha256sum bench-data/output-{official,symbolized}/main.js | tee bench-data/results/output-sha256.txt
+          python3 - <<'PY'
+          import json, pathlib
+          r=pathlib.Path('bench-data/results')
+          a=json.loads((r/'official.json').read_text())['elapsedMs']
+          b=json.loads((r/'symbolized.json').read_text())['elapsedMs']
+          result={'n':1,'official_ms':a,'symbolized_ms':b,'overhead_percent':100*(b/a-1),'output_identical':True}
+          (r/'overhead.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(result)
+          PY
+      - name: Frame pointer perf smoke and main thread assertions
+        run: |
+          set -euo pipefail
+          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/bench-data/pack/rspack.linux-x64-gnu.node" "$PERF" record -F 999 -g --call-graph fp -o bench-data/results/smoke.perf.data -- node bench-data/run.cjs perf
+          "$PERF" script --no-inline -i bench-data/results/smoke.perf.data -F comm,pid,tid,time,event,ip,sym,dso > bench-data/results/smoke.perf.script 2> bench-data/results/perf-script-stderr.txt
+          "$PERF" report --no-inline --stdio --no-children -i bench-data/results/smoke.perf.data --sort comm,dso,symbol > bench-data/results/smoke.perf.report 2> bench-data/results/perf-report-stderr.txt
+          python3 - <<'PY'
+          import json,pathlib,re
+          r=pathlib.Path('bench-data/results')
+          pid=json.loads((r/'perf.json').read_text())['pid']
+          blocks=re.split(r'\n\s*\n',(r/'smoke.perf.script').read_text())
+          main=[]
+          for b in blocks:
+            lines=b.splitlines()
+            if lines and re.search(r'\s'+str(pid)+r'\s*/\s*'+str(pid)+r'\s',lines[0]): main.append(b)
+          selected=json.loads((r/'selected-symbols.json').read_text())
+          targets={key:selected[key]['name'] for key in ('context_to','context_from','module_to')}
+          counts={key:sum(any(pattern in line and line.strip().split(maxsplit=1)[-1].startswith(pattern) for line in b.splitlines()[1:]) for b in main) for key,pattern in targets.items()}
+          examples={key:next((b for b in main if any(pattern in line and line.strip().split(maxsplit=1)[-1].startswith(pattern) for line in b.splitlines()[1:])),None) for key,pattern in targets.items()}
+          result={'pid':pid,'main_thread_samples':len(main),'inclusive_sample_counts':counts,'examples':examples}
+          (r/'perf-main-thread.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result,indent=2))
+          assert main, 'no tid == pid samples parsed'
+          assert all(counts.values()), counts
+          PY
+      - name: Preserve delivery and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: v229-symbolized-pack
+          path: |
+            bench-data/pack/
+            bench-data/results/
+            bench-data/prepare.cjs
+            bench-data/run.cjs
+          compression-level: 1
