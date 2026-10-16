@@ -1,0 +1,81 @@
+name: Compact hashed evidence builds
+on:
+  push:
+    branches: [bench/compact-hashed-evidence-20261016]
+    paths: [.github/workflows/compact-hashed-evidence-build.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            native: rspack.linux-x64-gnu.node
+          - runner: macos-latest
+            platform: macos
+            target: aarch64-apple-darwin
+            native: rspack.darwin-arm64.node
+          - runner: windows-latest
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            native: rspack.win32-x64-msvc.node
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 165
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+      RUST_TARGET: ${{ matrix.target }}
+      npm_config_registry: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Durable scratch and source identity
+        run: |
+          set -euo pipefail
+          mkdir -p bench/module-id-evidence/tmp bench/module-id-evidence/build/base bench/module-id-evidence/build/pr
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench/module-id-evidence/tmp" >> "$GITHUB_ENV"
+          test "$(git merge-base 57b7614aaca0f58b7667e370516c6ac1b1dffa56 96dcd72db4d25a89c37d22d514285ab82fc46a3d)" = 96dcd72db4d25a89c37d22d514285ab82fc46a3d
+          test "$(git diff --name-only 96dcd72db4 57b7614aac -- crates Cargo.toml Cargo.lock .cargo rust-toolchain.toml packages)" = crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs
+          git diff --exit-code 57b7614aac -- crates Cargo.toml Cargo.lock .cargo rust-toolchain.toml packages
+      - uses: ./.github/actions/pnpm/setup
+      - run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+      - uses: ./.github/actions/rustup
+        with:
+          key: ${{ matrix.target }}-ci
+          save-if: true
+      - name: Generate and build exact base native source
+        run: |
+          set -euo pipefail
+          cargo codegen
+          git show 96dcd72db4:crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs > crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs
+          git diff --exit-code 96dcd72db4 -- crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs
+          pnpm run build:binding:ci 2>&1 | tee bench/module-id-evidence/build/base/build.log
+          cp crates/node_binding/${{ matrix.native }} bench/module-id-evidence/build/base/
+          printf '%s\n' 96dcd72db4d25a89c37d22d514285ab82fc46a3d > bench/module-id-evidence/build/base/source.txt
+      - name: Build exact PR native source with identical flags
+        run: |
+          set -euo pipefail
+          git show 57b7614aac:crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs > crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs
+          git diff --exit-code 57b7614aac -- crates/rspack_ids/src/compact_hashed_module_ids_plugin.rs
+          pnpm run build:binding:ci 2>&1 | tee bench/module-id-evidence/build/pr/build.log
+          grep -q 'Compiling rspack_ids' bench/module-id-evidence/build/pr/build.log
+          cp crates/node_binding/${{ matrix.native }} bench/module-id-evidence/build/pr/
+          printf '%s\n' 57b7614aaca0f58b7667e370516c6ac1b1dffa56 > bench/module-id-evidence/build/pr/source.txt
+          node -e 'const fs=require("fs"),c=require("crypto"),p="bench/module-id-evidence/build/",n="${{ matrix.native }}",h=a=>c.createHash("sha256").update(fs.readFileSync(p+a+"/"+n)).digest("hex");const hashes={base:h("base"),pr:h("pr")};if(hashes.base===hashes.pr)throw Error("identical arms");fs.writeFileSync(p+"identity.json",JSON.stringify(hashes,null,2));console.log(hashes)'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compact-hashed-evidence-${{ matrix.platform }}-bindings
+          path: bench/module-id-evidence/build/
+          retention-days: 7
