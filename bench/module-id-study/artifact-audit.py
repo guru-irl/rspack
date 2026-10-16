@@ -4,14 +4,15 @@ import json
 import pathlib
 import re
 import subprocess
+import statistics
 import zipfile
 
 repo = 'guru-irl/rspack'
-runs = [38944519067, 38944711948, 38944867155, 38945918425, 38946089938]
+runs = [38944519067, 38944711948, 38944867155, 38945918425, 38946089938, 38947282645]
 base = '96dcd72db4d25a89c37d22d514285ab82fc46a3d'
 allowed_files = {'.github/workflows/module-id-study.yml', 'bench/module-id-study/benchmark.cjs', 'bench/module-id-study/summarize.py', 'bench/module-id-study/artifact-audit.py'}
 allowed_hosts = {'api.github.com', 'github.com', 'registry.npmjs.org', 'npmjs.org', 'www.npmjs.com', 'npmjs.com', 'rspack.dev', 'react.dev', 'nodejs.org', 'docs.github.com', 'help.github.com', 'opensource.org', 'www.opensource.org', 'opencollective.com', 'git.io', 'support.github.com', 'npm.im', 'docs.npmjs.com', 'developer.github.com', 'aka.ms', 'securitylab.github.com', 'github.blog'}
-manifest, findings = [], []
+manifest, findings, measurement_rows = [], [], []
 
 def gh(endpoint):
     return subprocess.check_output(['gh', 'api', endpoint])
@@ -59,7 +60,10 @@ for run in runs:
         with zipfile.ZipFile(io.BytesIO(archive)) as z:
             for name in z.namelist():
                 if not name.endswith('/'):
-                    scan(f'run:{run}:artifact:{artifact["id"]}:{name}', z.read(name))
+                    content = z.read(name)
+                    scan(f'run:{run}:artifact:{artifact["id"]}:{name}', content)
+                    if run == 38946089938 and name == 'plain/results.jsonl':
+                        measurement_rows = [json.loads(line) for line in content.decode().splitlines()]
 
 root = pathlib.Path(__file__).parent / 'data'
 root.mkdir(parents=True, exist_ok=True)
@@ -71,3 +75,14 @@ print('Provenance: checked-in benchmark files only, published npm packages, gene
 if findings:
     raise SystemExit('Audit requires manual review; potentially private values were not echoed')
 print('AUDIT PASS: all tracked changes are benchmark-only, and all captured home paths/URL hosts belong to the public runner or public services.')
+for arm in ['deterministic', 'named', 'hashed', 'compact-hashed']:
+    block_medians = [statistics.median(r['elapsedMs'] for r in measurement_rows if r['arm'] == arm and r['trial'] == trial and r['scenario'].startswith('content-')) for trial in range(5)]
+    print('CONTENT BLOCK MEDIANS:', arm, json.dumps(block_medians), 'median=', statistics.median(block_medians))
+    for scenario in ['initial', 'add10', 'add1000', 'insert-first']:
+        row = next(r for r in measurement_rows if r['arm'] == arm and r['trial'] == 0 and r['scenario'] == scenario)
+        print('ACCEPTED ROW:', json.dumps({k:v for k,v in row.items() if k not in ['logging', 'warnings']}))
+    row = next(r for r in measurement_rows if r['arm'] == arm and r['trial'] == 0 and r['scenario'] == 'content-3')
+    for context, values in row.get('logging', {}).items():
+        for entry in values.get('entries', []):
+            if 'cache' in entry.get('message', ''):
+                print('CONTENT CACHE LOG:', arm, context, entry['message'])
