@@ -2,7 +2,7 @@
 // Synthetic watch evidence. Every native load is identity-gated.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const nativePath = fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);
+const nativePath = fs.realpathSync.native(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);
 const expectedHash = process.env.EXPECTED_NATIVE_SHA;
 const hashNative = filename => crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex');
 if (!expectedHash || hashNative(nativePath) !== expectedHash) throw new Error('Native identity mismatch before import');
@@ -10,7 +10,8 @@ let nativeLoads = 0;
 const originalDlopen = process.dlopen;
 process.dlopen = function(module, filename, ...args) {
   if (filename.endsWith('.node')) {
-    if (fs.realpathSync(filename) !== nativePath || hashNative(filename) !== expectedHash) throw new Error('Loaded unexpected native binary');
+    // Node passes a namespaced path to dlopen on Windows.
+    if (fs.realpathSync.native(filename) !== nativePath || hashNative(filename) !== expectedHash) throw new Error('Loaded unexpected native binary');
     nativeLoads++;
   }
   return originalDlopen.call(this, module, filename, ...args);

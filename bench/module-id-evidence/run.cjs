@@ -28,7 +28,10 @@ function sample(family,block) {
   const env = {...process.env, ARM_LABEL:arm, MODULE_IDS:'compact-hashed',TRIALS:'1',TRIAL_INDEX:String(block),BENCH_TAG:tag,NAPI_RS_NATIVE_LIBRARY_PATH:binaries[arm],EXPECTED_NATIVE_SHA:hashes[arm],VERIFY_INCREMENTAL:arm==='pr'?'1':'0',CONTENT_ONLY:process.platform==='linux'?'0':'1'};
   const child = spawnSync(process.execPath,['--expose-gc',path.join(root,'benchmark.cjs')],{env,stdio:['ignore',log,log],timeout:300000});
   fs.closeSync(log);
-  if (child.error || child.status !== 0) throw new Error(`Failed ${tag}: ${child.error || child.status}`);
+  if (child.error || child.status !== 0) {
+    console.error(fs.readFileSync(path.join(data,tag+'.log'),'utf8').split('\n').slice(-100).join('\n'));
+    throw new Error(`Failed ${tag}: ${child.error || child.status}`);
+  }
   const receipt = JSON.parse(fs.readFileSync(path.join(data,tag,'complete.json')));
   if (receipt.nativeSha256 !== hashes[arm] || receipt.nativeLoads !== 1 || receipt.rows !== (process.platform==='linux'?9:7)) throw new Error('Invalid receipt');
   fs.appendFileSync(path.join(data,'schedule.jsonl'),JSON.stringify({family,arm,block,tag,receipt})+'\n');
