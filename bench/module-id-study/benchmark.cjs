@@ -105,7 +105,15 @@ async function run(arm, trial) {
         const json = stats.toJson({ all: false, ids: true, modules: true, cachedModules: true, runtimeModules: true, nestedModules: true, timings: true, errors: true, warnings: true, logging: 'verbose', loggingDebug: [/^rspack\.(Compilation|incremental)/], groupModulesByAttributes: false, groupModulesByCacheStatus: false, groupModulesByExtension: false, groupModulesByLayer: false, groupModulesByPath: false, groupModulesByType: false, groupModulesByEmitStatus: false });
         const modules = flatten(json.modules);
         const ids = new Map(modules.filter(m => m.id !== null && m.id !== undefined).map(m => [m.identifier, m.id]));
-        if (new Set(ids.values()).size !== ids.size) throw new Error('Duplicate module IDs');
+        if (new Set(ids.values()).size !== ids.size) {
+          const buckets = new Map();
+          for (const m of modules) if (m.id !== null && m.id !== undefined) {
+            const bucket = buckets.get(m.id) || [];
+            bucket.push({ identifier: m.identifier, type: m.moduleType, id: m.id });
+            buckets.set(m.id, bucket);
+          }
+          throw new Error('Duplicate module IDs: ' + JSON.stringify([...buckets].filter(([, items]) => items.length > 1).slice(0, 8)));
+        }
         if (step === 0 && ids.size < count + variants) throw new Error(`Incomplete module stats: ${ids.size}`);
         const changed = previous ? [...previous].filter(([key, id]) => ids.has(key) && ids.get(key) !== id) : [];
         const common = previous ? [...previous.keys()].filter(key => ids.has(key)).length : 0;
