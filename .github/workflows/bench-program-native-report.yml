@@ -1,0 +1,79 @@
+name: Program Native Report
+on:
+  push:
+    branches: ['bench/program-native-report']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+      DEBUGINFOD_URLS: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: mkdir -p bench-data/temp bench-data/tools bench-data/results
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e
+        with:
+          name: program-native-raw
+          path: capture
+          github-token: ${{ github.token }}
+          run-id: '38957105145'
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e
+        with:
+          name: program-native-binding
+          path: crates/node_binding
+          github-token: ${{ github.token }}
+          run-id: '38950775914'
+      - name: Restore capture paths and configure tools
+        run: |
+          set -euo pipefail
+          cp -a capture/bench-data/results/. bench-data/results/
+          sudo apt-get update -qq
+          sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)"
+          ADDR2LINE=''
+          for candidate in /usr/bin/llvm-addr2line /usr/bin/llvm-addr2line-20 /usr/bin/llvm-addr2line-19 /usr/bin/llvm-addr2line-18; do
+            if test -x "$candidate"; then ADDR2LINE="$candidate"; break; fi
+          done
+          if test -z "$ADDR2LINE"; then sudo apt-get install -y llvm-18; ADDR2LINE=/usr/bin/llvm-addr2line-18; fi
+          ln -s "$ADDR2LINE" bench-data/tools/addr2line
+          echo "$PWD/bench-data/tools" >> "$GITHUB_PATH"
+          echo "ADDR2LINE=$ADDR2LINE" >> "$GITHUB_ENV"
+          echo "PERF=$(command -v perf)" >> "$GITHUB_ENV"
+          "$ADDR2LINE" --version
+          perf version
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node
+          head -1 bench-data/results/binding.sha256
+          find bench-data/results/repeat-1 -maxdepth 1 -type f -printf '%f %s bytes\n' | head -12
+      - name: Export existing main-thread recordings
+        timeout-minutes: 20
+        run: bash scripts/program-native/record.sh export
+      - name: Inspect stack format
+        if: always()
+        run: |
+          for file in bench-data/results/repeat-*/inject.log bench-data/results/repeat-*/script.log; do
+            if test -f "$file"; then echo "=== $file ==="; tail -8 "$file"; fi
+          done
+          for file in bench-data/results/repeat-*/perf.script; do
+            if test -f "$file"; then echo "=== $file ==="; head -45 "$file"; fi
+          done
+      - name: Attribution and validation
+        run: |
+          python3 scripts/program-native/analyze.py cpu bench-data/results/validation.cpuprofile bench-data/results/validation.json
+          python3 scripts/program-native/analyze.py native bench-data/results
+          python3 scripts/program-native/detail.py bench-data/results
+      - name: Preserve raw scripts, folded stacks and source mappings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: program-native-report
+          path: |
+            bench-data/results/
+            scripts/program-native/
+          compression-level: 1
