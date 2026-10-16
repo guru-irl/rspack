@@ -139,11 +139,17 @@ jobs:
           mkdir -p bench/module-id-incremental/toolchain
           printf '{"private":true}\n' > bench/module-id-incremental/toolchain/package.json
           npm install --prefix bench/module-id-incremental/toolchain --no-audit --no-fund react@19.2.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compact-hashed-treatment-binding
+          path: bench/module-id-incremental/treatment/
+          retention-days: 7
       - name: Check contracts and focused watch regression
         run: |
+          set -o pipefail
           ROOT="$GITHUB_WORKSPACE/bench/module-id-incremental"
-          ARM_LABEL=main NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/baseline/rspack.linux-x64-gnu.node" node "$ROOT/check-contracts.cjs" | tee "$ROOT/data/main-contracts.log"
-          ARM_LABEL=branch NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/treatment/rspack.linux-x64-gnu.node" node "$ROOT/check-contracts.cjs" | tee "$ROOT/data/branch-contracts.log"
+          ARM_LABEL=main NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/baseline/rspack.linux-x64-gnu.node" node "$ROOT/check-contracts.cjs" 2>&1 | tee "$ROOT/data/main-contracts.log"
+          ARM_LABEL=branch NAPI_RS_NATIVE_LIBRARY_PATH="$ROOT/treatment/rspack.linux-x64-gnu.node" node "$ROOT/check-contracts.cjs" 2>&1 | tee "$ROOT/data/branch-contracts.log"
           pnpm --dir tests/rspack-test run test --project base -t 'watchCases/module-ids/compact-hashed-incremental' > "$ROOT/data/green.log" 2>&1
           tail -45 "$ROOT/data/green.log"
       - name: Small fixture topology probe
@@ -156,7 +162,7 @@ jobs:
         if: always()
         run: |
           ROOT="$GITHUB_WORKSPACE/bench/module-id-incremental"
-          for file in build-branch.log green.log main-contracts.log branch-contracts.log summary.md; do
+          for file in build-branch.log green.log main-contracts.log branch-contracts.log probe.log summary.md; do
             if test -f "$ROOT/data/$file"; then echo "===== $file ====="; tail -60 "$ROOT/data/$file"; fi
           done
       - uses: actions/upload-artifact@v4

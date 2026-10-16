@@ -3,11 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
-const { createRequire } = require('node:module');
 const root = __dirname;
-const req = createRequire(path.join(root, 'toolchain/package.json'));
-const corePath = path.resolve(root, '../../packages/rspack');
-const { rspack } = require(corePath);
+const corePath = process.env.RSPACK_CORE_PATH || path.resolve(root, '../../packages/rspack');
+const { rspack } = require(path.join(corePath, 'dist/index.js'));
 const trials = Number(process.env.TRIALS || 5);
 const count = Number(process.env.SOURCE_COUNT || 10000);
 const variants = Math.floor(count * 0.9);
