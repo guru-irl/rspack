@@ -1,26 +1,19 @@
-name: Cold Loader Screens
+name: Published Canary Memory
 on:
   workflow_dispatch:
-    inputs:
-      screen:
-        description: Fixed screen to run
-        type: choice
-        required: true
-        default: S1
-        options: [S1, S0]
 permissions:
   contents: read
 concurrency:
-  group: cold-loader-screens-${{ github.ref }}
+  group: published-canary-memory-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   screen:
-    name: ${{ inputs.screen }} (${{ matrix.runner }})
+    name: macOS replicate ${{ matrix.replica }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.runner }}
+        replica: [1, 2]
+    runs-on: macos-latest
     timeout-minutes: 90
     defaults:
       run:
@@ -39,10 +32,10 @@ jobs:
           set -euo pipefail
           mkdir -p bench-data/temp bench-data/results
           printf 'registry=https://registry.npmjs.org\n' > "$NPM_CONFIG_USERCONFIG"
-          echo "CLOCK_TICKS=$(getconf CLK_TCK)" >> "$GITHUB_ENV"
           git rev-parse HEAD > bench-data/results/commit.txt
           uname -a > bench-data/results/host.txt
           df -h . >> bench-data/results/host.txt
+          date -u '+%FT%TZ' > bench-data/results/started.txt
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22'
@@ -53,50 +46,55 @@ jobs:
           node --check scripts/program-native/prepare.mjs
           node --check scripts/program-native/run.mjs
           node --check scripts/cold-screen/install.mjs
-          node --check scripts/cold-screen/layout.mjs
-          node --check scripts/cold-screen/emission.mjs
           node --check scripts/cold-screen/schedule.mjs
-          python3 -m py_compile scripts/cold-screen/summary.py scripts/loader-result-readback/exact.py
-          python3 -c 'import sys; sys.path.insert(0, "scripts/loader-result-readback"); from exact import paired_location; assert paired_location([0]*10, [1]*10)["exact95"] == [1, 1]; assert paired_location([0]*10, [0]*10)["exact95"] == [0, 0]'
-          node --input-type=module -e '
-            import assert from "node:assert/strict";
-            import {selected, crossingModules} from "./scripts/cold-screen/layout.mjs";
-            const files = ["/fixture/entry.js"];
-            for (let g = 0; g < 100; g++) {
-              files.push(`/fixture/src/g${g}/index.js`);
-              for (let m = 0; m < 600; m++) files.push(`/fixture/src/g${g}/m${m}.js`);
-            }
-            for (let t = 0; t < 600; t++) files.push(`/fixture/typed/t${t}.ts`);
-            assert.equal(files.length, 60701);
-            for (const cell of ["F25", "F5"]) assert.equal(files.filter(file => selected(cell, file)).length, crossingModules(cell));
-            console.log("Native coverage selection passed");'
-      - name: Published package install and native identity gate
+          python3 -m py_compile scripts/cold-screen/canary-summary.py scripts/loader-result-readback/exact.py
+          python3 -c 'import sys; sys.path.insert(0, "scripts/loader-result-readback"); from exact import paired_location; assert paired_location([0]*8, [1]*8)["exact95"] == [1, 1]; assert paired_location([0]*16, [0]*16)["exact95"] == [0, 0]'
+      - name: Resolve published versions and enforce native identity
         run: |
           set -euo pipefail
-          node scripts/cold-screen/install.mjs '${{ inputs.screen }}' > bench-data/results/install-console.log 2>&1
+          node scripts/cold-screen/install.mjs CM > bench-data/results/install-console.log 2>&1
       - name: Generate generic fixture
         run: |
           set -euo pipefail
           node scripts/program-native/prepare.mjs bench-data/fixture > bench-data/results/fixture.json
-      - name: Diagnostics then fixed fresh-process schedule
+      - name: Fixed fresh-process schedule
         run: |
           set -euo pipefail
-          node --expose-gc scripts/cold-screen/schedule.mjs '${{ inputs.screen }}' > bench-data/results/measure-console.log 2>&1
-      - name: Summarize
+          node --expose-gc scripts/cold-screen/schedule.mjs CM > bench-data/results/measure-console.log 2>&1
+      - name: Summarize replicate
         run: |
           set -euo pipefail
-          python3 scripts/cold-screen/summary.py bench-data/results > bench-data/results/summary-console.log
+          python3 scripts/cold-screen/canary-summary.py bench-data/results bench-data/results > bench-data/results/summary-console.log
           date -u '+%FT%TZ' > bench-data/results/finished.txt
       - name: Preserve all attempts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: cold-loader-${{ inputs.screen }}-${{ matrix.runner }}-${{ github.run_attempt }}
+          name: canary-memory-mac-${{ matrix.replica }}
           retention-days: 30
           compression-level: 1
-          path: |
-            bench-data/results/
-            scripts/cold-screen/
-            scripts/program-native/prepare.mjs
-            scripts/program-native/run.mjs
-            scripts/loader-result-readback/exact.py
+          path: bench-data/results/
+  summary:
+    name: Pool finished replicates
+    needs: screen
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: canary-memory-mac-*
+          path: combined
+      - name: Pool round-paired contrasts
+        run: |
+          set -euo pipefail
+          python3 scripts/cold-screen/canary-summary.py pooled combined/canary-memory-mac-1 combined/canary-memory-mac-2 > pooled-console.log
+          date -u '+%FT%TZ' > pooled/finished.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canary-memory-pooled
+          retention-days: 30
+          path: pooled/

@@ -5,7 +5,7 @@ import {canonicalEmission} from './emission.mjs';
 import {cells, memoryCells} from './layout.mjs';
 
 const phase = process.argv[2];
-if (!['S0', 'S1'].includes(phase)) throw new Error('Expected S0 or S1');
+if (!['S0', 'S1', 'CM'].includes(phase)) throw new Error('Expected S0, S1 or CM');
 const root = path.resolve('bench-data/fixture');
 const results = path.resolve('bench-data/results');
 const manifestPath = path.join(results, 'identity-manifest.json');
@@ -16,9 +16,9 @@ const parity = new Map();
 const normalized = {};
 let referenceShape;
 let referenceCanonical;
-const deadline = Date.parse('2026-10-17T21:20:00Z');
+const deadline = Date.parse('2026-10-17T21:10:00Z');
 const selectedCells = process.platform === 'linux' ? cells : memoryCells;
-fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({phase, platform: process.platform, cells: selectedCells, rounds: phase === 'S1' ? 5 : 10, warmups: phase === 'S1' ? 'one per cell' : ['OFFICIAL-229', 'CANARY-96dcd72d'], deadline: new Date(deadline).toISOString()}, null, 2));
+fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({phase, platform: process.platform, cells: selectedCells, rounds: phase === 'S1' ? 5 : phase === 'CM' ? 8 : 10, warmups: phase === 'S1' ? 'one per cell' : phase === 'CM' ? ['O', 'A', 'B', 'C', 'D'] : ['OFFICIAL-229', 'CANARY-96dcd72d'], deadline: new Date(deadline).toISOString()}, null, 2));
 function run(arm, cell, label, round = 0, diagnostic = false, wrongIdentity = false) {
   if (Date.now() >= deadline) throw new Error('Hard measurement deadline reached');
   fs.rmSync(path.join(root, 'out'), {recursive: true, force: true});
@@ -66,7 +66,8 @@ function run(arm, cell, label, round = 0, diagnostic = false, wrongIdentity = fa
   console.log(JSON.stringify({label, arm, cell, round, diagnostic, buildMs: result.buildMs, mainCpuMs: result.mainCpuMs, peakRss: result.peakRss, endRss: result.steadyRss}));
 }
 if (phase === 'S0' && manifest['OFFICIAL-229'].sha256 === manifest['CANARY-96dcd72d'].sha256) throw new Error('IDENTITY GATE: equal arm hashes');
-run('OFFICIAL-229', phase === 'S1' ? 'K0' : null, 'negative-identity', 0, false, true);
+if (new Set(Object.values(manifest).map(arm => arm.sha256)).size !== Object.keys(manifest).length) throw new Error('IDENTITY GATE: equal arm hashes');
+run(phase === 'CM' ? 'O' : 'OFFICIAL-229', phase === 'S1' ? 'K0' : null, 'negative-identity', 0, false, true);
 if (phase === 'S1') {
   for (const cell of selectedCells) run('OFFICIAL-229', cell, 'diagnostic', 0, true);
   fs.writeFileSync(path.join(results, 'diagnostics-complete.json'), JSON.stringify({cells: selectedCells, finished: new Date().toISOString()}));
@@ -74,6 +75,14 @@ if (phase === 'S1') {
   for (let round = 1; round <= 5; round++) {
     const rotation = (round - 1) % selectedCells.length;
     for (const cell of [...selectedCells.slice(rotation), ...selectedCells.slice(0, rotation)]) run('OFFICIAL-229', cell, `round-${round}`, round);
+  }
+} else if (phase === 'CM') {
+  const arms = ['O', 'A', 'B', 'C', 'D'];
+  if (JSON.stringify(Object.keys(manifest)) !== JSON.stringify(arms)) throw new Error('Unexpected five-arm manifest');
+  for (const arm of arms) run(arm, null, 'warmup');
+  for (let round = 1; round <= 8; round++) {
+    const rotation = (round - 1) % arms.length;
+    for (const arm of [...arms.slice(rotation), ...arms.slice(0, rotation)]) run(arm, null, `round-${round}`, round);
   }
 } else {
   for (const arm of ['OFFICIAL-229', 'CANARY-96dcd72d']) run(arm, null, 'warmup');

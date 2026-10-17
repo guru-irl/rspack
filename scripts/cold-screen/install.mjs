@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 
 const phase = process.argv[2];
-if (!['S0', 'S1'].includes(phase)) throw new Error('Expected S0 or S1');
+if (!['S0', 'S1', 'CM'].includes(phase)) throw new Error('Expected S0, S1 or CM');
 const results = path.resolve('bench-data/results');
 fs.mkdirSync(results, {recursive: true});
 const environment = {started: new Date().toISOString(), phase, platform: process.platform, arch: process.arch, node: process.version, os: os.version(), release: os.release(), cpus: os.cpus(), ram: os.totalmem(), image: process.env.ImageOS, imageVersion: process.env.ImageVersion, commit: process.env.GITHUB_SHA};
@@ -15,6 +15,21 @@ fs.writeFileSync(path.join(results, 'environment.json'), JSON.stringify(environm
 const manifest = {};
 const specs = [['OFFICIAL-229', '@rspack/core', '2.2.9']];
 if (phase === 'S0') specs.push(['CANARY-96dcd72d', '@rspack-canary/core', '2.2.10-canary-96dcd72d-20261016173339']);
+if (phase === 'CM') {
+  if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Expected macOS arm64');
+  specs[0][0] = 'O';
+  const query = spawnSync('npm', ['view', '@rspack-canary/core', 'versions', '--json', '--registry=https://registry.npmjs.org'], {encoding: 'utf8', timeout: 120000});
+  fs.writeFileSync(path.join(results, 'published-versions.log'), `${query.stdout || ''}\n${query.stderr || ''}`);
+  if (query.error || query.status !== 0) throw new Error('Published version query failed');
+  const versions = JSON.parse(query.stdout);
+  for (const [arm, prefix] of [['A', '46484dd0'], ['B', '8ee68a1b'], ['C', '55a341bc'], ['D', '96dcd72d']]) {
+    const matches = versions.filter(version => version.includes(prefix));
+    if (matches.length !== 1) throw new Error(`VERSION GATE: ${arm} ${prefix}: ${JSON.stringify(matches)}`);
+    specs.push([arm, '@rspack-canary/core', matches[0]]);
+  }
+  if (specs[4][2] !== '2.2.10-canary-96dcd72d-20261016173339') throw new Error('Unexpected D package version');
+  fs.writeFileSync(path.join(results, 'resolved-versions.json'), JSON.stringify(specs, null, 2));
+}
 function npm(args, label) {
   const child = spawnSync('npm', [...args, '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund'], {encoding: 'utf8', timeout: 240000});
   fs.writeFileSync(path.join(results, `${label}.log`), `${child.stdout || ''}\n${child.stderr || ''}`);
@@ -46,7 +61,7 @@ for (const [arm, name, version] of specs) {
   const nativePackages = Object.entries(optionalDependencies).flatMap(([key, spec]) => {
     try {
       const pkg = packageAt(createRequire(bindingEntry).resolve(key));
-      return [{name: key, spec, version: pkg.version, dir: pkg.dir}];
+      return [{name: key, resolvedName: pkg.name, spec, version: pkg.version, dir: pkg.dir}];
     } catch (error) {
       if (error.code !== 'MODULE_NOT_FOUND') throw error;
       return [];
@@ -64,6 +79,6 @@ for (const [arm, name, version] of specs) {
   manifest[arm] = {name, version, dir, coreEntry, bindingDependency: direct[0], bindingPackage: {name: bindingPackage.name, version: bindingPackage.version, optionalDependencies}, native, bindingPath, sha256};
 }
 fs.writeFileSync(path.join(results, 'identity-manifest.json'), JSON.stringify(manifest, null, 2));
-if (phase === 'S0' && manifest['OFFICIAL-229'].sha256 === manifest['CANARY-96dcd72d'].sha256) throw new Error('IDENTITY GATE: equal native hashes, no timing allowed');
+if (new Set(Object.values(manifest).map(arm => arm.sha256)).size !== Object.keys(manifest).length) throw new Error('IDENTITY GATE: equal native hashes, no timing allowed');
 npm(['install', '--prefix', path.resolve('bench-data/parser'), '--no-package-lock', '--ignore-scripts', 'acorn@8.15.0', 'escodegen@2.1.0'], 'install-parser');
 console.log(JSON.stringify(manifest, null, 2));
