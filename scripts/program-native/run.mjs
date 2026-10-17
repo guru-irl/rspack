@@ -8,6 +8,11 @@ import { rspack } from '../../packages/rspack/dist/index.js';
 const [rootArg, resultArg] = process.argv.slice(2);
 const root = path.resolve(rootArg);
 const resultPath = path.resolve(resultArg);
+const {noopLoaders = 1} = JSON.parse(fs.readFileSync(path.join(root, 'fixture.json'), 'utf8'));
+if (![1, 5].includes(noopLoaders)) throw new Error('Invalid fixture loader count');
+const corePath = path.resolve('packages/rspack/dist/index.js');
+const coreSha256 = createHash('sha256').update(fs.readFileSync(corePath)).digest('hex');
+if (coreSha256 !== process.env.EXPECTED_CORE_SHA256) throw new Error('Wrong JavaScript core artifact');
 const marks = {};
 const mark = name => { marks[name] = Number(process.hrtime.bigint()) / 1e9; };
 const bindingPath = fs.realpathSync(process.env.BINDING_PATH);
@@ -40,7 +45,9 @@ const compiler = rspack({
     {test: /\.ts$/, use: {loader: 'builtin:swc-loader', options: {jsc: {parser: {syntax: 'typescript'}}}}},
     {test: /[\\/]m\d*0\.js$/, use: path.join(root, 'ast.cjs')},
     {test: /[\\/]m(?:\d*(?:05|25|45|65|85)|5)\.js$/, use: path.join(root, 'rewrite.cjs')},
-    {test: /\.[jt]s$/, enforce: 'post', use: {loader: path.join(root, 'noop.cjs'), options: {generic: true}}}
+    {test: /\.[jt]s$/, enforce: 'post', use: noopLoaders === 1
+      ? {loader: path.join(root, 'noop.cjs'), options: {generic: true}}
+      : Array.from({length: noopLoaders}, (_, index) => ({loader: path.join(root, index === 0 ? 'noop.cjs' : `noop-${index}.cjs`), options: {generic: true}}))}
   ]},
   optimization: {minimize: false, concatenateModules: false, usedExports: false, moduleIds: 'named', chunkIds: 'named'},
   plugins: [{apply(compiler) {
@@ -67,7 +74,7 @@ if (stats.hasErrors() || stats.hasWarnings()) throw new Error(stats.toString({al
 await new Promise(resolve => setImmediate(resolve));
 observer.disconnect();
 const makeGcMs = gc.reduce((sum, e) => sum + Math.max(0, Math.min(e.start + e.duration, makeEndMs) - Math.max(e.start, makeStartMs)), 0);
-if (globalThis.loaderCalls.noop !== 60701 || globalThis.loaderCalls.ast !== 6000 || globalThis.loaderCalls.rewrite !== 3000) throw new Error('Unexpected loader counts');
+if (globalThis.loaderCalls.noop !== 60701 * noopLoaders || globalThis.loaderCalls.ast !== 6000 || globalThis.loaderCalls.rewrite !== 3000) throw new Error('Unexpected loader counts');
 const outputFiles = [];
 const outputRoot = path.join(root, 'out');
 function hashFiles(dir) {
@@ -79,7 +86,7 @@ function hashFiles(dir) {
 }
 hashFiles(outputRoot);
 if (!outputFiles.length) throw new Error('No emitted files');
-const result = {bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
+const result = {bindingIdentity, bindingSha256, coreSha256, noopLoaders, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 console.log(JSON.stringify({...result, gc: undefined}));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));

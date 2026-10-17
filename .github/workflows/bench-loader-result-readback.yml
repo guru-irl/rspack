@@ -1,0 +1,145 @@
+name: Loader Chain Metadata Ubuntu
+on:
+  push:
+    branches: ['bench/loader-chain-meta-1b-measure']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: loader-chain-meta-1b-ubuntu
+  cancel-in-progress: false
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+      BASE: 300a8a6a38d1251db2e75d5933676e123eddbdd0
+      PR: e673cb394d3ddf5e2d39a8554f0c0697ba56b2ef
+      CORRECTNESS_RUN: '39050521094'
+      BINDING_PATH: ${{ github.workspace }}/crates/node_binding/rspack.linux-x64-gnu.node
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Check the development correctness gate
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/temp bench-data/results bench-data/bindings bench-data/js
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CORRECTNESS_RUN" > bench-data/results/correctness-gate.json
+          python3 - <<'PY'
+          import json
+          gate = json.load(open('bench-data/results/correctness-gate.json'))
+          assert gate['status'] == 'completed' and gate['conclusion'] == 'success', 'Development correctness is not green'
+          PY
+          validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CORRECTNESS_RUN" --jq .head_sha)
+          git diff --exit-code "$validated" "$PR" -- crates/rspack_binding_api/src/plugins/js_loader packages/rspack/src/loader-runner/index.ts
+          git diff --exit-code "$PR" -- crates/rspack_binding_api/src/plugins/js_loader packages/rspack/src/loader-runner/index.ts crates/node_binding/napi-binding.d.ts
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
+      - name: Harness preflight
+        run: |
+          set -euo pipefail
+          node --check scripts/program-native/prepare.mjs
+          node --check scripts/program-native/run.mjs
+          node --check scripts/loader-result-readback/pairs.mjs
+          node --check scripts/loader-result-readback/census.mjs
+          python3 -m py_compile scripts/loader-result-readback/summary.py scripts/loader-result-readback/readable.py scripts/loader-result-readback/exact.py
+      - uses: ./.github/actions/rustup
+        with:
+          key: x86_64-unknown-linux-gnu-ci
+          save-if: true
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Environment and source identity
+        run: |
+          set -euo pipefail
+          { node --version; uname -a; lscpu; free -h; df -h .; rustc -Vv; git rev-parse HEAD; } | tee bench-data/results/environment.txt
+          echo "CLOCK_TICKS=$(getconf CLK_TCK)" >> "$GITHUB_ENV"
+          git diff "$BASE" "$PR" --stat | tee bench-data/results/source-diff.txt
+          git diff "$BASE" "$PR" > bench-data/results/source.diff
+          cargo fmt --all --check
+      - name: Build base binding and matching JavaScript
+        run: |
+          set -euo pipefail
+          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs packages/rspack/src/loader-runner/index.ts crates/node_binding/napi-binding.d.ts
+          touch crates/rspack_binding_api/src/plugins/js_loader/{context,mod,scheduler}.rs
+          cargo codegen
+          rm -f "$BINDING_PATH"
+          pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
+          grep -q 'Compiling rspack_binding_api' bench-data/results/base-build.log
+          cp "$BINDING_PATH" bench-data/bindings/base.node
+          pnpm run build:js 2>&1 | tee bench-data/results/base-js-build.log
+          cp -a packages/rspack/dist bench-data/js/base
+          git diff --exit-code "$BASE" -- crates/node_binding/napi-binding.d.ts
+      - name: Build prototype binding and matching JavaScript
+        run: |
+          set -euo pipefail
+          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs packages/rspack/src/loader-runner/index.ts crates/node_binding/napi-binding.d.ts
+          touch crates/rspack_binding_api/src/plugins/js_loader/{context,mod,scheduler}.rs
+          cargo codegen
+          rm -f "$BINDING_PATH"
+          pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
+          grep -q 'Compiling rspack_binding_api' bench-data/results/pr-build.log
+          cp "$BINDING_PATH" bench-data/bindings/pr.node
+          pnpm run build:js 2>&1 | tee bench-data/results/pr-js-build.log
+          cp -a packages/rspack/dist bench-data/js/pr
+          git diff --exit-code "$PR" -- crates/node_binding/napi-binding.d.ts
+          sha256sum bench-data/bindings/*.node | tee bench-data/results/bindings.sha256
+          sha256sum bench-data/js/{base,pr}/index.js | tee bench-data/results/core.sha256
+          if cmp -s bench-data/bindings/base.node bench-data/bindings/pr.node; then
+            echo 'Identical arm binaries: refusing timing'
+            exit 1
+          fi
+      - name: Generate one-loader and five-loader fixtures
+        run: |
+          set -euo pipefail
+          node scripts/program-native/prepare.mjs bench-data/fixture-1 1
+          node scripts/program-native/prepare.mjs bench-data/fixture-5 5
+      - name: One loader - two warmups and ten alternating pairs
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/results/one
+          FIXTURE_ROOT=bench-data/fixture-1 RESULTS_ROOT=bench-data/results/one node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/one/pairs.log
+          python3 scripts/loader-result-readback/summary.py bench-data/results/one
+      - name: Five loaders - two warmups and ten alternating pairs
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/results/five
+          FIXTURE_ROOT=bench-data/fixture-5 RESULTS_ROOT=bench-data/results/five node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/five/pairs.log
+          python3 scripts/loader-result-readback/summary.py bench-data/results/five
+      - name: Separate untimed cache census
+        run: |
+          set -euo pipefail
+          cp bench-data/bindings/pr.node "$BINDING_PATH"
+          rm -rf packages/rspack/dist
+          cp -a bench-data/js/pr packages/rspack/dist
+          EXPECTED_BINDING_SHA256=$(sha256sum bench-data/bindings/pr.node | cut -d' ' -f1)
+          EXPECTED_CORE_SHA256=$(sha256sum bench-data/js/pr/index.js | cut -d' ' -f1)
+          export EXPECTED_BINDING_SHA256 EXPECTED_CORE_SHA256
+          node --expose-gc --max-old-space-size=8192 scripts/loader-result-readback/census.mjs bench-data/fixture-1 bench-data/results/one/census-pr.json > bench-data/results/one/census.log
+          node --expose-gc --max-old-space-size=8192 scripts/loader-result-readback/census.mjs bench-data/fixture-5 bench-data/results/five/census-pr.json > bench-data/results/five/census.log
+          python3 scripts/loader-result-readback/readable.py | tee bench-data/results/readable.md
+          cat bench-data/results/readable.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-chain-metadata-ubuntu
+          path: |
+            bench-data/results/
+            scripts/loader-result-readback/
+            scripts/program-native/prepare.mjs
+            scripts/program-native/run.mjs
+          compression-level: 1

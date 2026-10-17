@@ -9,9 +9,12 @@ root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'bench-data/results')
 parity = json.loads((root / 'parity.json').read_text())
 assert parity['bindings']['base'] != parity['bindings']['pr'], 'Invalid experiment: identical binaries'
 assert parity['identical'] and parity['runs'] == 22, 'Incomplete output parity evidence'
+core = json.loads((root / 'core-manifest.json').read_text())
+assert core['base'] != core['pr'], 'Invalid experiment: identical JavaScript artifacts'
 for arm in ['base', 'pr']:
-    for pair in range(1, 11):
-        run = json.loads((root / f'pair-{pair}-{arm}.json').read_text())
+    for label in ['warmup'] + [f'pair-{i}' for i in range(1, 11)]:
+        run = json.loads((root / f'{label}-{arm}.json').read_text())
+        assert run['coreSha256'] == core[arm]
         assert run['bindingSha256'] == parity['bindings'][arm]
         assert run['bindingIdentity']['verifiedInRequireCache']
         if run['mainCpuMs'] is not None:

@@ -1,7 +1,6 @@
 name: Loader Chain Metadata
 on:
-  push:
-    branches: ['bench/loader-chain-meta-1b-measure']
+  workflow_dispatch:
 permissions:
   contents: read
   actions: read
