@@ -15,7 +15,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
       TMPDIR: ${{ github.workspace }}/bench-data/temp
-      PR: dd1cac02bfac10a047c20f799b295c1b43c0ed14
+      PR: 4c4bcfc3a9a3ccfafe1668c4da3462d63fa73779
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
