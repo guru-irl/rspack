@@ -1,0 +1,80 @@
+name: Loader Chain Metadata
+on:
+  push:
+    branches: ['bench/loader-chain-meta-1b-measure']
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+      PR: dd1cac02bfac10a047c20f799b295c1b43c0ed14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Scratch directory
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/temp bench-data/results
+          git diff --exit-code "$PR" -- crates/rspack_binding_api/src/plugins/js_loader packages/rspack/src/loader-runner/index.ts
+      - uses: ./.github/actions/pnpm/setup
+      - uses: ./.github/actions/rustup
+        with:
+          key: x86_64-unknown-linux-gnu-loader-chain-dev
+          save-if: true
+      - name: Rust formatting
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check 2>&1 | tee bench-data/results/fmt.log
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+      - name: Build development binding and JavaScript
+        run: |
+          set -euo pipefail
+          cargo codegen
+          pnpm run build:cli:dev 2>&1 | tee bench-data/results/dev-build.log
+          git diff -- crates/node_binding/napi-binding.d.ts | tee bench-data/results/declarations.patch
+          echo DECLARATIONS_PATCH_BEGIN
+          git diff -- crates/node_binding/napi-binding.d.ts
+          echo DECLARATIONS_PATCH_END
+      - name: Existing loader, parallel loader and watch cases
+        run: |
+          set -euo pipefail
+          pnpm --dir tests/rspack-test run test --project base -t loader 2>&1 | tee bench-data/results/loaders.log
+      - name: Existing module cases
+        run: |
+          set -euo pipefail
+          pnpm --dir tests/rspack-test run test --project base -t module 2>&1 | tee bench-data/results/modules.log
+      - name: Existing compiler cases
+        run: |
+          set -euo pipefail
+          pnpm --dir tests/rspack-test run test --project base -t compiler 2>&1 | tee bench-data/results/compiler.log
+      - name: Touched-crate clippy
+        run: |
+          set -euo pipefail
+          cargo clippy -p rspack_binding_api --all-targets --features plugin,test-loader -- --deny warnings 2>&1 | tee bench-data/results/clippy.log
+      - name: Unit suites
+        run: |
+          set -euo pipefail
+          timeout 35m pnpm run test:unit 2>&1 | tee bench-data/results/unit.log
+          echo CORRECTNESS_PASSED
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-chain-correctness
+          path: bench-data/results/
+          compression-level: 1
