@@ -1000,7 +1000,8 @@ export interface JsLoaderContext {
   dependencies: JsLoaderDependencies
   addedDependencies: JsLoaderDependencies
   removedDependencies: JsLoaderDependencies
-  loaderItems: Array<JsLoaderItem>
+  loaderChain: JsLoaderItem[]
+  loaderItems: Array<JsLoaderItemState>
   loaderIndex: number
   loaderState: Readonly<JsLoaderState>
   loaderChainStart: number
@@ -1040,6 +1041,13 @@ export interface JsLoaderItem {
 }
 
 export interface JsLoaderItemResult {
+  data: any
+  normalExecuted: boolean
+  pitchExecuted: boolean
+  noPitch: boolean
+}
+
+export interface JsLoaderItemState {
   data: any
   normalExecuted: boolean
   pitchExecuted: boolean
