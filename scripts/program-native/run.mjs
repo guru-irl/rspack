@@ -10,7 +10,14 @@ const memorySnapshot = () => {
   return {v8: Object.fromEntries(['used_heap_size', 'total_heap_size', 'total_physical_size', 'malloced_memory', 'external_memory'].map(key => [key, heap[key]])), process: memory, nativeEstimate: memory.rss - heap.total_physical_size};
 };
 import { createRequire } from 'node:module';
-import { rspack } from '../../packages/rspack/dist/index.js';
+import {rules, verifyDiagnostic} from '../cold-screen/layout.mjs';
+const armManifest = JSON.parse(fs.readFileSync(process.env.ARM_MANIFEST));
+const arm = armManifest[process.env.ARM];
+if (!arm) throw new Error('Missing arm manifest');
+const armRequire = createRequire(path.join(arm.dir, 'package.json'));
+const {rspack} = armRequire(arm.name);
+const cell = process.env.CELL || null;
+const diagnostic = process.env.DIAGNOSTIC === '1';
 const [rootArg, resultArg] = process.argv.slice(2);
 const root = path.resolve(rootArg);
 const resultPath = path.resolve(resultArg);
@@ -36,13 +43,17 @@ const gc = [];
 const observer = new PerformanceObserver(list => { for (const e of list.getEntries()) gc.push({start: e.startTime, duration: e.duration, kind: e.detail.kind}); });
 observer.observe({entryTypes: ['gc']});
 globalThis.loaderCalls = {noop: 0, ast: 0, rewrite: 0};
+if (diagnostic) {
+  globalThis.loaderTraces = new Map();
+  globalThis.ruleCalls = {include: 0, use: 0};
+}
 let finishModulesCalls = 0, processAssetsCalls = 0;
 let makeStartMs, makeEndMs;
 mark('setupStart');
 const compiler = rspack({
   mode: 'development', context: root, entry: './entry.js', cache: false, devtool: false, target: 'node',
   output: {path: path.join(root, 'out'), filename: 'bundle.cjs'},
-  module: {rules: [
+  module: {rules: cell ? rules(root, cell, diagnostic) : [
     {test: /\.ts$/, use: {loader: 'builtin:swc-loader', options: {jsc: {parser: {syntax: 'typescript'}}}}},
     {test: /[\\/]m\d*0\.js$/, use: path.join(root, 'ast.cjs')},
     {test: /[\\/]m(?:\d*(?:05|25|45|65|85)|5)\.js$/, use: path.join(root, 'rewrite.cjs')},
@@ -59,18 +70,22 @@ const compiler = rspack({
   }}]
 });
 const startTicks = mainTicks();
+const threadStart = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : null;
 const cpuStart = process.cpuUsage();
 mark('buildStart');
 const start = performance.now();
 const stats = await new Promise((resolve, reject) => compiler.run((error, stats) => error ? reject(error) : resolve(stats)));
 const buildMs = performance.now() - start;
 mark('buildEnd');
-const mainCpuMs = process.platform === 'linux' ? (mainTicks() - startTicks) * 1000 / Number(process.env.CLOCK_TICKS) : null;
+const threadCpuUs = threadStart ? process.threadCpuUsage(threadStart) : null;
+const mainCpuMs = process.platform === 'linux' ? (mainTicks() - startTicks) * 1000 / Number(process.env.CLOCK_TICKS) : threadCpuUs ? (threadCpuUs.user + threadCpuUs.system) / 1000 : null;
 const processCpuUs = process.cpuUsage(cpuStart);
 const peakRss = process.resourceUsage().maxRSS * 1024;
 const endSnapshot = memorySnapshot();
 const steadyRss = endSnapshot.process.rss;
-if (stats.hasErrors() || stats.hasWarnings()) throw new Error(stats.toString({all: false, errors: true, warnings: true}));
+const errorCount = stats.compilation.errors.length;
+const warningCount = stats.compilation.warnings.length;
+if (stats.hasErrors()) throw new Error(stats.toString({all: false, errors: true, warnings: true}));
 await new Promise(resolve => setImmediate(resolve));
 const buildEnd = start + buildMs;
 for (const e of observer.takeRecords()) gc.push({start: e.startTime, duration: e.duration, kind: e.detail.kind});
@@ -83,19 +98,22 @@ for (const e of buildGc) {
 }
 observer.disconnect();
 const makeGcMs = gc.reduce((sum, e) => sum + Math.max(0, Math.min(e.start + e.duration, makeEndMs) - Math.max(e.start, makeStartMs)), 0);
-if (globalThis.loaderCalls.noop !== 60701 || globalThis.loaderCalls.ast !== 6000 || globalThis.loaderCalls.rewrite !== 3000) throw new Error('Unexpected loader counts');
+if (!cell && (globalThis.loaderCalls.noop !== 60701 || globalThis.loaderCalls.ast !== 6000 || globalThis.loaderCalls.rewrite !== 3000)) throw new Error('Unexpected loader counts');
+const diagnosticCounts = diagnostic ? verifyDiagnostic(cell) : null;
+const moduleCount = stats.compilation.modules.size;
+if (moduleCount !== 60701) throw new Error(`Unexpected module count: ${moduleCount}`);
 const outputFiles = [];
 const outputRoot = path.join(root, 'out');
 function hashFiles(dir) {
   for (const entry of fs.readdirSync(dir, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
     const file = path.join(dir, entry.name);
     if (entry.isDirectory()) hashFiles(file);
-    else outputFiles.push({name: path.relative(outputRoot, file).split(path.sep).join('/'), sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex')});
+    else outputFiles.push({name: path.relative(outputRoot, file).split(path.sep).join('/'), bytes: fs.statSync(file).size, sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex')});
   }
 }
 hashFiles(outputRoot);
 if (!outputFiles.length) throw new Error('No emitted files');
-const result = {bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
+const result = {cell, diagnostic, diagnosticCounts, moduleCount, warningCount, errorCount, threadCpuUs, mainCpuMethod: process.platform === 'linux' ? 'proc-task-stat' : threadCpuUs ? 'process.threadCpuUsage' : 'unavailable', bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 console.log(JSON.stringify({...result, gc: undefined}));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));

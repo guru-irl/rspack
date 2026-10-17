@@ -27,4 +27,14 @@ fs.writeFileSync(path.join(root, 'noop.cjs'), `module.exports = function(source,
 const parserRoot = path.resolve('bench-data/parser/node_modules');
 fs.writeFileSync(path.join(root, 'ast.cjs'), `const acorn = require(${JSON.stringify(path.join(parserRoot, 'acorn'))});\nconst generate = require(${JSON.stringify(path.join(parserRoot, 'escodegen'))}).generate;\nmodule.exports = function(source) { globalThis.loaderCalls.ast++; return generate(acorn.parse(source, {ecmaVersion: 2022, sourceType: 'script'})); };\n`);
 fs.writeFileSync(path.join(root, 'rewrite.cjs'), `module.exports = function(source) { globalThis.loaderCalls.rewrite++; return source.replace(/generic-value-(\\d+)/g, 'generic-token-$1'); };\n`);
+for (let id = 1; id <= 5; id++) {
+  fs.writeFileSync(path.join(root, `loader-${id}.cjs`), 'module.exports = function(source) { return source; };\n');
+  fs.writeFileSync(path.join(root, `loader-${id}-diagnostic.cjs`), `module.exports = function(source) {
+    const trace = globalThis.loaderTraces.get(this.resourcePath) || [];
+    const names = this.loaders.map(item => item.path.includes('builtin:swc-loader') ? 'SWC' : item.path.split(/[\\\\/]/).pop());
+    trace.push({id: ${id}, index: this.loaderIndex, builtinCount: names.filter(name => name === 'SWC').length, layout: names.join(',')});
+    globalThis.loaderTraces.set(this.resourcePath, trace);
+    return source;
+  };\n`);
+}
 console.log(JSON.stringify({modules: 60701, leafSourceBytes: fs.statSync(path.join(root, 'src/g0/m0.js')).size}));

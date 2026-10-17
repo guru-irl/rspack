@@ -1,129 +1,101 @@
-name: Loader Result Readback
+name: Cold Loader Screens
 on:
   workflow_dispatch:
+    inputs:
+      screen:
+        description: Fixed screen to run
+        type: choice
+        required: true
+        default: S1
+        options: [S1, S0]
 permissions:
   contents: read
 concurrency:
-  group: loader-result-readback-${{ github.ref }}
+  group: cold-loader-screens-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  memory:
-    name: Memory (${{ matrix.runner }})
+  screen:
+    name: ${{ inputs.screen }} (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, windows-2025]
+        runner: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 135
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
     env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '3'
       TMPDIR: ${{ github.workspace }}/bench-data/temp
-      BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
-      PR: 300a8a6a38d1251db2e75d5933676e123eddbdd0
-      EXPECTED_OS: ${{ matrix.runner == 'macos-15' && 'darwin' || 'win32' }}
-      EXPECTED_ARCH: ${{ matrix.runner == 'macos-15' && 'arm64' || 'x64' }}
-      NATIVE_FILE: ${{ matrix.runner == 'macos-15' && 'rspack.darwin-arm64.node' || 'rspack.win32-x64-msvc.node' }}
+      TMP: ${{ github.workspace }}/bench-data/temp
+      TEMP: ${{ github.workspace }}/bench-data/temp
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/bench-data/temp/npm-cache
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      NPM_CONFIG_USERCONFIG: ${{ github.workspace }}/bench-data/temp/npmrc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - name: Scratch directory and binding path
+      - name: Prepare writable directories
         run: |
           set -euo pipefail
-          mkdir -p bench-data/temp bench-data/results bench-data/bindings
-          echo "BINDING_PATH=$GITHUB_WORKSPACE/crates/node_binding/$NATIVE_FILE" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/pnpm/setup
-      - name: Install dependencies
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
-      - uses: ./.github/actions/rustup
+          mkdir -p bench-data/temp bench-data/results
+          printf 'registry=https://registry.npmjs.org\n' > "$NPM_CONFIG_USERCONFIG"
+          echo "CLOCK_TICKS=$(getconf CLK_TCK)" >> "$GITHUB_ENV"
+          git rev-parse HEAD > bench-data/results/commit.txt
+          uname -a > bench-data/results/host.txt
+          df -h . >> bench-data/results/host.txt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          key: ${{ matrix.runner == 'macos-15' && 'aarch64-apple-darwin-ci' || 'x86_64-pc-windows-msvc-ci' }}
-          save-if: true
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
       - name: Harness preflight
         run: |
           set -euo pipefail
+          node --check scripts/program-native/prepare.mjs
           node --check scripts/program-native/run.mjs
-          node --check scripts/loader-result-readback/pairs.mjs
-          python3 -m py_compile scripts/loader-result-readback/summary.py scripts/loader-result-readback/exact.py
+          node --check scripts/cold-screen/install.mjs
+          node --check scripts/cold-screen/layout.mjs
+          node --check scripts/cold-screen/schedule.mjs
+          python3 -m py_compile scripts/cold-screen/summary.py scripts/loader-result-readback/exact.py
           python3 -c 'import sys; sys.path.insert(0, "scripts/loader-result-readback"); from exact import paired_location; assert paired_location([0]*10, [1]*10)["exact95"] == [1, 1]; assert paired_location([0]*10, [0]*10)["exact95"] == [0, 0]'
-      - name: Environment and source identity
-        run: |
-          set -euo pipefail
           node --input-type=module -e '
-            import fs from "node:fs";
-            import os from "node:os";
-            import {createHash} from "node:crypto";
-            if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Wrong runner architecture");
-            const fixtureScripts = Object.fromEntries(["scripts/program-native/prepare.mjs", "scripts/program-native/run.mjs", "scripts/loader-result-readback/pairs.mjs", "scripts/loader-result-readback/exact.py", "scripts/loader-result-readback/summary.py"].map(file => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
-            const value = {started: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version, os: os.version(), release: os.release(), cpus: os.cpus(), ram: os.totalmem(), image: process.env.ImageOS, imageVersion: process.env.ImageVersion, base: process.env.BASE, pr: process.env.PR, fixtureScripts};
-            fs.writeFileSync("bench-data/results/environment.json", JSON.stringify(value, null, 2));
-            console.log(JSON.stringify(value, null, 2));'
-          { uname -a; rustc -Vv; git rev-parse HEAD; df -h .; } | tee bench-data/results/environment.txt
-          git merge-base "$BASE" "$PR" | tee bench-data/results/merge-base.txt
-          test "$(git merge-base "$BASE" "$PR")" = "$BASE"
-          git diff "$BASE" "$PR" > bench-data/results/source.diff
-          if [ "$EXPECTED_OS" != win32 ]; then cargo fmt --all --check; fi
-      - name: Build base and JavaScript artifacts
+            import assert from "node:assert/strict";
+            import {selected, crossingModules} from "./scripts/cold-screen/layout.mjs";
+            const files = ["/fixture/entry.js"];
+            for (let g = 0; g < 100; g++) {
+              files.push(`/fixture/src/g${g}/index.js`);
+              for (let m = 0; m < 600; m++) files.push(`/fixture/src/g${g}/m${m}.js`);
+            }
+            for (let t = 0; t < 600; t++) files.push(`/fixture/typed/t${t}.ts`);
+            assert.equal(files.length, 60701);
+            for (const cell of ["F25", "F5"]) assert.equal(files.filter(file => selected(cell, file)).length, crossingModules(cell));
+            console.log("Native coverage selection passed");'
+      - name: Published package install and native identity gate
         run: |
           set -euo pipefail
-          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/node_binding/napi-binding.d.ts
-          git diff --exit-code "$BASE" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
-          cargo codegen
-          rm -f "$BINDING_PATH"
-          pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
-          grep -F 'Compiling rspack_binding_api' bench-data/results/base-build.log
-          cp "$BINDING_PATH" bench-data/bindings/base.node
-          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
-      - name: Build candidate with identical settings
+          node scripts/cold-screen/install.mjs '${{ inputs.screen }}' > bench-data/results/install-console.log 2>&1
+      - name: Generate generic fixture
         run: |
           set -euo pipefail
-          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/node_binding/napi-binding.d.ts
-          git diff --exit-code "$PR" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
-          rm -f "$BINDING_PATH"
-          pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
-          grep -F 'Compiling rspack_binding_api' bench-data/results/pr-build.log
-          cp "$BINDING_PATH" bench-data/bindings/pr.node
-          git diff --exit-code "$PR" -- crates/node_binding/napi-binding.d.ts
-      - name: Native identity gate before timing
+          node scripts/program-native/prepare.mjs bench-data/fixture > bench-data/results/fixture.json
+      - name: Diagnostics then fixed fresh-process schedule
         run: |
           set -euo pipefail
-          node --input-type=module -e '
-            import fs from "node:fs";
-            import {createHash} from "node:crypto";
-            const hashes = Object.fromEntries(["base", "pr"].map(arm => [arm, createHash("sha256").update(fs.readFileSync(`bench-data/bindings/${arm}.node`)).digest("hex")]));
-            fs.writeFileSync("bench-data/results/build-identities.json", JSON.stringify(hashes, null, 2));
-            console.log(hashes);
-            if (hashes.base === hashes.pr) throw new Error("Identical arm binaries: refusing timing");'
-      - name: Generate unchanged native-study fixture
+          node scripts/cold-screen/schedule.mjs '${{ inputs.screen }}' > bench-data/results/measure-console.log 2>&1
+      - name: Summarize
         run: |
           set -euo pipefail
-          node scripts/program-native/prepare.mjs bench-data/fixture
-      - name: Fixed fresh-process protocol
-        run: |
-          set -euo pipefail
-          node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
-      - name: Exact paired or block analysis
-        run: |
-          set -euo pipefail
-          python3 scripts/loader-result-readback/summary.py 2>&1 | tee bench-data/results/analysis.log
-          cat bench-data/results/summary.md >> "$GITHUB_STEP_SUMMARY"
-          date -u '+%Y-%m-%dT%H:%M:%SZ' > bench-data/results/finished.txt
-      - name: Preserve evidence
+          python3 scripts/cold-screen/summary.py bench-data/results > bench-data/results/summary-console.log
+          date -u '+%FT%TZ' > bench-data/results/finished.txt
+      - name: Preserve all attempts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: loader-result-readback-newhead-${{ matrix.runner }}
+          name: cold-loader-${{ inputs.screen }}-${{ matrix.runner }}-${{ github.run_attempt }}
           retention-days: 30
+          compression-level: 1
           path: |
             bench-data/results/
-            scripts/loader-result-readback/
+            scripts/cold-screen/
             scripts/program-native/prepare.mjs
             scripts/program-native/run.mjs
-          compression-level: 1
+            scripts/loader-result-readback/exact.py
