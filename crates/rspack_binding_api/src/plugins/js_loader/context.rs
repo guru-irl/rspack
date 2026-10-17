@@ -49,7 +49,10 @@ impl LoaderChainMetadata {
 pub struct JsLoaderChainMetadata(pub(crate) Arc<LoaderChainMetadata>);
 
 impl ToNapiValue for JsLoaderChainMetadata {
-  unsafe fn to_napi_value(env: napi::sys::napi_env, val: Self) -> napi::Result<napi::sys::napi_value> {
+  unsafe fn to_napi_value(
+    env: napi::sys::napi_env,
+    val: Self,
+  ) -> napi::Result<napi::sys::napi_value> {
     let value = val.0.value.get_or_try_init(|| {
       let items: Vec<_> = val
         .0

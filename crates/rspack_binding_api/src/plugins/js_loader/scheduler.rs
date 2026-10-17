@@ -63,7 +63,13 @@ pub(crate) async fn loader_yield(
   let key: LoaderChainKey = loader_context
     .loader_items
     .iter()
-    .map(|item| (item.request(), Identifier::from(item.r#type()), item.cache()))
+    .map(|item| {
+      (
+        item.request(),
+        Identifier::from(item.r#type()),
+        item.cache(),
+      )
+    })
     .collect();
   let metadata = {
     let mut chains = self.loader_chains.lock().expect("should get lock");
