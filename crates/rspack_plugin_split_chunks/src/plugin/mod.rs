@@ -103,6 +103,7 @@ impl SplitChunksPlugin {
     all_modules.sort_unstable_by_key(|module| (module.precomputed_hash(), *module));
 
     let module_sizes = get_module_sizes(all_modules.par_iter().copied(), compilation);
+    let module_names = module_group::ConditionNames::new(all_modules.len(), &self.cache_groups);
     let mut module_chunks = Self::get_module_chunks(&all_modules, compilation);
     let module_indices = all_modules
       .iter()
@@ -255,6 +256,7 @@ impl SplitChunksPlugin {
             dedup_depth: self.dedup_depth,
             settings: non_used_exports_intersection_settings,
             module_sizes: &module_sizes,
+            module_names: &module_names,
             compilation,
           },
         );
@@ -274,6 +276,7 @@ impl SplitChunksPlugin {
             dedup_depth: self.dedup_depth,
             settings: used_exports_intersection_settings,
             module_sizes: &module_sizes,
+            module_names: &module_names,
             compilation,
           },
         );
@@ -283,6 +286,7 @@ impl SplitChunksPlugin {
         .prepare_module_group_map(
           &combinator,
           &all_modules,
+          &module_names,
           cache_groups,
           compilation,
           available_module_chunks,
@@ -594,6 +598,7 @@ impl SplitChunksPlugin {
       }
     }
     logger.time_end(start);
+    drop(module_names);
 
     let start = logger.time("ensure max size fit");
     self
