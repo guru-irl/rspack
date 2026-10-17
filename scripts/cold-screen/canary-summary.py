@@ -9,7 +9,7 @@ from exact import paired_location
 output = Path(sys.argv[1])
 roots = [Path(arg) for arg in sys.argv[2:]]
 output.mkdir(parents=True, exist_ok=True)
-arms = ['O', 'A', 'B', 'C', 'D']
+arms = None
 metrics = {
     'post_gc_rss_mib': lambda r: r['idleRss'] / 2**20,
     'peak_rss_mib': lambda r: r['peakRss'] / 2**20,
@@ -27,14 +27,18 @@ for job_id, root in enumerate(roots, 1):
         raise ValueError(f'Incomplete job: {root}')
     protocol = json.loads((root / 'protocol.json').read_text())
     schedule = json.loads((root / 'schedule.json').read_text())
-    if protocol['phase'] != 'CM' or protocol['rounds'] != 8:
+    if protocol['phase'] not in ['CM', 'SP'] or protocol['rounds'] != 8:
         raise ValueError('Wrong protocol')
+    expected_arms = ['O', 'A', 'B', 'C', 'D'] if protocol['phase'] == 'CM' else ['O', 'D']
+    if arms is not None and arms != expected_arms:
+        raise ValueError('Mixed protocols')
+    arms = expected_arms
     measured = [item for item in schedule if item['round'] > 0]
-    if len(measured) != 40 or len(schedule) != 45:
+    if len(measured) != 8 * len(arms) or len(schedule) != 9 * len(arms):
         raise ValueError('Incomplete fixed schedule')
     rows = {}
     identities = json.loads((root / 'identity-manifest.json').read_text())
-    if set(identities) != set(arms) or len({v['sha256'] for v in identities.values()}) != 5:
+    if set(identities) != set(arms) or len({v['sha256'] for v in identities.values()}) != len(arms):
         raise ValueError('IDENTITY GATE: missing or duplicate native hashes')
     parity = {}
     for item in schedule:
@@ -68,14 +72,14 @@ for name, job in jobs.items():
 groups = {name: [job] for name, job in jobs.items()}
 if len(jobs) > 1:
     groups['pooled'] = list(jobs.values())
-lines = ['# Published canary macOS memory screen', '', 'Positive deltas mean more memory or time in the newer arm.', '']
+lines = ['# macOS memory screen', '', 'Positive deltas mean more memory or time in the newer arm.', '']
 for group, selected in groups.items():
     cells = {}
     for arm in arms:
         data = [job['rows'][(r, arm)] for job in selected for r in range(1, 9)]
         cells[arm] = {'medians': {metric: statistics.median(get(row) for row in data) for metric, get in metrics.items()}, 'warningCounts': sorted({r['warningCount'] for r in data}), 'errorCounts': sorted({r['errorCount'] for r in data}), 'moduleCounts': sorted({r['moduleCount'] for r in data}), 'outputFiles': data[0]['outputFiles']}
     comparisons = {}
-    for base, treatment in [('O', 'A'), ('A', 'B'), ('B', 'C'), ('C', 'D'), ('O', 'D')]:
+    for base, treatment in [*zip(arms, arms[1:]), *([('O', 'D')] if len(arms) > 2 else [])]:
         comparisons[f'{treatment}-{base}'] = {}
         for metric, get in metrics.items():
             b = [get(job['rows'][(r, base)]) for job in selected for r in range(1, 9)]

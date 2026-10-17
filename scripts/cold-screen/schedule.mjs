@@ -5,7 +5,7 @@ import {canonicalEmission} from './emission.mjs';
 import {cells, memoryCells} from './layout.mjs';
 
 const phase = process.argv[2];
-if (!['S0', 'S1', 'CM'].includes(phase)) throw new Error('Expected S0, S1 or CM');
+if (!['S0', 'S1', 'CM', 'SP'].includes(phase)) throw new Error('Expected S0, S1, CM or SP');
 const root = path.resolve('bench-data/fixture');
 const results = path.resolve('bench-data/results');
 const manifestPath = path.join(results, 'identity-manifest.json');
@@ -16,9 +16,9 @@ const parity = new Map();
 const normalized = {};
 let referenceShape;
 let referenceCanonical;
-const deadline = Date.parse('2026-10-17T21:10:00Z');
+const deadline = Date.parse(phase === 'SP' ? '2026-10-17T22:10:00Z' : '2026-10-17T21:10:00Z');
 const selectedCells = process.platform === 'linux' ? cells : memoryCells;
-fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({phase, platform: process.platform, cells: selectedCells, rounds: phase === 'S1' ? 5 : phase === 'CM' ? 8 : 10, warmups: phase === 'S1' ? 'one per cell' : phase === 'CM' ? ['O', 'A', 'B', 'C', 'D'] : ['OFFICIAL-229', 'CANARY-96dcd72d'], deadline: new Date(deadline).toISOString()}, null, 2));
+fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({phase, platform: process.platform, cells: selectedCells, rounds: phase === 'S1' ? 5 : ['CM', 'SP'].includes(phase) ? 8 : 10, warmups: phase === 'S1' ? 'one per cell' : phase === 'CM' ? ['O', 'A', 'B', 'C', 'D'] : phase === 'SP' ? ['O', 'D'] : ['OFFICIAL-229', 'CANARY-96dcd72d'], deadline: new Date(deadline).toISOString()}, null, 2));
 function run(arm, cell, label, round = 0, diagnostic = false, wrongIdentity = false) {
   if (Date.now() >= deadline) throw new Error('Hard measurement deadline reached');
   fs.rmSync(path.join(root, 'out'), {recursive: true, force: true});
@@ -67,7 +67,7 @@ function run(arm, cell, label, round = 0, diagnostic = false, wrongIdentity = fa
 }
 if (phase === 'S0' && manifest['OFFICIAL-229'].sha256 === manifest['CANARY-96dcd72d'].sha256) throw new Error('IDENTITY GATE: equal arm hashes');
 if (new Set(Object.values(manifest).map(arm => arm.sha256)).size !== Object.keys(manifest).length) throw new Error('IDENTITY GATE: equal arm hashes');
-run(phase === 'CM' ? 'O' : 'OFFICIAL-229', phase === 'S1' ? 'K0' : null, 'negative-identity', 0, false, true);
+run(['CM', 'SP'].includes(phase) ? 'O' : 'OFFICIAL-229', phase === 'S1' ? 'K0' : null, 'negative-identity', 0, false, true);
 if (phase === 'S1') {
   for (const cell of selectedCells) run('OFFICIAL-229', cell, 'diagnostic', 0, true);
   fs.writeFileSync(path.join(results, 'diagnostics-complete.json'), JSON.stringify({cells: selectedCells, finished: new Date().toISOString()}));
@@ -83,6 +83,12 @@ if (phase === 'S1') {
   for (let round = 1; round <= 8; round++) {
     const rotation = (round - 1) % arms.length;
     for (const arm of [...arms.slice(rotation), ...arms.slice(0, rotation)]) run(arm, null, `round-${round}`, round);
+  }
+} else if (phase === 'SP') {
+  if (JSON.stringify(Object.keys(manifest)) !== JSON.stringify(['O', 'D'])) throw new Error('Unexpected source-pair manifest');
+  for (const arm of ['O', 'D']) run(arm, null, 'warmup');
+  for (let round = 1; round <= 8; round++) {
+    for (const arm of round % 2 ? ['O', 'D'] : ['D', 'O']) run(arm, null, `pair-${round}`, round);
   }
 } else {
   for (const arm of ['OFFICIAL-229', 'CANARY-96dcd72d']) run(arm, null, 'warmup');
