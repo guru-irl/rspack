@@ -10,6 +10,8 @@ mod memory_cache;
 mod resolver_cache;
 pub(crate) mod snapshot;
 mod validator;
+#[cfg(not(target_family = "wasm"))]
+mod value_codec;
 
 use std::sync::Arc;
 
