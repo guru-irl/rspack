@@ -105,7 +105,11 @@ impl FileCacheStrategy {
     }
 
     let start = self.logger.time("open cache database");
-    let mut database = match Database::open(base_path, path, self.readonly) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let opened = Database::open(base_path, path, self.readonly, self.logger.clone());
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let opened = Database::open(base_path, path, self.readonly);
+    let mut database = match opened {
       Ok(database) => database,
       Err(error) => {
         self.session_unavailable(Some(&error));
