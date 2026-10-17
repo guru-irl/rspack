@@ -1,8 +1,12 @@
 name: Paired v2.2.9 release bindings
 on:
-  push:
-    branches: [bench/pack-v229-plus44-plus43-build]
   workflow_dispatch:
+    inputs:
+      native_run:
+        description: Existing paired binding run; leave empty for fresh builds
+        type: string
+        required: false
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -15,6 +19,7 @@ env:
   GH_TOKEN: ${{ github.token }}
 jobs:
   build:
+    if: ${{ inputs.native_run == '' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 110
     strategy:
@@ -181,6 +186,8 @@ jobs:
         with:
           pattern: v229-paired-*-binding
           path: bench-data/bindings
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.native_run || github.run_id }}
       - name: Get the exact previously verified core package
         run: |
           set -euo pipefail
@@ -233,6 +240,7 @@ jobs:
           require(native);
           const maps = fs.readFileSync('/proc/self/maps','utf8');
           if(!maps.includes(native)) throw Error('Binding missing from process maps');
+          console.log('VERIFIED_NATIVE '+JSON.stringify({pid:process.pid,path:native,sha256:hash(native)}));
           fs.writeFileSync(process.env.MAPS_FILE,maps);
           JS
           node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
@@ -286,3 +294,146 @@ jobs:
             bench-data/results/
             bench-data/scripts/
           compression-level: 1
+  behavior:
+    needs: build
+    if: ${{ always() && !cancelled() && (needs.build.result == 'success' || inputs.native_run != '') }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: control
+            source: 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
+          - arm: treatment
+            source: d326f3c52a85dcfbbab83b9a29eae06506dacabf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Working directories and exact existing cases
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/binding
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          base=$(git rev-parse 96dcd72db4)
+          echo "$base" > bench-data/results/restored-from.sha
+          git restore --source="$base" --staged --worktree -- tests/rspack-test/watchCases/loaders/loader-cache-overlap tests/rspack-test/compilerCases/persist-build-info.mjs
+          git diff --exit-code "$base" -- tests/rspack-test/watchCases/loaders/loader-cache-overlap tests/rspack-test/compilerCases/persist-build-info.mjs
+          git ls-tree -r "$base" -- tests/rspack-test/watchCases/loaders/loader-cache-overlap tests/rspack-test/compilerCases/persist-build-info.mjs > bench-data/results/restored-blobs.txt
+          git --no-optional-locks status --short > bench-data/results/working-tree.txt
+      - uses: ./.github/actions/pnpm/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: v229-paired-${{ matrix.arm }}-binding
+          path: bench-data/binding
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.native_run || github.run_id }}
+      - name: Build the JavaScript artifacts used by tests
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+          cp bench-data/binding/pack/rspack.linux-x64-gnu.node crates/node_binding/
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Gate each check process by resolved native path and checksum
+        run: |
+          set -euo pipefail
+          cat > bench-data/identity.cjs <<'JS'
+          const fs=require('node:fs'),crypto=require('node:crypto'),path=require('node:path');
+          const native=fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);
+          const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+          if(hash(native)!==process.env.EXPECTED_NATIVE_SHA)throw Error('Native checksum mismatch');
+          const original=process.dlopen;
+          process.dlopen=function(m,p,...rest){
+            if(path.basename(p).startsWith('rspack.')&&p.endsWith('.node')&&(fs.realpathSync(p)!==native||hash(p)!==process.env.EXPECTED_NATIVE_SHA))throw Error('Wrong binding: '+p);
+            return original.call(this,m,p,...rest);
+          };
+          require(native);
+          if(!fs.readFileSync('/proc/self/maps','utf8').includes(native))throw Error('Expected native mapping missing');
+          console.log('VERIFIED_NATIVE '+JSON.stringify({pid:process.pid,path:native,sha256:hash(native)}));
+          JS
+          native="$GITHUB_WORKSPACE/crates/node_binding/rspack.linux-x64-gnu.node"
+          echo "NAPI_RS_NATIVE_LIBRARY_PATH=$native" >> "$GITHUB_ENV"
+          echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "NODE_OPTIONS=--require=$GITHUB_WORKSPACE/bench-data/identity.cjs" >> "$GITHUB_ENV"
+      - name: Run and preserve each case result including failures
+        run: |
+          set -euo pipefail
+          run_case() {
+            local suite="$1" case="$2" label="$3" log="bench-data/results/$3.log" rc
+            if pnpm --dir tests/rspack-test run test "$suite" --project base -t "$case" 2>&1 | tee "$log"; then
+              if grep -Eq '[1-9][0-9]* passed' "$log"; then
+                printf '%s\tPASS\t0\n' "$label" >> bench-data/results/case-status.tsv
+              else
+                printf '%s\tNO_TESTS\t1\n' "$label" >> bench-data/results/case-status.tsv
+              fi
+            else
+              rc=${PIPESTATUS[0]}
+              printf '%s\tFAIL\t%s\n' "$label" "$rc" >> bench-data/results/case-status.tsv
+            fi
+          }
+          for case in loader/async loader/sync loader/pitching loader/additional-data-passthrough loader/loader-raw-string loader/source-map loader/context-path loader/module-build-error-structure loader-parallel/loader-context loader-parallel/build-info loader-parallel/build-info-delete loader-parallel/build-info-not-cloneable; do
+            run_case Config.part2 "$case" "config-${case//\//-}"
+          done
+          run_case Config.part1 css-extract/with-contenthash config-css-extract-with-contenthash
+          run_case Watch loaders/loader-cache watch-loaders-loader-cache
+          run_case Watch loaders/loader-cache-overlap watch-loaders-loader-cache-overlap
+          run_case Compiler file-system-dependency-lifecycle compiler-file-system-dependency-lifecycle
+          run_case Compiler persist-build-info compiler-persist-build-info
+          if [[ '${{ matrix.arm }}' == treatment ]]; then
+            run_case Watch module-ids/compact-hashed-incremental watch-compact-hashed-incremental
+          fi
+          echo 'Persistent-cache compiler cases requiring DEBUG tracing were excluded from release-binding checks.' > bench-data/results/skips.txt
+      - name: Preserve all behavior outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v229-restored-${{ matrix.arm }}-behavior
+          path: |
+            bench-data/results/
+            bench-data/identity.cjs
+          compression-level: 1
+  classify:
+    needs: behavior
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v229-restored-*-behavior
+          path: evidence
+      - name: Compare matched case outcomes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def load(arm):
+              p=Path('evidence')/f'v229-restored-{arm}-behavior/results/case-status.tsv'
+              return {row.split('\t')[0]:row.split('\t')[1] for row in p.read_text().splitlines()}
+          control,treatment=load('control'),load('treatment')
+          rows=[]
+          bad=False
+          assert len(control)==17, control
+          assert len(treatment)==18, treatment
+          for case in sorted(control):
+              a,b=control[case],treatment[case]
+              if a=='NO_TESTS' or b=='NO_TESTS': verdict='MISSING TEST';bad=True
+              elif a=='PASS' and b=='PASS': verdict='PASS BOTH'
+              elif a=='FAIL' and b=='FAIL': verdict='NOT APPLICABLE: FAILS BOTH'
+              elif a=='PASS' and b=='FAIL': verdict='PORT DEFECT';bad=True
+              else: verdict='CONTROL-ONLY FAILURE: INVESTIGATE';bad=True
+              rows.append({'case':case,'control':a,'treatment':b,'verdict':verdict})
+          if treatment['watch-compact-hashed-incremental']!='PASS':bad=True
+          Path('classification.json').write_text(json.dumps(rows,indent=2)+'\n')
+          print(json.dumps(rows,indent=2))
+          if bad:raise SystemExit('Unsettled or treatment-only failure')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-restored-classification
+          path: classification.json
