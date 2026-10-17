@@ -306,6 +306,8 @@ export async function runLoaders(
       pitchExecuted: state.pitchExecuted,
       noPitch: state.noPitch,
     };
+    // Error returns must see in-place updates too, especially noPitch.
+    context.loaderItems[index] = item;
     return LoaderObject.__from_binding(item, compiler, parsedChain[index]);
   });
 
