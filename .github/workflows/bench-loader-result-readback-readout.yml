@@ -1,0 +1,47 @@
+name: Loader Result Readback Readout
+on:
+  workflow_dispatch:
+    inputs:
+      measurement_run:
+        required: true
+        default: '39038620613'
+permissions:
+  actions: read
+  contents: read
+jobs:
+  readout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MEASUREMENT_RUN: ${{ inputs.measurement_run }}
+      TMPDIR: ${{ github.workspace }}/bench-data/temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Download completed experiment evidence
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/temp bench-data/readout
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MEASUREMENT_RUN" > bench-data/readout/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MEASUREMENT_RUN/jobs" > bench-data/readout/jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MEASUREMENT_RUN/artifacts" > bench-data/readout/artifacts.json
+          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name loader-result-readback-newhead-macos-15 --dir bench-data/readout/macos-15
+          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name loader-result-readback-newhead-windows-2025 --dir bench-data/readout/windows-2025
+      - name: Recompute exact inference and assemble report
+        run: |
+          set -euo pipefail
+          python3 scripts/loader-result-readback/readout.py 2>&1 | tee bench-data/readout/verification.log
+          cat bench-data/final-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve verified report and raw evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: loader-result-readback-newhead-verified
+          retention-days: 30
+          path: bench-data/
+          compression-level: 1
