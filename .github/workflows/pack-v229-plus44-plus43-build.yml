@@ -338,6 +338,28 @@ jobs:
           cp bench-data/binding/pack/rspack.linux-x64-gnu.node crates/node_binding/
           pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
           git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Align test launcher runtime with the selected binding version
+        run: |
+          set -euo pipefail
+          gh run download 38890483976 --repo guru-irl/rspack --name pack-v2.2.9-loader-env-33-gha --dir bench-data/original
+          core=bench-data/original/B/rspack-core-2.2.9.tgz
+          echo "234b27b7c7cfaa4a535ad452deae4c2c8a4badd086297f0a0fedc2e1886f38a7  $core" | sha256sum -c -
+          mkdir -p bench-data/wrapper
+          (cd bench-data/wrapper; npm pack @rspack/binding@2.2.9)
+          wrapper=bench-data/wrapper/rspack-binding-2.2.9.tgz
+          echo "04e1989833d4077e64a1a8569a68119a7633c2bb4be7e5759dab4e6f0d70e116  $wrapper" | sha256sum -c -
+          for p in node_modules/.pnpm/@rspack+core@*/node_modules/@rspack/core; do
+            test -d "$p"
+            tar -xzf "$core" -C "$p" --strip-components=1
+            printf 'core %s\n' "$p" >> bench-data/results/launcher-runtime-overlays.txt
+            sha256sum "$p/dist/index.js" >> bench-data/results/launcher-runtime-overlays.txt
+          done
+          for p in node_modules/.pnpm/@rspack+binding@*/node_modules/@rspack/binding; do
+            test -d "$p"
+            tar -xzf "$wrapper" -C "$p" --strip-components=1
+            printf 'wrapper %s\n' "$p" >> bench-data/results/launcher-runtime-overlays.txt
+          done
+          git diff --exit-code 96dcd72db4 -- tests/rspack-test/watchCases/loaders/loader-cache-overlap tests/rspack-test/compilerCases/persist-build-info.mjs
       - name: Gate each check process by resolved native path and checksum
         run: |
           set -euo pipefail
