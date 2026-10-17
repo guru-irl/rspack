@@ -1,0 +1,288 @@
+name: Paired v2.2.9 release bindings
+on:
+  push:
+    branches: [bench/pack-v229-plus44-plus43-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  GH_TOKEN: ${{ github.token }}
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: control
+            source: 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
+          - arm: treatment
+            source: d326f3c52a85dcfbbab83b9a29eae06506dacabf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare durable working directories
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
+          git rev-parse HEAD > bench-data/results/source.sha
+          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2 -- crates Cargo.toml Cargo.lock rust-toolchain.toml
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: paired-v229-release
+          use-cache: false
+      - name: Free disk space
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare official release build
+        run: |
+          set -euo pipefail
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { date -u; node --version; pnpm --version; rustc -Vv; clang --version; ldd --version; df -h .; env | sort | grep -E '^(CARGO|RUST|TARGET_CC|Image)' || true; } > bench-data/results/environment.txt
+          test -z "${RUSTFLAGS:-}"
+          cargo fmt --all --check
+      - name: Build release binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          USE_NAPI_CROSS: 1
+          TARGET_CC: clang
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          pnpm run build:binding:release 2>&1 | tee bench-data/results/native-build.log
+          echo "$(( $(date +%s) - start ))" > bench-data/results/build-seconds.txt
+          grep -E 'Compiling (rspack_binding_api|rspack_ids) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -eq 2
+          cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
+          cp crates/node_binding/napi-binding.d.ts bench-data/results/generated-napi-binding.d.ts
+          git diff -- crates/node_binding/napi-binding.d.ts > bench-data/results/generated-types.diff
+      - name: Package and inspect binding
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official bench-data/package
+          (cd bench-data/official; npm pack @rspack/binding-linux-x64-gnu@2.2.9)
+          tar -xzf bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/package
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/package/package/
+          node -e 'const p=require("./bench-data/package/package/package.json"); if(p.name!=="@rspack/binding-linux-x64-gnu"||p.version!=="2.2.9")throw Error("Wrong package identity")'
+          (cd bench-data/package/package; npm pack --pack-destination ../../pack)
+          sha256sum bench-data/pack/* > bench-data/results/pack.sha256
+          readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/readelf-versions.txt
+          maximum=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/readelf-versions.txt | sort -Vu | tail -1)
+          echo "$maximum" | tee bench-data/results/maximum-glibc.txt
+          test "$(printf '%s\n' "$maximum" GLIBC_2.35 | sort -V | tail -1)" = GLIBC_2.35
+      - name: Preserve native package before behavior checks
+        uses: actions/upload-artifact@v4
+        with:
+          name: v229-paired-${{ matrix.arm }}-binding
+          path: |
+            bench-data/pack/
+            bench-data/results/runner-image.txt
+            bench-data/results/source.sha
+            bench-data/results/generated-napi-binding.d.ts
+          compression-level: 0
+      - name: Build JavaScript artifacts consumed by existing tests
+        run: |
+          set -euo pipefail
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Identity gate for every check process
+        run: |
+          set -euo pipefail
+          cat > bench-data/identity.cjs <<'JS'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const path = require('node:path');
+          const native = fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);
+          const sha = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+          if (sha(native) !== process.env.EXPECTED_NATIVE_SHA) throw Error('Native checksum mismatch');
+          const original = process.dlopen;
+          process.dlopen = function(m, p, ...rest) {
+            if (path.basename(p).startsWith('rspack.') && p.endsWith('.node')) {
+              if (fs.realpathSync(p) !== native || sha(p) !== process.env.EXPECTED_NATIVE_SHA) throw Error('Wrong native binding loaded: ' + p);
+              console.log('VERIFIED_NATIVE ' + JSON.stringify({pid:process.pid,path:native,sha256:sha(p)}));
+            }
+            return original.call(this,m,p,...rest);
+          };
+          require(native);
+          if (!fs.readFileSync('/proc/self/maps','utf8').includes(native)) throw Error('Expected binding missing from process maps');
+          JS
+          echo "NAPI_RS_NATIVE_LIBRARY_PATH=$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node" >> "$GITHUB_ENV"
+          echo "EXPECTED_NATIVE_SHA=$(sha256sum bench-data/pack/rspack.linux-x64-gnu.node | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "NODE_OPTIONS=--require=$GITHUB_WORKSPACE/bench-data/identity.cjs" >> "$GITHUB_ENV"
+      - name: Existing loader and cache behavior on each source tree
+        run: |
+          set -euo pipefail
+          cases=(loader/async loader/sync loader/pitching loader/additional-data-passthrough loader/loader-raw-string loader/source-map loader/context-path loader/module-build-error-structure loader-parallel/loader-context loader-parallel/build-info loader-parallel/build-info-delete loader-parallel/build-info-not-cloneable css-extract/with-contenthash)
+          for case in "${cases[@]}"; do
+            log="bench-data/results/config-${case//\//-}.log"
+            pnpm --dir tests/rspack-test run test --project base -t "$case" 2>&1 | tee "$log"
+            grep -E '[1-9][0-9]* passed' "$log"
+          done
+          for case in loaders/loader-cache loaders/loader-cache-overlap module-ids/compact-hashed-incremental; do
+            if [[ "$case" == module-ids/* && '${{ matrix.arm }}' == control ]]; then continue; fi
+            log="bench-data/results/watch-${case//\//-}.log"
+            pnpm --dir tests/rspack-test run test Watch --project base -t "$case" 2>&1 | tee "$log"
+            grep -E '[1-9][0-9]* passed' "$log"
+          done
+          for case in file-system-dependency-lifecycle persist-build-info; do
+            log="bench-data/results/compiler-$case.log"
+            pnpm --dir tests/rspack-test run test Compiler --project base -t "$case" 2>&1 | tee "$log"
+            grep -E '[1-9][0-9]* passed' "$log"
+          done
+          echo 'Persistent-cache compiler cases requiring DEBUG tracing were excluded from this release-binding run.' > bench-data/results/skips.txt
+      - name: Preserve build and test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v229-paired-${{ matrix.arm }}-evidence
+          path: bench-data/results/
+          compression-level: 1
+  parity:
+    needs: build
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare directories
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/scripts
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v229-paired-*-binding
+          path: bench-data/bindings
+      - name: Get the exact previously verified core package
+        run: |
+          set -euo pipefail
+          gh run download 38890483976 --repo guru-irl/rspack --name pack-v2.2.9-loader-env-33-gha --dir bench-data/original
+          core=bench-data/original/B/rspack-core-2.2.9.tgz
+          echo "234b27b7c7cfaa4a535ad452deae4c2c8a4badd086297f0a0fedc2e1886f38a7  $core" | sha256sum -c -
+          mkdir -p bench-data/runtime bench-data/official
+          printf '{"private":true}\n' > bench-data/runtime/package.json
+          npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund @rspack/core@2.2.9 acorn escodegen
+          tar -xzf "$core" -C bench-data/runtime/node_modules/@rspack/core --strip-components=1
+          (cd bench-data/official; npm pack @rspack/binding@2.2.9; npm pack @rspack/binding-linux-x64-gnu@2.2.9)
+          echo '04e1989833d4077e64a1a8569a68119a7633c2bb4be7e5759dab4e6f0d70e116  bench-data/official/rspack-binding-2.2.9.tgz' | sha256sum -c -
+          echo '11e6a686ef2756332fe6d29acc4f8c2c8c2bf2c59ea593e2381d9a52b0121d89  bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz' | sha256sum -c -
+          tar -xzf bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/official
+          cp bench-data/official/package/rspack.linux-x64-gnu.node bench-data/official/official.node
+          for arm in control treatment; do
+            cp "bench-data/bindings/v229-paired-$arm-binding/pack/rspack.linux-x64-gnu.node" "bench-data/$arm.node"
+          done
+          cmp bench-data/bindings/v229-paired-control-binding/results/runner-image.txt bench-data/bindings/v229-paired-treatment-binding/results/runner-image.txt
+          sha256sum bench-data/official/official.node bench-data/control.node bench-data/treatment.node | tee bench-data/results/native-identities.sha256
+          test "$(cut -d' ' -f1 bench-data/results/native-identities.sha256 | sort -u | wc -l)" -eq 3
+      - name: Prepare generic 60701 module loader fixture and gated runner
+        run: |
+          set -euo pipefail
+          git show origin/bench/program-native:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
+          git show origin/bench/program-native:scripts/program-native/run.mjs > bench-data/scripts/run.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('bench-data/scripts/prepare.mjs')
+          p.write_text(p.read_text().replace("path.resolve('bench-data/parser/node_modules')", "path.resolve('bench-data/runtime/node_modules')"))
+          p = Path('bench-data/scripts/run.mjs')
+          text = p.read_text().replace("from '../../packages/rspack/dist/index.js'", "from '../runtime/node_modules/@rspack/core/dist/index.js'")
+          text = text.replace("moduleIds: 'named', chunkIds: 'named'", "moduleIds: 'deterministic', chunkIds: 'deterministic'")
+          # Identity is checked by the preload before the static core import runs.
+          p.write_text(text)
+          PY
+          cat > bench-data/scripts/identity.cjs <<'JS'
+          const fs = require('node:fs'), crypto = require('node:crypto'), path = require('node:path');
+          const native = fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);
+          const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+          if(hash(native)!==process.env.EXPECTED_NATIVE_SHA) throw Error('Checksum mismatch');
+          const original = process.dlopen;
+          process.dlopen = function(m,p,...rest) {
+            if(path.basename(p).startsWith('rspack.') && p.endsWith('.node')) {
+              if(fs.realpathSync(p)!==native || hash(p)!==process.env.EXPECTED_NATIVE_SHA) throw Error('Unexpected binding: '+p);
+              console.log('VERIFIED_NATIVE '+JSON.stringify({pid:process.pid,path:native,sha256:hash(p)}));
+            }
+            return original.call(this,m,p,...rest);
+          };
+          require(native);
+          const maps = fs.readFileSync('/proc/self/maps','utf8');
+          if(!maps.includes(native)) throw Error('Binding missing from process maps');
+          fs.writeFileSync(process.env.MAPS_FILE,maps);
+          JS
+          node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
+      - name: Verify every emitted byte across official control and treatment
+        run: |
+          set -euo pipefail
+          for arm in official control treatment; do
+            native="$GITHUB_WORKSPACE/bench-data/$arm.node"
+            if [[ "$arm" == official ]]; then native="$GITHUB_WORKSPACE/bench-data/official/official.node"; fi
+            NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" MAPS_FILE="$GITHUB_WORKSPACE/bench-data/results/$arm.maps" NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" node bench-data/scripts/run.mjs bench-data/fixture "bench-data/results/$arm-build.json" 2>&1 | tee "bench-data/results/$arm-build.log"
+            mv bench-data/fixture/out "bench-data/$arm-output"
+          done
+          diff -r bench-data/official-output bench-data/control-output
+          diff -r bench-data/official-output bench-data/treatment-output
+          find bench-data/official-output -type f -exec sha256sum {} + > bench-data/results/output.sha256
+          echo PASS > bench-data/results/output-parity.txt
+      - name: Small compact hashed watch fixture
+        run: |
+          set -euo pipefail
+          cat > bench-data/scripts/watch.cjs <<'JS'
+          const fs=require('node:fs'),path=require('node:path');
+          const {rspack}=require('../runtime/node_modules/@rspack/core');
+          const root=path.resolve('bench-data/watch-fixture');
+          fs.mkdirSync(root,{recursive:true});
+          let entry='let sum=0;\n';
+          for(let i=0;i<100;i++) {fs.writeFileSync(path.join(root,`m${i}.js`),`module.exports=${i};\n`);entry+=`sum+=require('./m${i}.js');\n`;}
+          fs.writeFileSync(path.join(root,'index.js'),entry+'module.exports=sum;\n');
+          const compiler=rspack({mode:'development',context:root,entry:'./index.js',target:'node',cache:false,devtool:false,incremental:{silent:false},output:{path:path.join(root,'out'),filename:'main.cjs'},optimization:{moduleIds:'compact-hashed',chunkIds:'deterministic',minimize:false,concatenateModules:false}});
+          let notify,step=0,watching;
+          compiler.watchFileSystem={watch(_f,_d,_m,_s,_o,cb){notify=cb;return{close(){},pause(){},getInfo(){return{changes:new Set(),removals:new Set(),fileTimeInfoEntries:new Map(),contextTimeInfoEntries:new Map()}}}}};
+          const rows=[];
+          watching=compiler.watch({},(err,stats)=>{
+            if(err||!stats||stats.hasErrors())throw err||Error(stats?.toString({all:false,errors:true}));
+            const json=stats.toJson({all:false,modules:true,cachedModules:true,groupModulesByAttributes:false,groupModulesByCacheStatus:false,groupModulesByExtension:false,groupModulesByLayer:false,groupModulesByPath:false,groupModulesByType:false,groupModulesByEmitStatus:false,logging:'verbose',loggingDebug:[/^rspack\.(Compilation|incremental)/]});
+            const modules=json.modules.filter(m=>m.moduleType!=='runtime');
+            rows.push({step,modules:modules.length,processed:modules.filter(m=>m.codeGenerated).length,logging:json.logging});
+            if(step++===0){setImmediate(()=>{const file=path.join(root,'m0.js');fs.writeFileSync(file,'module.exports=1000;\n');compiler.inputFileSystem.purge([file]);if(!notify)throw Error('No watch callback');notify(null,new Map(),new Map(),new Set([file]),new Set());});}
+            else{const processed=rows[1].processed; if(process.env.ARM==='treatment' ? processed<1||processed>2 : processed<100)throw Error('Unexpected codegen work: '+JSON.stringify(rows));fs.writeFileSync(process.env.RESULT_FILE,JSON.stringify(rows,null,2));console.log(JSON.stringify(rows));watching.close(err=>{if(err)throw err;compiler.close(err=>{if(err)throw err;});});}
+          });
+          JS
+          for arm in control treatment; do
+            native="$GITHUB_WORKSPACE/bench-data/$arm.node"
+            ARM="$arm" RESULT_FILE="$GITHUB_WORKSPACE/bench-data/results/$arm-watch.json" NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" MAPS_FILE="$GITHUB_WORKSPACE/bench-data/results/$arm-watch.maps" NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" timeout 3m node bench-data/scripts/watch.cjs 2>&1 | tee "bench-data/results/$arm-watch.log"
+          done
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v229-paired-parity-evidence
+          path: |
+            bench-data/results/
+            bench-data/scripts/
+          compression-level: 1
