@@ -1,138 +1,153 @@
-name: Release Canary
+name: Main 96dcd72d canary pack
 
 on:
-  schedule:
-    - cron: '0 17 * * *'
-
   workflow_dispatch:
-    inputs:
-      commit:
-        required: true
-        type: string
-        description: 'Commit SHA'
-      test:
-        required: false
-        type: boolean
-        default: false
-        description: 'Run tests'
-      profile:
-        required: true
-        type: choice
-        default: release
-        options:
-          - release
-          - profiling
-          - ci
-          - debug
-        description: 'profiling means release with debug info for profiling, ci means release with debug info and faster build time'
 
 permissions:
-  # To publish packages with provenance
-  id-token: write
-  # Allow commenting on issues for `reusable-build.yml`
-  issues: write
+  contents: read
+  actions: read
 
 jobs:
-  build:
-    name: Build Canary
-    if: ${{ github.repository == 'web-infra-dev/rspack' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        array:
-          - target: x86_64-unknown-linux-gnu
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: aarch64-unknown-linux-gnu
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: riscv64gc-unknown-linux-gnu
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: x86_64-unknown-linux-musl
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: aarch64-unknown-linux-musl
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: riscv64gc-unknown-linux-musl
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: powerpc64le-unknown-linux-gnu
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: s390x-unknown-linux-gnu
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-          - target: i686-pc-windows-msvc
-            runner: ${{ vars.WINDOWS_SELF_HOSTED_RUNNER_LABELS || '"windows-latest"' }}
-          - target: x86_64-pc-windows-msvc
-            runner: ${{ vars.WINDOWS_SELF_HOSTED_RUNNER_LABELS || '"windows-latest"' }}
-          - target: aarch64-pc-windows-msvc
-            runner: ${{ vars.WINDOWS_SELF_HOSTED_RUNNER_LABELS || '"windows-latest"' }}
-          - target: x86_64-apple-darwin
-            runner: ${{ vars.MAC_SELF_HOSTED_RUNNER_LABELS || '"macos-latest"' }}
-          - target: aarch64-apple-darwin
-            runner: ${{ vars.MAC_SELF_HOSTED_RUNNER_LABELS || '"macos-latest"' }}
-          # Build the wasi and browser wasm variants as two parallel jobs (one
-          # variant per runner). Only the wasi (node) variant runs the wasm
-          # tests; the browser variant is build-only. Published wasm always uses
-          # the optimized release-wasi build with both variants compiled
-          # separately, so pin profile=release regardless of the canary profile.
-          - target: wasm32-wasip1-threads
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-            profile: release
-          - target: wasm32-wasip1-threads
-            runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
-            binding_postfix: '-browser'
-            profile: release
-    uses: ./.github/workflows/reusable-build.yml
-    with:
-      ref: ${{inputs.commit || github.sha}}
-      target: ${{ matrix.array.target }}
-      runner: ${{ matrix.array.runner }}
-      binding_postfix: ${{ matrix.array.binding_postfix }}
-      profile: ${{ matrix.array.profile || inputs.profile || 'release'}}
-      test: ${{inputs.test || false}}
-
-  release:
-    name: Release Canary
-    if: ${{ github.repository == 'web-infra-dev/rspack' }}
-    runs-on: ubuntu-latest
-    needs: build
-    environment: npm-canary
+  pack:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    env:
+      TMPDIR: ${{ github.workspace }}/.pack-work/tmp
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout Branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: web-infra-dev/rspack
+          ref: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
           fetch-depth: 1
-          ref: ${{inputs.commit}}
-
-      - name: Pnpm Setup
+      - name: Prepare workspace and record source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR" .pack-work/official .pack-work/output .pack-work/evidence
+          test "$(git rev-parse HEAD)" = 96dcd72db4d25a89c37d22d514285ab82fc46a3d
+          git rev-parse HEAD | tee .pack-work/evidence/source-commit.txt
+          gh run view 38937008091 --repo web-infra-dev/rspack --json headSha,status,conclusion,url | tee .pack-work/evidence/official-run.json
+          test "$(gh run view 38937008091 --repo web-infra-dev/rspack --json headSha --jq .headSha)" = "$(git rev-parse HEAD)"
+          gh run download 38937008091 --repo web-infra-dev/rspack -n bindings-x86_64-unknown-linux-gnu -D .pack-work/official
+          echo '0d99b2ae44d12d5be60cf47889d3b3659958d0ddb3860b6e27885a39b7d76849  .pack-work/official/rspack.linux-x64-gnu.node' | sha256sum -c -
+      - name: Node and pnpm
         uses: ./.github/actions/pnpm/setup
         with:
           node-version: 24
-
-      - name: Pnpm Install
-        run: pnpm i
-
-      - name: Download artifacts
-        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+      - name: Install repository dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          pnpm --version
+          pnpm install --frozen-lockfile 2>&1 | tee .pack-work/evidence/install.log
+      - name: Build core with repository build script
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "JS source commit: $(git rev-parse HEAD)"
+          pnpm --filter @rspack/core run build 2>&1 | tee .pack-work/evidence/build-js.log
+          git diff --exit-code
+      - name: Pack the three packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/.pack-work/output"
+          cp .pack-work/official/rspack.linux-x64-gnu.node npm/linux-x64-gnu/
+          pnpm --dir packages/rspack pack --pack-destination "$OUT" 2>&1 | tee .pack-work/evidence/pack-core.log
+          pnpm --dir crates/node_binding pack --pack-destination "$OUT" 2>&1 | tee .pack-work/evidence/pack-wrapper.log
+          pnpm --dir npm/linux-x64-gnu pack --pack-destination "$OUT" 2>&1 | tee .pack-work/evidence/pack-native.log
+          cp .pack-work/official/rspack.linux-x64-gnu.node "$OUT/"
+          mkdir -p .pack-work/core-unpacked
+          tar -xzf "$OUT/rspack-core-2.2.9.tgz" -C .pack-work/core-unpacked
+          diff -rq packages/rspack/dist .pack-work/core-unpacked/package/dist | tee .pack-work/evidence/dist-comparison.txt
+          find packages/rspack/dist -type f -print0 | sort -z | xargs -0 sha256sum | tee .pack-work/evidence/built-dist-sha256.txt
+          for p in "$OUT"/*.tgz; do tar -tzf "$p"; done | tee .pack-work/evidence/tarball-files.txt
+          for p in "$OUT"/*.tgz; do sha256sum "$p"; done
+      - name: Compare release wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .pack-work/stock
+          npm pack @rspack/binding@2.2.9 --ignore-scripts --pack-destination .pack-work/stock 2>&1 | tee .pack-work/evidence/stock-pack.log
+          tar -xzf .pack-work/stock/rspack-binding-2.2.9.tgz -C .pack-work/stock
+          cmp .pack-work/stock/package/binding.js crates/node_binding/binding.js
+          sha256sum .pack-work/stock/package/binding.js crates/node_binding/binding.js | tee .pack-work/evidence/wrapper-comparison.txt
+          echo 'Official npm 2.2.9 binding.js and target-commit binding.js are byte-identical.' | tee -a .pack-work/evidence/wrapper-comparison.txt
+      - name: Verify a clean installation and smoke fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .pack-work/clean
+          cd .pack-work/clean
+          printf '{"name":"rspack-canary-smoke","private":true,"version":"1.0.0"}\n' > package.json
+          npm install --ignore-scripts --omit=dev --omit=optional --legacy-peer-deps --package-lock=false ../output/rspack-core-2.2.9.tgz ../output/rspack-binding-2.2.9.tgz ../output/rspack-binding-linux-x64-gnu-2.2.9.tgz 2>&1 | tee ../evidence/clean-install.log
+          npm ls --all 2>&1 | tee ../evidence/clean-tree.txt
+          cat > verify.mjs <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const binding = require('@rspack/binding');
+          const { rspack, rspackVersion } = await import('@rspack/core');
+          const corePackage = require('@rspack/core/package.json');
+          const nativePath = fs.realpathSync(require.resolve('@rspack/binding-linux-x64-gnu'));
+          const sha = crypto.createHash('sha256').update(fs.readFileSync(nativePath)).digest('hex');
+          assert.equal(sha, '0d99b2ae44d12d5be60cf47889d3b3659958d0ddb3860b6e27885a39b7d76849');
+          const maps = [...new Set(fs.readFileSync('/proc/self/maps', 'utf8').split('\n').filter(l => /rspack.*\.node/.test(l)).map(l => l.slice(l.indexOf('/'))))];
+          assert.deepEqual(maps, [nativePath]);
+          assert.equal(binding.EXPECTED_RSPACK_CORE_VERSION, '2.2.9');
+          assert.equal(corePackage.version, binding.EXPECTED_RSPACK_CORE_VERSION);
+          assert.equal(rspackVersion, corePackage.version);
+          console.log(JSON.stringify({ nativePath, sha256: sha, maps, expectedCoreVersion: binding.EXPECTED_RSPACK_CORE_VERSION, coreVersion: rspackVersion }, null, 2));
+          const root = path.resolve('fixtures');
+          fs.mkdirSync(root, { recursive: true });
+          const files = {
+            'entry.js': 'import { value } from "./esm.js"; import "./style.css"; const cjs = require("./common.cjs"); console.log(value, cjs); import("./lazy.js").then(m => console.log(m.default));',
+            'esm.js': 'export const value = 42;',
+            'common.cjs': 'module.exports = "commonjs";',
+            'lazy.js': 'export default "lazy";',
+            'style.css': 'body { color: red; }',
+            'parser.js': 'export function regression(a, k, v, d) { (a?.b)[k] = v; (a?.b).c = d; return a; }'
+          };
+          for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(root, name), text);
+          async function compile(name, entry) {
+            const compiler = rspack({ mode: 'development', context: root, entry, cache: false, devtool: false, experiments: { css: true }, output: { path: path.join(root, 'out-' + name), filename: '[name].js', chunkFilename: '[name].js' } });
+            const stats = await new Promise((resolve, reject) => compiler.run((err, stats) => err ? reject(err) : resolve(stats)));
+            try {
+              assert(stats);
+              console.log(name + ': ' + stats.toString({ all: false, errors: true, warnings: true, assets: true }));
+              assert.equal(stats.hasErrors(), false, stats.toString({ all: false, errors: true }));
+              if (name === 'generic') {
+                const assets = stats.toJson({ all: false, assets: true }).assets;
+                assert(assets.some(a => a.name.endsWith('.css')));
+                assert(assets.filter(a => a.name.endsWith('.js')).length >= 2);
+              }
+              console.log(name + ': PASS');
+            } finally {
+              await new Promise((resolve, reject) => compiler.close(err => err ? reject(err) : resolve()));
+            }
+          }
+          await compile('generic', './entry.js');
+          await compile('parser-regression', './parser.js');
+          console.log('ALL VERIFICATIONS PASSED');
+          JS
+          node verify.mjs 2>&1 | tee ../evidence/verification.log
+      - name: Upload delivery
+        uses: actions/upload-artifact@v4
         with:
-          path: artifacts
-          pattern: bindings-*
-
-      - name: Clean artifacts
-        run: find artifacts -type f -name '*.d.ts'  | xargs rm -f
-
-      - name: Move artifacts
-        run: |
-          ls -R artifacts
-          node scripts/build-npm.mjs
-
-      - name: Show binding packages
-        run: ls -R npm
-
-      # Update npm to the latest version to enable OIDC
-      - name: Update npm
-        run: |
-          npm install -g npm@latest
-          npm --version
-
-      - name: Release
-        run: |
-          ./x version snapshot
-          pnpm run build:js:canary
-          ./x publish snapshot --tag latest
+          name: main-96dcd72d-canary-pack
+          path: .pack-work/output/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-96dcd72d-canary-evidence
+          path: .pack-work/evidence/
+          if-no-files-found: warn
+          retention-days: 14
