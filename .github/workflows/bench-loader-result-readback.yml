@@ -1,121 +1,18 @@
 name: Loader Result Readback
 on:
   workflow_dispatch:
-    inputs:
-      platform:
-        type: choice
-        default: windows
-        options: [xplat, ubuntu, windows]
 permissions:
   contents: read
 concurrency:
-  group: loader-result-readback-${{ github.ref }}-${{ inputs.platform }}
+  group: loader-result-readback-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  ubuntu:
-    if: github.event_name == 'workflow_dispatch' && inputs.platform == 'ubuntu'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 170
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '4'
-      TMPDIR: ${{ github.workspace }}/bench-data/temp
-      BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
-      PR: 29b16ecd9bbb55357080ad40f1d6ccfe77ef5a58
-      BINDING_PATH: ${{ github.workspace }}/crates/node_binding/rspack.linux-x64-gnu.node
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - name: Scratch directory
-        run: set -euo pipefail; mkdir -p bench-data/temp bench-data/results bench-data/bindings
-      - uses: ./.github/actions/pnpm/setup
-      - name: Install dependencies
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
-      - uses: ./.github/actions/rustup
-        with:
-          key: x86_64-unknown-linux-gnu-ci
-          save-if: true
-      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
-        with:
-          tool-cache: false
-      - name: Environment and source identity
-        run: |
-          set -euo pipefail
-          { node --version; uname -a; lscpu; free -h; df -h .; rustc -Vv; git rev-parse HEAD; } | tee bench-data/results/environment.txt
-          echo "CLOCK_TICKS=$(getconf CLK_TCK)" >> "$GITHUB_ENV"
-          git diff "$BASE" "$PR" --stat | tee bench-data/results/source-diff.txt
-          git diff "$BASE" "$PR" > bench-data/results/source.diff
-          cargo fmt --all --check
-      - name: Build base and JavaScript artifacts
-        run: |
-          set -euo pipefail
-          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
-          cargo codegen
-          rm -f "$BINDING_PATH"
-          pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
-          cp "$BINDING_PATH" bench-data/bindings/base.node
-          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
-      - name: Existing loader cases on base
-        run: set -euo pipefail; pnpm --dir tests/rspack-test run test --project base -t loader 2>&1 | tee bench-data/results/base-loaders.log
-      - name: Build candidate
-        run: |
-          set -euo pipefail
-          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
-          rm -f "$BINDING_PATH"
-          pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
-          cp "$BINDING_PATH" bench-data/bindings/pr.node
-          git diff --exit-code "$BASE" -- crates/node_binding/napi-binding.d.ts
-          sha256sum bench-data/bindings/*.node | tee bench-data/results/bindings.sha256
-          if cmp -s bench-data/bindings/base.node bench-data/bindings/pr.node; then
-            echo 'Identical arm binaries: refusing tests and timing'
-            exit 1
-          fi
-      - name: Existing loader config, compiler and watch cases
-        run: |
-          set -euo pipefail
-          pnpm --dir tests/rspack-test run test --project base -t loader 2>&1 | tee bench-data/results/pr-loaders.log
-          pnpm --dir tests/rspack-test run test --project base -t compiler 2>&1 | tee bench-data/results/pr-compiler.log
-          pnpm --dir tests/rspack-test run test --project base -t css-extract 2>&1 | tee bench-data/results/pr-css-extract.log
-          pnpm --dir tests/rspack-test run test --project base -t build-info 2>&1 | tee bench-data/results/pr-build-info.log
-      - name: Generate unchanged native-study fixture
-        run: set -euo pipefail; node scripts/program-native/prepare.mjs bench-data/fixture
-      - name: Two warmups and ten alternating pairs
-        run: set -euo pipefail; node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
-      - name: Summarize
-        run: |
-          set -euo pipefail
-          python3 scripts/loader-result-readback/summary.py
-          cat bench-data/results/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Unit suites
-        run: |
-          set -euo pipefail
-          cp bench-data/bindings/pr.node "$BINDING_PATH"
-          timeout 35m pnpm run test:unit 2>&1 | tee bench-data/results/unit.log
-      - name: Preserve evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: loader-result-readback-ubuntu
-          path: |
-            bench-data/results/
-            scripts/loader-result-readback/
-            scripts/program-native/prepare.mjs
-            scripts/program-native/run.mjs
-          compression-level: 1
   memory:
-    if: inputs.platform != 'ubuntu'
     name: Memory (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(inputs.platform == 'windows' && '["windows-2025"]' || '["macos-15", "windows-2025"]') }}
+        runner: [macos-15, windows-2025]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 135
     defaults:
@@ -126,7 +23,7 @@ jobs:
       CARGO_BUILD_JOBS: '3'
       TMPDIR: ${{ github.workspace }}/bench-data/temp
       BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
-      PR: 29b16ecd9bbb55357080ad40f1d6ccfe77ef5a58
+      PR: 300a8a6a38d1251db2e75d5933676e123eddbdd0
       EXPECTED_OS: ${{ matrix.runner == 'macos-15' && 'darwin' || 'win32' }}
       EXPECTED_ARCH: ${{ matrix.runner == 'macos-15' && 'arm64' || 'x64' }}
       NATIVE_FILE: ${{ matrix.runner == 'macos-15' && 'rspack.darwin-arm64.node' || 'rspack.win32-x64-msvc.node' }}
@@ -149,6 +46,13 @@ jobs:
         with:
           key: ${{ matrix.runner == 'macos-15' && 'aarch64-apple-darwin-ci' || 'x86_64-pc-windows-msvc-ci' }}
           save-if: true
+      - name: Harness preflight
+        run: |
+          set -euo pipefail
+          node --check scripts/program-native/run.mjs
+          node --check scripts/loader-result-readback/pairs.mjs
+          python3 -m py_compile scripts/loader-result-readback/summary.py scripts/loader-result-readback/exact.py
+          python3 -c 'import sys; sys.path.insert(0, "scripts/loader-result-readback"); from exact import paired_location; assert paired_location([0]*10, [1]*10)["exact95"] == [1, 1]; assert paired_location([0]*10, [0]*10)["exact95"] == [0, 0]'
       - name: Environment and source identity
         run: |
           set -euo pipefail
@@ -157,7 +61,7 @@ jobs:
             import os from "node:os";
             import {createHash} from "node:crypto";
             if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Wrong runner architecture");
-            const fixtureScripts = Object.fromEntries(["scripts/program-native/prepare.mjs", "scripts/program-native/run.mjs", "scripts/loader-result-readback/pairs.mjs", "scripts/loader-result-readback/exact.py"].map(file => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
+            const fixtureScripts = Object.fromEntries(["scripts/program-native/prepare.mjs", "scripts/program-native/run.mjs", "scripts/loader-result-readback/pairs.mjs", "scripts/loader-result-readback/exact.py", "scripts/loader-result-readback/summary.py"].map(file => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
             const value = {started: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version, os: os.version(), release: os.release(), cpus: os.cpus(), ram: os.totalmem(), image: process.env.ImageOS, imageVersion: process.env.ImageVersion, base: process.env.BASE, pr: process.env.PR, fixtureScripts};
             fs.writeFileSync("bench-data/results/environment.json", JSON.stringify(value, null, 2));
             console.log(JSON.stringify(value, null, 2));'
@@ -165,24 +69,28 @@ jobs:
           git merge-base "$BASE" "$PR" | tee bench-data/results/merge-base.txt
           test "$(git merge-base "$BASE" "$PR")" = "$BASE"
           git diff "$BASE" "$PR" > bench-data/results/source.diff
+          if [ "$EXPECTED_OS" != win32 ]; then cargo fmt --all --check; fi
       - name: Build base and JavaScript artifacts
         run: |
           set -euo pipefail
-          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
+          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/node_binding/napi-binding.d.ts
           git diff --exit-code "$BASE" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
           cargo codegen
           rm -f "$BINDING_PATH"
           pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
+          grep -F 'Compiling rspack_binding_api' bench-data/results/base-build.log
           cp "$BINDING_PATH" bench-data/bindings/base.node
           pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
       - name: Build candidate with identical settings
         run: |
           set -euo pipefail
-          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs
+          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/node_binding/napi-binding.d.ts
+          git diff --exit-code "$PR" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
           rm -f "$BINDING_PATH"
           pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
+          grep -F 'Compiling rspack_binding_api' bench-data/results/pr-build.log
           cp "$BINDING_PATH" bench-data/bindings/pr.node
-          git diff --exit-code "$BASE" -- crates/node_binding/napi-binding.d.ts
+          git diff --exit-code "$PR" -- crates/node_binding/napi-binding.d.ts
       - name: Native identity gate before timing
         run: |
           set -euo pipefail
@@ -197,11 +105,11 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/program-native/prepare.mjs bench-data/fixture
-      - name: Two warmups and ten alternating fresh-process pairs
+      - name: Fixed fresh-process protocol
         run: |
           set -euo pipefail
           node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
-      - name: Exact paired analysis
+      - name: Exact paired or block analysis
         run: |
           set -euo pipefail
           python3 scripts/loader-result-readback/summary.py 2>&1 | tee bench-data/results/analysis.log
@@ -211,7 +119,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: loader-result-readback-${{ matrix.runner }}
+          name: loader-result-readback-newhead-${{ matrix.runner }}
+          retention-days: 30
           path: |
             bench-data/results/
             scripts/loader-result-readback/

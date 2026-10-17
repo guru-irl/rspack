@@ -3,6 +3,12 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { performance, PerformanceObserver } from 'node:perf_hooks';
 import os from 'node:os';
+import v8 from 'node:v8';
+const memorySnapshot = () => {
+  const heap = v8.getHeapStatistics();
+  const memory = process.memoryUsage();
+  return {v8: Object.fromEntries(['used_heap_size', 'total_heap_size', 'total_physical_size', 'malloced_memory', 'external_memory'].map(key => [key, heap[key]])), process: memory, nativeEstimate: memory.rss - heap.total_physical_size};
+};
 import { createRequire } from 'node:module';
 import { rspack } from '../../packages/rspack/dist/index.js';
 const [rootArg, resultArg] = process.argv.slice(2);
@@ -62,9 +68,19 @@ mark('buildEnd');
 const mainCpuMs = process.platform === 'linux' ? (mainTicks() - startTicks) * 1000 / Number(process.env.CLOCK_TICKS) : null;
 const processCpuUs = process.cpuUsage(cpuStart);
 const peakRss = process.resourceUsage().maxRSS * 1024;
-const steadyRss = process.memoryUsage().rss;
+const endSnapshot = memorySnapshot();
+const steadyRss = endSnapshot.process.rss;
 if (stats.hasErrors() || stats.hasWarnings()) throw new Error(stats.toString({all: false, errors: true, warnings: true}));
 await new Promise(resolve => setImmediate(resolve));
+const buildEnd = start + buildMs;
+for (const e of observer.takeRecords()) gc.push({start: e.startTime, duration: e.duration, kind: e.detail.kind});
+const buildGc = gc.filter(e => e.start >= start && e.start <= buildEnd);
+const gcActivity = {count: buildGc.length, durationMs: buildGc.reduce((sum, e) => sum + e.duration, 0), byKind: {}};
+for (const e of buildGc) {
+  const value = gcActivity.byKind[e.kind] ??= {count: 0, durationMs: 0};
+  value.count++;
+  value.durationMs += e.duration;
+}
 observer.disconnect();
 const makeGcMs = gc.reduce((sum, e) => sum + Math.max(0, Math.min(e.start + e.duration, makeEndMs) - Math.max(e.start, makeStartMs)), 0);
 if (globalThis.loaderCalls.noop !== 60701 || globalThis.loaderCalls.ast !== 6000 || globalThis.loaderCalls.rewrite !== 3000) throw new Error('Unexpected loader counts');
@@ -79,13 +95,16 @@ function hashFiles(dir) {
 }
 hashFiles(outputRoot);
 if (!outputFiles.length) throw new Error('No emitted files');
-const result = {bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
+const result = {bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 console.log(JSON.stringify({...result, gc: undefined}));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
 mark('closeEnd');
-result.closeRss = process.memoryUsage().rss;
-globalThis.gc?.();
+result.snapshots.close = memorySnapshot();
+result.closeRss = result.snapshots.close.process.rss;
+if (typeof globalThis.gc !== 'function') throw new Error('Explicit GC is required');
+globalThis.gc();
 await new Promise(resolve => setTimeout(resolve, 200));
-result.idleRss = process.memoryUsage().rss;
+result.snapshots.postGc = memorySnapshot();
+result.idleRss = result.snapshots.postGc.process.rss;
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
