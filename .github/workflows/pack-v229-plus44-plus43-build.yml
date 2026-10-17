@@ -262,7 +262,7 @@ jobs:
           set -euo pipefail
           cat > bench-data/scripts/watch.cjs <<'JS'
           const fs=require('node:fs'),path=require('node:path');
-          const {rspack}=require('../runtime/node_modules/@rspack/core');
+          const {rspack}=require('../runtime/node_modules/@rspack/core/dist/index.js');
           const root=path.resolve('bench-data/watch-fixture');
           fs.mkdirSync(root,{recursive:true});
           let entry='let sum=0;\n';
@@ -375,8 +375,18 @@ jobs:
           };
           require(native);
           if(!fs.readFileSync('/proc/self/maps','utf8').includes(native))throw Error('Expected native mapping missing');
-          console.log('VERIFIED_NATIVE '+JSON.stringify({pid:process.pid,path:native,sha256:hash(native)}));
+          const identity={pid:process.pid,threadId:require('node:worker_threads').threadId,argv:process.argv,path:native,sha256:hash(native)};
+          console.log('VERIFIED_NATIVE '+JSON.stringify(identity));
+          if(process.env.NATIVE_IDENTITY_LOG)fs.appendFileSync(process.env.NATIVE_IDENTITY_LOG,JSON.stringify(identity)+'\n');
           JS
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/rspack-test/rstack.config.mts')
+          text=p.read_text()
+          assert text.count('execArgv: [')==1
+          preload=str(Path('bench-data/identity.cjs').resolve())
+          p.write_text(text.replace('execArgv: [', 'execArgv: [\n        "--require='+preload+'",'))
+          PY
           native="$GITHUB_WORKSPACE/crates/node_binding/rspack.linux-x64-gnu.node"
           echo "NAPI_RS_NATIVE_LIBRARY_PATH=$native" >> "$GITHUB_ENV"
           echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
@@ -386,6 +396,7 @@ jobs:
           set -euo pipefail
           run_case() {
             local suite="$1" case="$2" label="$3" log="bench-data/results/$3.log" rc
+            export NATIVE_IDENTITY_LOG="$GITHUB_WORKSPACE/bench-data/results/$label-native.jsonl"
             if pnpm --dir tests/rspack-test run test "$suite" --project base -t "$case" 2>&1 | tee "$log"; then
               if grep -Eq '[1-9][0-9]* passed' "$log"; then
                 printf '%s\tPASS\t0\n' "$label" >> bench-data/results/case-status.tsv
@@ -408,6 +419,18 @@ jobs:
           if [[ '${{ matrix.arm }}' == treatment ]]; then
             run_case Watch module-ids/compact-hashed-incremental watch-compact-hashed-incremental
           fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=Path('bench-data/results/case-status.tsv').read_text().splitlines()
+          for row in rows:
+              case=row.split('\t')[0]
+              p=Path('bench-data/results')/(case+'-native.jsonl')
+              identities=[json.loads(line) for line in p.read_text().splitlines()]
+              assert identities, case
+              assert all(item['path'].endswith('/crates/node_binding/rspack.linux-x64-gnu.node') for item in identities), identities
+          print('Verified per-case native identity records for',len(rows),'case groups')
+          PY
           echo 'Persistent-cache compiler cases requiring DEBUG tracing were excluded from release-binding checks.' > bench-data/results/skips.txt
       - name: Preserve all behavior outcomes
         if: always()
