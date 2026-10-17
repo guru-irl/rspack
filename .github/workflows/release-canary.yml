@@ -115,7 +115,7 @@ jobs:
           };
           for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(root, name), text);
           async function compile(name, entry) {
-            const compiler = rspack({ mode: 'development', context: root, entry, cache: false, devtool: false, experiments: { css: true }, output: { path: path.join(root, 'out-' + name), filename: '[name].js', chunkFilename: '[name].js' } });
+            const compiler = rspack({ mode: 'development', context: root, entry, cache: false, devtool: false, experiments: { css: true }, module: { rules: [{ test: /\.css$/, type: 'css/auto' }] }, output: { path: path.join(root, 'out-' + name), filename: '[name].js', chunkFilename: '[name].js' } });
             const stats = await new Promise((resolve, reject) => compiler.run((err, stats) => err ? reject(err) : resolve(stats)));
             try {
               assert(stats);
