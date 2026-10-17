@@ -38,7 +38,7 @@ jobs:
           echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
           printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
           git rev-parse HEAD > bench-data/results/source.sha
-          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2 -- crates Cargo.toml Cargo.lock rust-toolchain.toml
+          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e 5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2 -- ':(glob)crates/**/*.rs' ':(glob)crates/**/Cargo.toml' Cargo.toml Cargo.lock rust-toolchain.toml
       - uses: ./.github/actions/pnpm/setup
       - name: Install dependencies
         run: |
