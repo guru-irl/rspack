@@ -7,6 +7,11 @@ on:
         type: string
         required: false
         default: ''
+      summary_only:
+        description: Export retained evidence without executing builds or tests
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
   actions: read
@@ -19,7 +24,7 @@ env:
   GH_TOKEN: ${{ github.token }}
 jobs:
   build:
-    if: ${{ inputs.native_run == '' }}
+    if: ${{ inputs.native_run == '' && !inputs.summary_only }}
     runs-on: ubuntu-22.04
     timeout-minutes: 110
     strategy:
@@ -165,7 +170,7 @@ jobs:
           compression-level: 1
   parity:
     needs: build
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && !inputs.summary_only }}
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
@@ -296,7 +301,7 @@ jobs:
           compression-level: 1
   behavior:
     needs: build
-    if: ${{ always() && !cancelled() && (needs.build.result == 'success' || inputs.native_run != '') }}
+    if: ${{ always() && !cancelled() && !inputs.summary_only && (needs.build.result == 'success' || inputs.native_run != '') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     strategy:
@@ -443,7 +448,7 @@ jobs:
           compression-level: 1
   classify:
     needs: behavior
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && !inputs.summary_only }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v4
@@ -482,3 +487,86 @@ jobs:
         with:
           name: v229-restored-classification
           path: classification.json
+  export:
+    if: ${{ inputs.summary_only }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Download retained evidence and the original native packages
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/export
+          export TMPDIR="$GITHUB_WORKSPACE/bench-data/tmp"
+          gh run download 39041070957 --repo guru-irl/rspack --name v229-paired-parity-evidence --dir bench-data/masked
+          gh run download 39041349325 --repo guru-irl/rspack --name v229-paired-parity-evidence --dir bench-data/named
+          gh run download 39041349325 --repo guru-irl/rspack --name v229-restored-classification --dir bench-data/classification
+          for arm in control treatment; do
+            gh run download 39041349325 --repo guru-irl/rspack --name "v229-restored-$arm-behavior" --dir "bench-data/behavior-$arm"
+            gh run download 39038743636 --repo guru-irl/rspack --name "v229-paired-$arm-binding" --dir "bench-data/binding-$arm"
+            gh run download 39038743636 --repo guru-irl/rspack --name "v229-paired-$arm-evidence" --dir "bench-data/build-$arm"
+          done
+      - name: Validate retained observations without rebuilding or rerunning fixtures
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,re,tarfile
+          from pathlib import Path
+          root=Path('bench-data')
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          report={'native':{},'masked':{},'named':{},'fixture':{},'behavior':{}}
+          for arm in ('control','treatment'):
+              pack=root/f'binding-{arm}'/'pack'
+              native=(pack/'rspack.linux-x64-gnu.node').read_bytes()
+              with tarfile.open(pack/'rspack-binding-linux-x64-gnu-2.2.9.tgz') as tf:
+                  pkg=json.load(tf.extractfile('package/package.json'))
+                  assert pkg['name']=='@rspack/binding-linux-x64-gnu' and pkg['version']=='2.2.9'
+                  assert tf.extractfile('package/rspack.linux-x64-gnu.node').read()==native
+              build=root/f'build-{arm}'
+              compile_lines=[s.strip() for s in (build/'native-build.log').read_text().splitlines() if re.search(r'Compiling (rspack_binding_api|rspack_ids) ',s)]
+              assert len(compile_lines)==2,compile_lines
+              report['native'][arm]={'sha256':sha(native),'packageSha256':sha((pack/'rspack-binding-linux-x64-gnu-2.2.9.tgz').read_bytes()),'seconds':int((build/'build-seconds.txt').read_text()),'glibc':(build/'maximum-glibc.txt').read_text().strip(),'compileLines':compile_lines,'source':(root/f'binding-{arm}'/'results/source.sha').read_text().strip()}
+              assert report['native'][arm]['glibc']=='GLIBC_2.15'
+              identities=(root/'named/results/native-identities.sha256').read_text()
+              assert report['native'][arm]['sha256'] in identities
+              masked_log=(root/f'masked/results/{arm}-watch.log').read_text()
+              counts=[{'step':int(step),'modules':int(modules),'processed':int(processed)} for step,modules,processed in re.findall(r'"step":(\d+),"modules":(\d+),"processed":(\d+)',masked_log)]
+              assert len(counts)==2 and counts[1]['modules']==101 and counts[1]['processed']==101,counts
+              report['masked'][arm]=counts
+              named=json.loads((root/f'named/results/{arm}-watch.json').read_text())
+              report['named'][arm]=[{k:row[k] for k in ('step','modules','processed')} for row in named]
+              assert named[1]['modules']==101
+              assert named[1]['processed']==(101 if arm=='control' else 1),named
+              results=root/f'behavior-{arm}'/'results'
+              assert (results/'restored-from.sha').read_text().strip()=='96dcd72db4d25a89c37d22d514285ab82fc46a3d'
+              statuses=[s.split('\t') for s in (results/'case-status.tsv').read_text().splitlines()]
+              identity_contexts={}
+              for case,status,rc in statuses:
+                  records=[json.loads(s) for s in (results/f'{case}-native.jsonl').read_text().splitlines()]
+                  assert records and all(r['sha256']==sha(native) for r in records),case
+                  identity_contexts[case]=len({(r['pid'],r['threadId']) for r in records})
+              report['behavior'][arm]={'caseGroups':len(statuses),'identityContexts':identity_contexts}
+          assert (root/'binding-control/results/runner-image.txt').read_bytes()==(root/'binding-treatment/results/runner-image.txt').read_bytes()
+          report['runnerImage']=(root/'binding-control/results/runner-image.txt').read_text().splitlines()
+          assert (root/'behavior-control/results/restored-blobs.txt').read_bytes()==(root/'behavior-treatment/results/restored-blobs.txt').read_bytes()
+          classifications=json.loads((root/'classification/classification.json').read_text())
+          assert len(classifications)==17
+          assert all(r['verdict'] in ('PASS BOTH','NOT APPLICABLE: FAILS BOTH') for r in classifications)
+          report['caseClassification']=classifications
+          for arm in ('official','control','treatment'):
+              result=json.loads((root/f'named/results/{arm}-build.json').read_text())
+              assert result['loaderCalls']=={'noop':60701,'ast':6000,'rewrite':3000}
+              log=(root/f'named/results/{arm}-build.log').read_text()
+              record=json.loads(re.search(r'VERIFIED_NATIVE (\{[^\n]+\})',log).group(1))
+              assert record['path'] in (root/f'named/results/{arm}.maps').read_text()
+              report['fixture'][arm]={'buildMs':result['buildMs'],'nativePath':record['path'],'nativeSha256':record['sha256'],'loaderCalls':result['loaderCalls']}
+          assert len({v['nativeSha256'] for v in report['fixture'].values()})==3
+          assert (root/'named/results/output-parity.txt').read_text().strip()=='PASS'
+          report['outputHashes']=(root/'named/results/output.sha256').read_text().splitlines()
+          (root/'export/summary.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-paired-final-summary
+          path: bench-data/export/
