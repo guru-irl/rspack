@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use super::*;
 use crate::{
-  CacheValue, Etag, ModuleCodeGenerationContext, MultiItemCache, compilation::pass::PassExt,
-  get_runtime_key, logger::Logger,
+  CacheValue, Etag, ModuleCodeGenerationContext, MultiItemCache, URLStaticMode,
+  compilation::pass::PassExt, get_runtime_key, logger::Logger,
 };
 
 const CODE_GENERATION_CACHE_NAME: &str = "Compilation/codeGeneration";
@@ -224,11 +224,13 @@ pub(crate) async fn code_generation_modules(
             codegen_result_builder
               .runtime_requirements_mut()
               .extend(*runtime_template.runtime_requirements());
-            if module.as_concatenated_module().is_some() {
-              // Concatenated modules are special here: `job.hash` already
-              // fingerprints the generated module bodies, so we only need
-              // to fold in the remaining codegen metadata.
-              codegen_result_builder.set_hash_for_concatenated_module(
+            if module.as_concatenated_module().is_some()
+              || codegen_result_builder.data().contains::<URLStaticMode>()
+            {
+              // The module hash already fingerprints the codegen inputs. Static URL
+              // sources contain dependency IDs that are replaced during rendering,
+              // so hashing those temporary sources would depend on allocation order.
+              codegen_result_builder.set_hash_from_module_hash(
                 &job.hash,
                 &options.output.hash_function,
                 &options.output.hash_digest,
