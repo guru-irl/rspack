@@ -54,6 +54,7 @@ jobs:
           node --check scripts/program-native/run.mjs
           node --check scripts/cold-screen/install.mjs
           node --check scripts/cold-screen/layout.mjs
+          node --check scripts/cold-screen/emission.mjs
           node --check scripts/cold-screen/schedule.mjs
           python3 -m py_compile scripts/cold-screen/summary.py scripts/loader-result-readback/exact.py
           python3 -c 'import sys; sys.path.insert(0, "scripts/loader-result-readback"); from exact import paired_location; assert paired_location([0]*10, [1]*10)["exact95"] == [1, 1]; assert paired_location([0]*10, [0]*10)["exact95"] == [0, 0]'
@@ -80,7 +81,7 @@ jobs:
       - name: Diagnostics then fixed fresh-process schedule
         run: |
           set -euo pipefail
-          node scripts/cold-screen/schedule.mjs '${{ inputs.screen }}' > bench-data/results/measure-console.log 2>&1
+          node --expose-gc scripts/cold-screen/schedule.mjs '${{ inputs.screen }}' > bench-data/results/measure-console.log 2>&1
       - name: Summarize
         run: |
           set -euo pipefail

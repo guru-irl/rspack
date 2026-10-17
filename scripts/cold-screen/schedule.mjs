@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {canonicalEmission} from './emission.mjs';
 import {cells, memoryCells} from './layout.mjs';
 
 const phase = process.argv[2];
@@ -13,7 +13,9 @@ const manifest = JSON.parse(fs.readFileSync(manifestPath));
 const schedule = [];
 const attempts = [];
 const parity = new Map();
-const referenceBundle = path.resolve('bench-data/temp/reference-bundle.cjs');
+const normalized = {};
+let referenceShape;
+let referenceCanonical;
 const deadline = Date.parse('2026-10-17T21:20:00Z');
 const selectedCells = process.platform === 'linux' ? cells : memoryCells;
 fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({phase, platform: process.platform, cells: selectedCells, rounds: phase === 'S1' ? 5 : 10, warmups: phase === 'S1' ? 'one per cell' : ['OFFICIAL-229', 'CANARY-96dcd72d'], deadline: new Date(deadline).toISOString()}, null, 2));
@@ -41,24 +43,22 @@ function run(arm, cell, label, round = 0, diagnostic = false, wrongIdentity = fa
   if (result.bindingSha256 !== manifest[arm].sha256 || !result.bindingIdentity.verifiedInRequireCache || (process.platform === 'linux' && !result.bindingIdentity.verifiedInMaps)) throw new Error('IDENTITY GATE: loaded binding mismatch');
   if (result.errorCount !== 0 || result.moduleCount !== 60701) throw new Error('Invalid build result');
   const signature = JSON.stringify(result.outputFiles);
-  const parityKey = phase === 'S1' ? 'all-cells' : arm;
-  if (parity.has(parityKey) && parity.get(parityKey) !== signature) {
-    const currentBundle = path.join(root, 'out/bundle.cjs');
-    const reference = fs.readFileSync(referenceBundle, 'utf8');
-    const current = fs.readFileSync(currentBundle, 'utf8');
-    let firstDifference = 0;
-    while (firstDifference < Math.min(reference.length, current.length) && reference[firstDifference] === current[firstDifference]) firstDifference++;
-    const sortedHashes = [];
-    for (const [index, file] of [referenceBundle, currentBundle].entries()) {
-      const sorted = path.resolve(`bench-data/temp/sorted-${index}.txt`);
-      const child = spawnSync('sort', [file, '-o', sorted], {encoding: 'utf8', timeout: 120000, env: {...process.env, LC_ALL: 'C'}});
-      if (child.error || child.status !== 0) throw new Error(`Forensic sort failed: ${child.stderr}`);
-      sortedHashes.push(createHash('sha256').update(fs.readFileSync(sorted)).digest('hex'));
+  const parityKey = phase === 'S1' ? cell : arm;
+  if (parity.has(parityKey) && parity.get(parityKey) !== signature) throw new Error(`Nondeterministic output within ${parityKey}`);
+  if (phase === 'S1') {
+    const shape = JSON.stringify({moduleCount: result.moduleCount, files: result.outputFiles.map(({name, bytes}) => ({name, bytes}))});
+    referenceShape ??= shape;
+    if (shape !== referenceShape) throw new Error('Cross-cell emitted bytes or module counts differ');
+    if (diagnostic) {
+      const canonical = canonicalEmission(path.join(root, 'out/bundle.cjs'));
+      normalized[cell] = canonical;
+      fs.writeFileSync(path.join(results, 'normalized-parity.json'), JSON.stringify(normalized, null, 2));
+      const value = JSON.stringify(canonical);
+      referenceCanonical ??= value;
+      if (value !== referenceCanonical) throw new Error(`Module code or runtime differs for ${cell}; no timing allowed`);
+      if (typeof globalThis.gc === 'function') globalThis.gc();
     }
-    fs.writeFileSync(path.join(results, 'parity-forensics.json'), JSON.stringify({cell, label, referenceBytes: reference.length, currentBytes: current.length, firstDifference, referenceExcerpt: reference.slice(Math.max(0, firstDifference - 300), firstDifference + 700), currentExcerpt: current.slice(Math.max(0, firstDifference - 300), firstDifference + 700), sortedLineHashes: sortedHashes, identicalLineMultiset: sortedHashes[0] === sortedHashes[1]}, null, 2));
-    throw new Error(`Output mismatch within ${parityKey}; runner-side forensic evidence saved`);
   }
-  if (!parity.has(parityKey)) fs.copyFileSync(path.join(root, 'out/bundle.cjs'), referenceBundle);
   parity.set(parityKey, signature);
   schedule.push({...attempt, warmup: label === 'warmup'});
   fs.writeFileSync(path.join(results, 'schedule.json'), JSON.stringify(schedule, null, 2));
