@@ -39,6 +39,45 @@ const mainTicks = () => {
   const fields = fs.readFileSync(`/proc/self/task/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ');
   return Number(fields[11]) + Number(fields[12]);
 };
+const taskSnapshot = () => {
+  const rows = [];
+  for (const name of fs.readdirSync('/proc/self/task')) {
+    const tid = Number(name);
+    try {
+      const raw = fs.readFileSync(`/proc/self/task/${tid}/stat`, 'utf8');
+      const end = raw.lastIndexOf(')');
+      const fields = raw.slice(end + 2).trim().split(/\s+/);
+      const status = fs.readFileSync(`/proc/self/task/${tid}/status`, 'utf8');
+      const get = key => Number(status.match(new RegExp(`^${key}:\\s+(\\d+)`, 'm'))?.[1] ?? 0);
+      rows.push({tid, comm: raw.slice(raw.indexOf('(') + 1, end), utime: Number(fields[11]), stime: Number(fields[12]), voluntary: get('voluntary_ctxt_switches'), nonvoluntary: get('nonvoluntary_ctxt_switches')});
+    } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error; }
+  }
+  return rows.sort((a, b) => a.tid - b.tid);
+};
+const taskDeltas = (before, after) => {
+  const starts = new Map(before.map(row => [row.tid, row]));
+  const ends = new Map(after.map(row => [row.tid, row]));
+  const union = new Map([...starts, ...ends]);
+  const creators = new Map();
+  for (const row of union.values()) if (/^tokio-\d+$/.test(row.comm)) creators.set(row.comm, Math.min(creators.get(row.comm) ?? Infinity, row.tid));
+  const groups = Object.fromEntries(['main', 'rspack-tokio', 'rayon', 'v8', 'libuv', 'other'].map(name => [name, {utime: 0, stime: 0, voluntary: 0, nonvoluntary: 0, startCount: 0, endCount: 0, createdCount: 0, names: {}}]));
+  const rows = [];
+  for (const row of union.values()) {
+    const start = starts.get(row.tid), end = ends.get(row.tid);
+    const group = row.tid === process.pid ? 'main' : /^tokio-\d+$/.test(row.comm) ? (creators.get(row.comm) === row.tid ? 'rspack-tokio' : 'rayon') : row.comm.startsWith('V8 ') ? 'v8' : row.comm === 'libuv-worker' ? 'libuv' : 'other';
+    const delta = {tid: row.tid, comm: row.comm, group, created: !start, exited: !end};
+    for (const key of ['utime', 'stime', 'voluntary', 'nonvoluntary']) delta[key] = end ? end[key] - (start?.[key] ?? 0) : 0;
+    delta.userMs = delta.utime * 1000 / Number(process.env.CLOCK_TICKS);
+    delta.systemMs = delta.stime * 1000 / Number(process.env.CLOCK_TICKS);
+    const g = groups[group];
+    for (const key of ['utime', 'stime', 'voluntary', 'nonvoluntary']) g[key] += delta[key];
+    g.startCount += Number(!!start); g.endCount += Number(!!end); g.createdCount += Number(!start);
+    g.names[row.comm] = (g.names[row.comm] ?? 0) + Number(!!end);
+    rows.push(delta);
+  }
+  for (const g of Object.values(groups)) { g.userMs = g.utime * 1000 / Number(process.env.CLOCK_TICKS); g.systemMs = g.stime * 1000 / Number(process.env.CLOCK_TICKS); }
+  return {clockTicks: Number(process.env.CLOCK_TICKS), start: before, end: after, rows, groups, exitedThreads: rows.filter(row => row.exited)};
+};
 const gc = [];
 const observer = new PerformanceObserver(list => { for (const e of list.getEntries()) gc.push({start: e.startTime, duration: e.duration, kind: e.detail.kind}); });
 observer.observe({entryTypes: ['gc']});
@@ -69,6 +108,8 @@ const compiler = rspack({
     });
   }}]
 });
+const loadBefore = fs.readFileSync('/proc/loadavg', 'utf8').trim();
+const taskStart = taskSnapshot();
 const startTicks = mainTicks();
 const threadStart = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : null;
 const cpuStart = process.cpuUsage();
@@ -82,6 +123,9 @@ const mainCpuMs = process.platform === 'linux' ? (mainTicks() - startTicks) * 10
 const processCpuUs = process.cpuUsage(cpuStart);
 const peakRss = process.resourceUsage().maxRSS * 1024;
 const endSnapshot = memorySnapshot();
+const taskEnd = taskSnapshot();
+const loadAfter = fs.readFileSync('/proc/loadavg', 'utf8').trim();
+const threads = taskDeltas(taskStart, taskEnd);
 const steadyRss = endSnapshot.process.rss;
 const errorCount = stats.compilation.errors.length;
 const warningCount = stats.compilation.warnings.length;
@@ -113,7 +157,7 @@ function hashFiles(dir) {
 }
 hashFiles(outputRoot);
 if (!outputFiles.length) throw new Error('No emitted files');
-const result = {cell, diagnostic, diagnosticCounts, moduleCount, warningCount, errorCount, threadCpuUs, mainCpuMethod: process.platform === 'linux' ? 'proc-task-stat' : threadCpuUs ? 'process.threadCpuUsage' : 'unavailable', bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
+const result = {threads, loadBefore, loadAfter, availableParallelism: os.availableParallelism(), poolEnv: {rayon: process.env.RAYON_NUM_THREADS ?? null, tokio: process.env.TOKIO_WORKER_THREADS ?? null}, cell, diagnostic, diagnosticCounts, moduleCount, warningCount, errorCount, threadCpuUs, mainCpuMethod: process.platform === 'linux' ? 'proc-task-stat' : threadCpuUs ? 'process.threadCpuUsage' : 'unavailable', bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 console.log(JSON.stringify({...result, gc: undefined}));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
