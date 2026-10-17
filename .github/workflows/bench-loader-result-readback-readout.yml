@@ -1,5 +1,8 @@
 name: Loader Result Readback Readout
 on:
+  push:
+    branches: [bench/loader-result-readback-xplat-300a8a6a]
+    paths: [.github/workflows/bench-loader-result-readback-readout.yml, scripts/loader-result-readback/readout.py]
   workflow_dispatch:
     inputs:
       measurement_run:
@@ -17,7 +20,7 @@ jobs:
         shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
-      MEASUREMENT_RUN: ${{ inputs.measurement_run }}
+      MEASUREMENT_RUN: ${{ inputs.measurement_run || '39038620613' }}
       TMPDIR: ${{ github.workspace }}/bench-data/temp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
