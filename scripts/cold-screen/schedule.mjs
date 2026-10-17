@@ -16,7 +16,8 @@ const parity = new Map();
 const normalized = {};
 let referenceShape;
 let referenceCanonical;
-const deadline = Date.parse(phase === 'SP' ? '2026-10-17T22:10:00Z' : '2026-10-17T21:10:00Z');
+const deadline = Date.parse(process.env.MEASUREMENT_DEADLINE || (phase === 'SP' ? '2026-10-17T22:10:00Z' : '2026-10-17T21:10:00Z'));
+if (!Number.isFinite(deadline)) throw new Error('Invalid measurement deadline');
 const selectedCells = process.platform === 'linux' ? cells : memoryCells;
 fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({phase, platform: process.platform, cells: selectedCells, rounds: phase === 'S1' ? 5 : ['CM', 'SP'].includes(phase) ? 8 : 10, warmups: phase === 'S1' ? 'one per cell' : phase === 'CM' ? ['O', 'A', 'B', 'C', 'D'] : phase === 'SP' ? ['O', 'D'] : ['OFFICIAL-229', 'CANARY-96dcd72d'], deadline: new Date(deadline).toISOString()}, null, 2));
 function run(arm, cell, label, round = 0, diagnostic = false, wrongIdentity = false) {

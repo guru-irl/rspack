@@ -49,6 +49,8 @@ for (const [arm, source, expected] of [['O', 'before', 'b7df6926fd6bc1ccbfb7c15e
   fs.copyFileSync(path.join(built, 'rspack.darwin-arm64.node'), bindingPath);
   fs.copyFileSync(path.join(built, 'binding.js'), path.join(bindingDir, 'binding.js'));
   const sha256 = createHash('sha256').update(fs.readFileSync(bindingPath)).digest('hex');
+  const expectedSha256 = arm === 'O' ? '4229de6dfa1cabdac3f264ccced223c6e2e3ea24db9a7dba715451aa5c13a73b' : '7e362044e46396fbfa7dec89110c75daeba7cea62c9c4134c7278ab60a3a1957';
+  if (sha256 !== expectedSha256) throw new Error(`IDENTITY GATE: retained ${source} native SHA-256 mismatch`);
   require(name);
   const loaded = Object.keys(require.cache).filter(file => file.endsWith('.node') && file.startsWith(bindingDir + path.sep));
   if (loaded.length !== 1 || fs.realpathSync(loaded[0]) !== fs.realpathSync(bindingPath)) throw new Error('IDENTITY GATE: wrong source binding loaded');
