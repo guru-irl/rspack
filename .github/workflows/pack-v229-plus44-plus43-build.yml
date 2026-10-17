@@ -268,7 +268,7 @@ jobs:
           let entry='let sum=0;\n';
           for(let i=0;i<100;i++) {fs.writeFileSync(path.join(root,`m${i}.js`),`module.exports=${i};\n`);entry+=`sum+=require('./m${i}.js');\n`;}
           fs.writeFileSync(path.join(root,'index.js'),entry+'module.exports=sum;\n');
-          const compiler=rspack({mode:'development',context:root,entry:'./index.js',target:'node',cache:false,devtool:false,incremental:{silent:false},output:{path:path.join(root,'out'),filename:'main.cjs'},optimization:{moduleIds:'compact-hashed',chunkIds:'deterministic',minimize:false,concatenateModules:false}});
+          const compiler=rspack({mode:'development',context:root,entry:'./index.js',target:'node',cache:false,devtool:false,incremental:{silent:false},output:{path:path.join(root,'out'),filename:'main.cjs'},optimization:{moduleIds:'compact-hashed',chunkIds:'named',minimize:false,concatenateModules:false}});
           let notify,step=0,watching;
           compiler.watchFileSystem={watch(_f,_d,_m,_s,_o,cb){notify=cb;return{close(){},pause(){},getInfo(){return{changes:new Set(),removals:new Set(),fileTimeInfoEntries:new Map(),contextTimeInfoEntries:new Map()}}}}};
           const rows=[];
