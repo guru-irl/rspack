@@ -94,7 +94,7 @@ jobs:
       - name: Touched-crate clippy
         run: |
           set -euo pipefail
-          cargo clippy -p rspack_binding_api --all-targets --features plugin,test-loader -- --deny warnings 2>&1 | tee bench-data/results/clippy.log
+          cargo clippy -p rspack_binding_api --all-targets --no-deps --features plugin,test-loader -- --deny warnings 2>&1 | tee bench-data/results/clippy.log
       - name: Unit suites
         run: |
           set -euo pipefail
