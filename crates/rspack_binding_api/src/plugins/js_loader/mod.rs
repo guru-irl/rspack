@@ -7,7 +7,9 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-pub(crate) use context::JsLoaderContextResult;
+pub(crate) use context::{
+  JsLoaderChainMetadata, JsLoaderContextResult, LoaderChainKey, LoaderChainMetadata,
+};
 pub use context::{JsLoaderContext, JsLoaderDependencies, JsLoaderItem};
 use napi::{
   bindgen_prelude::*,
@@ -19,7 +21,7 @@ use rspack_core::{
 };
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::{COMPILER_REFERENCES, error::RspackResultToNapiResultExt};
@@ -116,6 +118,7 @@ pub(crate) struct JsLoaderRspackPlugin {
   /// See: https://github.com/web-infra-dev/rspack/pull/10632
   pub(crate) runner: Mutex<Arc<tokio::sync::OnceCell<JsLoaderRunner>>>,
   pub(crate) loaders_without_pitch: RwLock<FxHashSet<String>>,
+  pub(crate) loader_chains: Mutex<FxHashMap<LoaderChainKey, Arc<LoaderChainMetadata>>>,
 }
 
 impl JsLoaderRspackPlugin {
@@ -125,6 +128,7 @@ impl JsLoaderRspackPlugin {
       runner_getter,
       Mutex::default(),
       RwLock::new(FxHashSet::default()),
+      Mutex::default(),
     )
   }
 }
@@ -143,6 +147,7 @@ async fn this_compilation(
 ) -> Result<()> {
   let compiler_id = compilation.compiler_id();
   let _ = self.compiler_id.get_or_init(|| compiler_id);
+  self.loader_chains.lock().expect("should get lock").clear();
   Ok(())
 }
 
@@ -159,6 +164,7 @@ async fn close(&self, _compilation: &Compilation) -> Result<()> {
   // Emit normally clears the runner, but builds that skip emit still own it.
   *self.runner.lock().expect("should get lock") = Arc::new(OnceCell::new());
   self.runner_getter.close();
+  self.loader_chains.lock().expect("should get lock").clear();
   Ok(())
 }
 

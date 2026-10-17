@@ -72,6 +72,13 @@ const IS_WASM = Boolean(process.env.WASM);
 
 type LoaderObjectOptions = string | (object & { ident?: unknown }) | null;
 
+// Weak keys let old compilation templates go when Rust releases their references.
+// Values contain only parsed strings, never loader objects or resolved options.
+const parsedLoaderChains = new WeakMap<
+  JsLoaderItem[],
+  ReturnType<typeof parseResourceWithoutFragment>[]
+>();
+
 function stringifyLoaderRequest(path: string, query: string, fragment: string) {
   return (
     path.replace(/#/g, '\u200b#') + query.replace(/#/g, '\u200b#') + fragment
@@ -95,8 +102,11 @@ export class LoaderObject {
    */
   loaderItem: JsLoaderItem;
 
-  constructor(loaderItem: JsLoaderItem, compiler: Compiler) {
-    const splittedRequest = parseResourceWithoutFragment(loaderItem.loader);
+  constructor(
+    loaderItem: JsLoaderItem,
+    compiler: Compiler,
+    splittedRequest = parseResourceWithoutFragment(loaderItem.loader),
+  ) {
     this.path = splittedRequest.path;
     this.fragment = '';
     this.options = splittedRequest.query
@@ -181,8 +191,9 @@ export class LoaderObject {
   static __from_binding(
     loaderItem: JsLoaderItem,
     compiler: Compiler,
+    splittedRequest?: ReturnType<typeof parseResourceWithoutFragment>,
   ): LoaderObject {
-    return new this(loaderItem, compiler);
+    return new this(loaderItem, compiler, splittedRequest);
   }
 
   static __to_binding(loader: LoaderObject): JsLoaderItem {
@@ -275,8 +286,27 @@ export async function runLoaders(
   /// Construct `loaderContext`
   const loaderContext = {} as LoaderContext;
 
-  loaderContext.loaders = context.loaderItems.map((item) => {
-    return LoaderObject.__from_binding(item, compiler);
+  const chain = context.loaderChain;
+  let parsedChain = parsedLoaderChains.get(chain);
+  if (!parsedChain) {
+    parsedChain = chain.map((item) =>
+      parseResourceWithoutFragment(item.loader),
+    );
+    parsedLoaderChains.set(chain, parsedChain);
+  }
+  loaderContext.loaders = context.loaderItems.map((state, index) => {
+    const metadata = chain[index];
+    // Preserve the original own-property order and writable data descriptors.
+    const item: JsLoaderItem = {
+      loader: metadata.loader,
+      type: metadata.type,
+      cache: metadata.cache,
+      data: state.data,
+      normalExecuted: state.normalExecuted,
+      pitchExecuted: state.pitchExecuted,
+      noPitch: state.noPitch,
+    };
+    return LoaderObject.__from_binding(item, compiler, parsedChain[index]);
   });
 
   loaderContext.hot = context.hot;

@@ -1,10 +1,16 @@
+use std::sync::Arc;
+
 use napi::bindgen_prelude::{Either3, JsValuesTupleIntoVec};
+use rspack_collections::Identifier;
 use rspack_core::{AdditionalData, LoaderContext, NormalModuleLoaderStartYielding, RunnerContext};
 use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rspack_hook::plugin_hook;
 use rspack_loader_runner::State as LoaderState;
 
-use super::{JsLoaderContextResult, JsLoaderRspackPlugin, JsLoaderRspackPluginInner};
+use super::{
+  JsLoaderChainMetadata, JsLoaderContext, JsLoaderContextResult, JsLoaderRspackPlugin,
+  JsLoaderRspackPluginInner, LoaderChainKey, LoaderChainMetadata,
+};
 
 impl JsLoaderRspackPlugin {
   async fn update_loaders_without_pitch(&self, list: Vec<String>) {
@@ -54,8 +60,23 @@ pub(crate) async fn loader_yield(
     .await
     .to_rspack_result()?;
 
+  let key: LoaderChainKey = loader_context
+    .loader_items
+    .iter()
+    .map(|item| (item.request(), Identifier::from(item.r#type()), item.cache()))
+    .collect();
+  let metadata = {
+    let mut chains = self.loader_chains.lock().expect("should get lock");
+    Arc::clone(
+      chains
+        .entry(key)
+        .or_insert_with_key(|key| Arc::new(LoaderChainMetadata::new(key.clone()))),
+    )
+  };
+  let context =
+    JsLoaderContext::from_loader_context(loader_context, JsLoaderChainMetadata(metadata))?;
   let new_cx = runner
-    .call_async(loader_context.try_into()?)
+    .call_async(context)
     .await
     .to_rspack_result()?
     .await

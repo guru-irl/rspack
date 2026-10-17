@@ -2,6 +2,7 @@ use std::{ptr::NonNull, sync::Arc};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use rspack_collections::Identifier;
 use rspack_core::{Content, LoaderContext, LoaderDependencies, Module, RunnerContext};
 use rspack_error::ToStringResultToRspackResultExt;
 use rspack_loader_runner::State as LoaderState;
@@ -24,6 +25,58 @@ pub struct JsLoaderItem {
   pub normal_executed: bool,
   pub pitch_executed: bool,
 
+  pub no_pitch: bool,
+}
+
+pub(crate) type LoaderChainKey = Vec<(Identifier, Identifier, bool)>;
+
+// A compiler owns one entry per distinct chain in the current compilation.
+// Only ToNapiValue accesses the JS reference, on the compiler's owning JS thread.
+pub(crate) struct LoaderChainMetadata {
+  pub(crate) items: LoaderChainKey,
+  value: once_cell::sync::OnceCell<ThreadsafeOneShotRef>,
+}
+
+impl LoaderChainMetadata {
+  pub(crate) fn new(items: LoaderChainKey) -> Self {
+    Self {
+      items,
+      value: Default::default(),
+    }
+  }
+}
+
+pub struct JsLoaderChainMetadata(pub(crate) Arc<LoaderChainMetadata>);
+
+impl ToNapiValue for JsLoaderChainMetadata {
+  unsafe fn to_napi_value(env: napi::sys::napi_env, val: Self) -> napi::Result<napi::sys::napi_value> {
+    let value = val.0.value.get_or_try_init(|| {
+      let items: Vec<_> = val
+        .0
+        .items
+        .iter()
+        .map(|(loader, r#type, cache)| JsLoaderItem {
+          loader: loader.to_string(),
+          r#type: r#type.to_string(),
+          cache: *cache,
+          data: serde_json::Value::Null,
+          normal_executed: false,
+          pitch_executed: false,
+          no_pitch: false,
+        })
+        .collect();
+      ThreadsafeOneShotRef::new(env, items)
+    })?;
+    // The reference is borrowed rather than consumed, and never reaches loaders.
+    unsafe { ToNapiValue::to_napi_value(env, value) }
+  }
+}
+
+#[napi(object, object_from_js = false)]
+pub struct JsLoaderItemState {
+  pub data: serde_json::Value,
+  pub normal_executed: bool,
+  pub pitch_executed: bool,
   pub no_pitch: bool,
 }
 
@@ -187,7 +240,9 @@ pub struct JsLoaderContext {
   pub added_dependencies: JsLoaderDependencies,
   pub removed_dependencies: JsLoaderDependencies,
 
-  pub loader_items: Vec<JsLoaderItem>,
+  #[napi(ts_type = "JsLoaderItem[]")]
+  pub loader_chain: JsLoaderChainMetadata,
+  pub loader_items: Vec<JsLoaderItemState>,
   pub loader_index: i32,
   #[napi(ts_type = "Readonly<JsLoaderState>")]
   pub loader_state: JsLoaderState,
@@ -217,12 +272,11 @@ pub(crate) struct JsLoaderContextResult {
   pub error: Option<RspackError>,
 }
 
-impl TryFrom<&mut LoaderContext<RunnerContext>> for JsLoaderContext {
-  type Error = rspack_error::Error;
-
-  fn try_from(
-    cx: &mut rspack_core::LoaderContext<RunnerContext>,
-  ) -> std::result::Result<Self, Self::Error> {
+impl JsLoaderContext {
+  pub(crate) fn from_loader_context(
+    cx: &mut LoaderContext<RunnerContext>,
+    loader_chain: JsLoaderChainMetadata,
+  ) -> rspack_error::Result<Self> {
     let content = match cx.take_content() {
       Some(Content::String(content)) => Either3::A(content),
       Some(Content::Buffer(content)) => Either3::B(content.into()),
@@ -259,7 +313,17 @@ impl TryFrom<&mut LoaderContext<RunnerContext>> for JsLoaderContext {
       added_dependencies: cx.added_dependencies().into(),
       removed_dependencies: cx.removed_dependencies().into(),
 
-      loader_items: cx.loader_items.iter().map(Into::into).collect(),
+      loader_chain,
+      loader_items: cx
+        .loader_items
+        .iter()
+        .map(|item| JsLoaderItemState {
+          data: item.data().clone(),
+          normal_executed: item.normal_executed(),
+          pitch_executed: item.pitch_executed(),
+          no_pitch: false,
+        })
+        .collect(),
       loader_index: cx.loader_index,
       loader_state: cx.state().into(),
       error: None,
