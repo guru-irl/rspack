@@ -1012,8 +1012,6 @@ export interface JsLoaderContextResult {
   sourceMap?: Buffer
   cacheable: boolean
   dependencies: JsLoaderDependencies
-  addedDependencies: JsLoaderDependencies
-  removedDependencies: JsLoaderDependencies
   loaderItems: Array<JsLoaderItemResult>
   loaderIndex: number
   __internal__error?: RspackError
