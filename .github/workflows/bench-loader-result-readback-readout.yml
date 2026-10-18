@@ -1,40 +1,46 @@
-name: Loader Result Readback Readout
+name: Single-wake memory readout
 on:
   push:
-    branches: [bench/loader-result-readback-xplat-300a8a6a]
+    branches: [bench/single-wake-xplat-aad66192]
     paths: [.github/workflows/bench-loader-result-readback-readout.yml, scripts/loader-result-readback/readout.py]
   workflow_dispatch:
     inputs:
       measurement_run:
         required: true
-        default: '39038620613'
+        default: '39164758273'
 permissions:
   actions: read
   contents: read
 jobs:
   readout:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 155
     defaults:
       run:
         shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
-      MEASUREMENT_RUN: ${{ inputs.measurement_run || '39038620613' }}
+      MEASUREMENT_RUN: ${{ inputs.measurement_run || '39164758273' }}
       TMPDIR: ${{ github.workspace }}/bench-data/temp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - name: Download completed experiment evidence
+      - name: Wait for the single measurement run
         run: |
           set -euo pipefail
           mkdir -p bench-data/temp bench-data/readout
+          python3 -m py_compile scripts/loader-result-readback/readout.py
+          gh run watch "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 60 > bench-data/readout/measurement-watch.log 2>&1
+      - name: Download completed experiment evidence
+        run: |
+          set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MEASUREMENT_RUN" > bench-data/readout/run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MEASUREMENT_RUN/jobs" > bench-data/readout/jobs.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MEASUREMENT_RUN/artifacts" > bench-data/readout/artifacts.json
-          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name loader-result-readback-newhead-macos-15 --dir bench-data/readout/macos-15
-          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name loader-result-readback-newhead-windows-2025 --dir bench-data/readout/windows-2025
+          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name single-wake-memory-ubuntu-24.04 --dir bench-data/readout/ubuntu-24.04
+          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name single-wake-memory-macos-15 --dir bench-data/readout/macos-15
+          gh run download "$MEASUREMENT_RUN" --repo "$GITHUB_REPOSITORY" --name single-wake-memory-windows-2025 --dir bench-data/readout/windows-2025
       - name: Recompute exact inference and assemble report
         run: |
           set -euo pipefail
@@ -44,7 +50,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: loader-result-readback-newhead-verified
+          name: single-wake-memory-verified
           retention-days: 30
           path: bench-data/
           compression-level: 1
