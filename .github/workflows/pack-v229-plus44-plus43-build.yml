@@ -2,6 +2,11 @@ name: Matched Linux release binding pairs
 on:
   workflow_dispatch:
     inputs:
+      native_run:
+        description: Existing binding run for single-wake verification only; empty for fresh builds
+        type: string
+        required: false
+        default: ''
       sw_sha:
         description: Single-wake treatment source SHA, empty to build watcher pair only
         type: string
@@ -27,6 +32,7 @@ jobs:
       - id: plan
         env:
           SW_SHA: ${{ inputs.sw_sha }}
+          NATIVE_RUN: ${{ inputs.native_run }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -38,12 +44,16 @@ jobs:
               assert re.fullmatch('[0-9a-f]{40}', sw)
               sources += [dict(key='sw-control', source='5b221adb6ab10fcd9c56fa96c3b55d0918efbeb2', pair='sw'), dict(key='sw-treatment', source=sw, pair='sw')]
               pairs += ['sw']
+          if os.environ['NATIVE_RUN']:
+              assert sw, 'Single-wake source required for verification-only mode'
+              pairs = ['sw']
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               print('sources=' + json.dumps({'include': sources}), file=f)
               print('pairs=' + json.dumps(pairs), file=f)
           PY
   build:
     name: Build ${{ matrix.key }}
+    if: ${{ inputs.native_run == '' }}
     needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 110
@@ -146,6 +156,7 @@ jobs:
   verify:
     name: Verify ${{ matrix.pair }}
     needs: [plan, build]
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 50
     strategy:
@@ -164,10 +175,14 @@ jobs:
         with:
           pattern: sprint-*-binding
           path: bench-data/bindings
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.native_run || github.run_id }}
       - uses: actions/download-artifact@v4
         with:
           pattern: sprint-*-evidence
           path: bench-data/build-evidence
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.native_run || github.run_id }}
       - name: Prepare exact core, wrapper, official reference and fixture
         env:
           PAIR: ${{ matrix.pair }}
@@ -179,8 +194,9 @@ jobs:
           if [[ "$PAIR" == sw ]]; then
             gh run download 38890483976 --repo guru-irl/rspack --name pack-v2.2.9-loader-env-33-gha --dir bench-data/original
             core=bench-data/original/B/rspack-core-2.2.9.tgz
-            wrapper=bench-data/original/binding/rspack-binding-2.2.9.tgz
-            official=bench-data/original/binding/rspack-binding-linux-x64-gnu-2.2.9.tgz
+            (cd bench-data/official; npm pack @rspack/binding@2.2.9; npm pack @rspack/binding-linux-x64-gnu@2.2.9)
+            wrapper=bench-data/official/rspack-binding-2.2.9.tgz
+            official=bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz
             echo "234b27b7c7cfaa4a535ad452deae4c2c8a4badd086297f0a0fedc2e1886f38a7  $core" | sha256sum -c -
             echo "04e1989833d4077e64a1a8569a68119a7633c2bb4be7e5759dab4e6f0d70e116  $wrapper" | sha256sum -c -
             echo "11e6a686ef2756332fe6d29acc4f8c2c8c2bf2c59ea593e2381d9a52b0121d89  $official" | sha256sum -c -
