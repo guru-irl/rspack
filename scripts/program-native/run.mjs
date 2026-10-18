@@ -27,6 +27,8 @@ if (bindingSha256 !== process.env.EXPECTED_BINDING_SHA256) throw new Error('Load
 const mappedBinding = process.platform === 'linux' ? fs.readFileSync('/proc/self/maps', 'utf8').split('\n').filter(line => line.endsWith(` ${loadedBindingPath}`)) : [];
 if (process.platform === 'linux' && !mappedBinding.length) throw new Error('Expected binding is not mapped into this process');
 const bindingIdentity = {loadedBindingPath, bindingSha256, verifiedInRequireCache: true, verifiedInMaps: process.platform === 'linux', mappedSegments: mappedBinding.length};
+const purgeDelay = process.env.MIMALLOC_PURGE_DELAY ?? null;
+if (purgeDelay !== (process.env.EXPECTED_PURGE_DELAY === '0' ? '0' : null)) throw new Error('Unexpected process MIMALLOC_PURGE_DELAY');
 const mainTicks = () => {
   if (process.platform !== 'linux') return null;
   const fields = fs.readFileSync(`/proc/self/task/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ');
@@ -95,7 +97,7 @@ function hashFiles(dir) {
 }
 hashFiles(outputRoot);
 if (!outputFiles.length) throw new Error('No emitted files');
-const result = {bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
+const result = {purgeDelay, bindingIdentity, bindingSha256, outputFiles, pid: process.pid, node: process.version, cpus: os.cpus().length, marks, buildMs, makeMs: makeEndMs - makeStartMs, mainCpuMs, processCpuUs, peakRss, steadyRss, snapshots: {end: endSnapshot}, gcActivity, makeGcMs, gc, loaderCalls: globalThis.loaderCalls, finishModulesCalls, processAssetsCalls};
 fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
 console.log(JSON.stringify({...result, gc: undefined}));
 await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));

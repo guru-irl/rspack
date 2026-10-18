@@ -10,7 +10,7 @@ environment = json.loads((root / 'environment.json').read_text())
 windows = environment['platform'] == 'win32'
 assert (environment['platform'], environment['arch']) in [('win32', 'x64'), ('darwin', 'arm64'), ('linux', 'x64')]
 assert environment['base'] == 'd9d09d4152cd15fc46eb5d1cb8d9b227bfcd39eb'
-assert environment['pr'] == 'aad661921bdd07380ad7cb9f2bf3debef2f210d7'
+assert environment['pr'] == 'c2b473322d3d6c1292f8a124cdc4206ce52b35e3'
 parity = json.loads((root / 'parity.json').read_text())
 identities = json.loads((root / 'build-identities.json').read_text())
 assert parity['bindings'] == identities and identities['base'] != identities['pr']

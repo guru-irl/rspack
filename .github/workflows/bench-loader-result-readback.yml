@@ -1,10 +1,11 @@
-name: Single-wake cross-platform memory
+name: single-wake macOS memory follow-up
 on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
-  group: single-wake-memory-${{ github.ref }}
+  group: single-wake-mac-followup-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   memory:
@@ -12,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, macos-15, windows-2025]
+        runner: [macos-15]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 135
     defaults:
@@ -23,7 +24,7 @@ jobs:
       CARGO_BUILD_JOBS: '3'
       TMPDIR: ${{ github.workspace }}/bench-data/temp
       BASE: d9d09d4152cd15fc46eb5d1cb8d9b227bfcd39eb
-      PR: aad661921bdd07380ad7cb9f2bf3debef2f210d7
+      PR: c2b473322d3d6c1292f8a124cdc4206ce52b35e3
       EXPECTED_OS: ${{ matrix.runner == 'macos-15' && 'darwin' || matrix.runner == 'windows-2025' && 'win32' || 'linux' }}
       EXPECTED_ARCH: ${{ matrix.runner == 'macos-15' && 'arm64' || 'x64' }}
       NATIVE_FILE: ${{ matrix.runner == 'macos-15' && 'rspack.darwin-arm64.node' || matrix.runner == 'windows-2025' && 'rspack.win32-x64-msvc.node' || 'rspack.linux-x64-gnu.node' }}
@@ -53,7 +54,8 @@ jobs:
           set -euo pipefail
           node --check scripts/program-native/run.mjs
           node --check scripts/loader-result-readback/pairs.mjs
-          python3 -m py_compile scripts/loader-result-readback/summary.py scripts/loader-result-readback/exact.py
+          python3 -m py_compile scripts/loader-result-readback/summary.py scripts/loader-result-readback/exact.py scripts/loader-result-readback/followup.py
+          python3 scripts/loader-result-readback/followup.py --preflight
           python3 -c 'import sys; sys.path.insert(0, "scripts/loader-result-readback"); from exact import paired_location; assert paired_location([0]*10, [1]*10)["exact95"] == [1, 1]; assert paired_location([0]*10, [0]*10)["exact95"] == [0, 0]'
       - name: Environment and source identity
         run: |
@@ -64,7 +66,7 @@ jobs:
             import {createHash} from "node:crypto";
             if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Wrong runner architecture");
             const fixtureScripts = Object.fromEntries(["scripts/program-native/prepare.mjs", "scripts/program-native/run.mjs", "scripts/loader-result-readback/pairs.mjs", "scripts/loader-result-readback/exact.py", "scripts/loader-result-readback/summary.py"].map(file => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
-            const value = {started: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version, os: os.version(), release: os.release(), cpus: os.cpus(), ram: os.totalmem(), image: process.env.ImageOS, imageVersion: process.env.ImageVersion, base: process.env.BASE, pr: process.env.PR, fixtureScripts};
+            const value = {started: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version, os: os.version(), release: os.release(), cpus: os.cpus(), ram: os.totalmem(), mimallocEnvironment: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("MIMALLOC_"))), image: process.env.ImageOS, imageVersion: process.env.ImageVersion, base: process.env.BASE, pr: process.env.PR, fixtureScripts};
             fs.writeFileSync("bench-data/results/environment.json", JSON.stringify(value, null, 2));
             console.log(JSON.stringify(value, null, 2));'
           { uname -a; rustc -Vv; git rev-parse HEAD; df -h .; } | tee bench-data/results/environment.txt
@@ -113,21 +115,35 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/program-native/prepare.mjs bench-data/fixture
-      - name: Fixed fresh-process protocol
+      - name: Phase R, default-environment replication
         run: |
           set -euo pipefail
-          node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/pairs.log
-      - name: Exact paired or block analysis
+          mkdir -p bench-data/results/R
+          cp bench-data/results/environment.json bench-data/results/build-identities.json bench-data/results/R/
+          BENCH_PHASE=R node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/R/pairs.log
+          python3 scripts/loader-result-readback/summary.py bench-data/results/R 2>&1 | tee bench-data/results/R/analysis.log
+      - name: Phase P, process-only MIMALLOC_PURGE_DELAY=0
         run: |
           set -euo pipefail
-          python3 scripts/loader-result-readback/summary.py 2>&1 | tee bench-data/results/analysis.log
-          cat bench-data/results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p bench-data/results/P
+          cp bench-data/results/environment.json bench-data/results/build-identities.json bench-data/results/P/
+          BENCH_PHASE=P node scripts/loader-result-readback/pairs.mjs 2>&1 | tee bench-data/results/P/pairs.log
+          python3 scripts/loader-result-readback/summary.py bench-data/results/P 2>&1 | tee bench-data/results/P/analysis.log
+      - name: Hosted recomputation and report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > bench-data/results/run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" > bench-data/results/jobs.json
+          python3 scripts/loader-result-readback/followup.py 2>&1 | tee bench-data/results/verification.log
+          cat bench-data/results/followup-report.md >> "$GITHUB_STEP_SUMMARY"
           date -u '+%Y-%m-%dT%H:%M:%SZ' > bench-data/results/finished.txt
       - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: single-wake-memory-${{ matrix.runner }}
+          name: single-wake-mac-followup-${{ matrix.runner }}
           retention-days: 30
           path: |
             bench-data/results/
