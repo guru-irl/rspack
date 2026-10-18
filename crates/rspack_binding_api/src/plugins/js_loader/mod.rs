@@ -27,7 +27,7 @@ use crate::{COMPILER_REFERENCES, error::RspackResultToNapiResultExt};
 
 pub type JsLoaderRunner = ThreadsafeFunction<
   JsLoaderContext,
-  Promise<JsLoaderContext>,
+  PromiseRaw<'static, JsLoaderContext>,
   JsLoaderContext,
   Status,
   false,

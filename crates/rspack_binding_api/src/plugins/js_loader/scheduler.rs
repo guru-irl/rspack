@@ -1,10 +1,57 @@
-use napi::bindgen_prelude::{Either3, JsValuesTupleIntoVec};
+use std::{cell::Cell, rc::Rc};
+
+use napi::{
+  Status,
+  bindgen_prelude::{CallbackContext, Either3, JsValuesTupleIntoVec, Unknown},
+  threadsafe_function::ThreadsafeFunctionCallMode,
+};
 use rspack_core::{AdditionalData, LoaderContext, NormalModuleLoaderStartYielding, RunnerContext};
 use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rspack_hook::plugin_hook;
 use rspack_loader_runner::State as LoaderState;
 
-use super::{JsLoaderContext, JsLoaderRspackPlugin, JsLoaderRspackPluginInner};
+use super::{JsLoaderContext, JsLoaderRspackPlugin, JsLoaderRspackPluginInner, JsLoaderRunner};
+
+async fn call_loader_runner(
+  runner: &JsLoaderRunner,
+  context: JsLoaderContext,
+) -> napi::Result<JsLoaderContext> {
+  let (tx, rx) = futures::channel::oneshot::channel();
+  let status = runner.call_with_return_value(
+    context,
+    ThreadsafeFunctionCallMode::NonBlocking,
+    move |result, _| {
+      // Match napi-rs Promise conversion, but deliver only the settled value.
+      result.and_then(|promise| {
+        let tx = Rc::new(Cell::new(Some(tx)));
+        let tx_in_catch = tx.clone();
+        promise
+          .then(move |ctx| {
+            if let Some(tx) = tx.replace(None) {
+              let _ = tx.send(Ok(ctx.value));
+            }
+            Ok(())
+          })?
+          .catch(move |ctx: CallbackContext<Unknown>| {
+            if let Some(tx) = tx_in_catch.replace(None) {
+              let _ = tx.send(Err(ctx.value.into()));
+            }
+            Ok(())
+          })?;
+        Ok(())
+      })
+    },
+  );
+  if status != Status::Ok {
+    return Err(if status == Status::Closing && runner.aborted() {
+      napi::Error::from_status(Status::Closing)
+    } else {
+      napi::Error::new(status, "")
+    });
+  }
+  rx.await
+    .map_err(|err| napi::Error::new(Status::GenericFailure, format!("{err}")))?
+}
 
 impl JsLoaderRspackPlugin {
   async fn update_loaders_without_pitch(&self, list: Vec<String>) {
@@ -44,10 +91,7 @@ pub(crate) async fn loader_yield(
     .await
     .to_rspack_result()?;
 
-  let new_cx = runner
-    .call_async(loader_context.try_into()?)
-    .await
-    .to_rspack_result()?
+  let new_cx = call_loader_runner(runner, loader_context.try_into()?)
     .await
     .to_rspack_result()?;
 
