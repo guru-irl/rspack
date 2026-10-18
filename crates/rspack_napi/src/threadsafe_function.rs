@@ -20,9 +20,10 @@ use rspack_error::{Error, Result};
 
 use crate::{JsCallback, NapiErrorToRspackErrorExt};
 
-// The setup result must win over even a synchronously invoked thenable callback.
-// Once setup succeeds, dropping the last JS callback cancels the old Promise
-// receiver, whose error still needs to go through resolve_error on the Rust side.
+// Chain then/catch on the JS thread so the Rust caller wakes once, with the settled value.
+// A thenable can call back synchronously while chaining; hold that value until chaining
+// succeeds, so a chaining error still wins, as in napi's `Promise` conversion.
+// If JS drops both callbacks unsettled, report `oneshot canceled`, the error napi's `Promise` gives.
 struct PromiseSender<R> {
   tx: Option<Sender<Result<napi::Result<R>>>>,
   value: Option<napi::Result<R>>,
@@ -95,6 +96,7 @@ fn receive_promise<R: 'static + FromNapiValue>(
       }
     }
     Err(err) => {
+      tx.value = None;
       tx.tx
         .take()
         .expect("should have tsfn sender")

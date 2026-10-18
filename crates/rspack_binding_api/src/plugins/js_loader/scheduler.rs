@@ -43,11 +43,7 @@ async fn call_loader_runner(
     },
   );
   if status != Status::Ok {
-    return Err(if status == Status::Closing && runner.aborted() {
-      napi::Error::from_status(Status::Closing)
-    } else {
-      napi::Error::new(status, "")
-    });
+    return Err(napi::Error::from_status(status));
   }
   rx.await
     .map_err(|err| napi::Error::new(Status::GenericFailure, format!("{err}")))?
