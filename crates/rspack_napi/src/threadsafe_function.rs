@@ -1,21 +1,111 @@
 use std::{
+  cell::RefCell,
   fmt::Debug,
   marker::PhantomData,
+  rc::Rc,
   sync::{Arc, OnceLock},
 };
 
 use napi::{
   Env, JsValue, Status, Unknown, ValueType,
   bindgen_prelude::{
-    FromNapiValue, Function, JsValuesTupleIntoVec, Promise, TypeName, ValidateNapiValue,
+    CallbackContext, FromNapiValue, Function, JsValuesTupleIntoVec, Promise, PromiseRaw, TypeName,
+    ValidateNapiValue,
   },
   sys::{self, napi_env, napi_value},
   threadsafe_function::{ThreadsafeFunction as RawThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
-use oneshot::{Receiver, channel};
+use oneshot::{Receiver, Sender, channel};
 use rspack_error::{Error, Result};
 
 use crate::{JsCallback, NapiErrorToRspackErrorExt};
+
+// Chain then/catch on the JS thread so the Rust caller wakes once, with the settled value.
+// A thenable can call back synchronously while chaining; hold that value until chaining
+// succeeds, so a chaining error still wins, as in napi's `Promise` conversion.
+// If JS drops both callbacks unsettled, report `oneshot canceled`, the error napi's `Promise` gives.
+struct PromiseSender<R> {
+  tx: Option<Sender<Result<napi::Result<R>>>>,
+  value: Option<napi::Result<R>>,
+  ready: bool,
+}
+
+impl<R> PromiseSender<R> {
+  fn send(&mut self, value: napi::Result<R>) {
+    if self.ready {
+      if let Some(tx) = self.tx.take() {
+        let _ = tx.send(Ok(value));
+      }
+    } else if self.value.is_none() {
+      self.value = Some(value);
+    }
+  }
+}
+
+impl<R> Drop for PromiseSender<R> {
+  fn drop(&mut self) {
+    if self.ready
+      && let Some(tx) = self.tx.take()
+    {
+      let _ = tx.send(Ok(Err(napi::Error::new(
+        Status::GenericFailure,
+        "oneshot canceled",
+      ))));
+    }
+  }
+}
+
+fn receive_promise<R: 'static + FromNapiValue>(
+  result: napi::Result<Unknown>,
+  env: Env,
+  tx: Sender<Result<napi::Result<R>>>,
+) -> napi::Result<()> {
+  let tx = Rc::new(RefCell::new(PromiseSender {
+    tx: Some(tx),
+    value: None,
+    ready: false,
+  }));
+  let result = match result {
+    Err(err) => Err(err.to_rspack_error(&env)),
+    Ok(value) => (|| {
+      let promise = unsafe { PromiseRaw::<R>::from_napi_value(env.raw(), value.raw()) }?;
+      let tx_in_then = tx.clone();
+      let tx_in_catch = tx.clone();
+      promise
+        .then(move |ctx| {
+          tx_in_then.borrow_mut().send(Ok(ctx.value));
+          Ok(())
+        })?
+        .catch(move |ctx: CallbackContext<Unknown>| {
+          tx_in_catch.borrow_mut().send(Err(ctx.value.into()));
+          Ok(())
+        })?;
+      Ok(())
+    })()
+    .map_err(|err| pretty_type_error(value, err)),
+  };
+  let mut tx = tx.borrow_mut();
+  match result {
+    Ok(()) => {
+      if tx.tx.as_ref().expect("should have tsfn sender").is_closed() {
+        panic!("failed to send tsfn value");
+      }
+      tx.ready = true;
+      if let Some(value) = tx.value.take() {
+        tx.send(value);
+      }
+    }
+    Err(err) => {
+      tx.value = None;
+      tx.tx
+        .take()
+        .expect("should have tsfn sender")
+        .send(Err(err))
+        .unwrap_or_else(|_| panic!("failed to send tsfn value"));
+    }
+  }
+  Ok(())
+}
 
 type ErrorResolver = dyn FnOnce(Env);
 
@@ -256,12 +346,15 @@ impl DynThreadsafeFunction {
     T: 'static + JsValuesTupleIntoVec,
     R: 'static + FromNapiValue,
   {
-    match self.call_async::<T, Promise<R>>(value).await {
-      Ok(r) => match r.await {
-        Ok(r) => Ok(r),
-        Err(err) => Err(self.resolve_error(err).await),
-      },
-      Err(err) => Err(err),
+    let (tx, rx) = channel();
+    self.inner.call_with_return_value(
+      DynJsArgs(Box::new(value)),
+      ThreadsafeFunctionCallMode::NonBlocking,
+      move |result, env| receive_promise(result, env, tx),
+    );
+    match rx.await.expect("failed to receive tsfn value")? {
+      Ok(value) => Ok(value),
+      Err(err) => Err(self.resolve_error(err).await),
     }
   }
 }
@@ -280,12 +373,15 @@ impl<T: 'static + JsValuesTupleIntoVec, R: 'static + FromNapiValue>
   /// If `Promise<T>` is returned, it will be awaited and its value `T` will be returned.
   /// Otherwise, an [napi::Error] is returned.
   pub async fn call_with_promise(&self, value: T) -> Result<R> {
-    match self.call_async::<Promise<R>>(value).await {
-      Ok(r) => match r.await {
-        Ok(r) => Ok(r),
-        Err(err) => Err(self.resolve_error(err).await),
-      },
-      Err(err) => Err(err),
+    let (tx, rx) = channel();
+    self.inner.call_with_return_value(
+      value,
+      ThreadsafeFunctionCallMode::NonBlocking,
+      move |result, env| receive_promise(result, env, tx),
+    );
+    match rx.await.expect("failed to receive tsfn value")? {
+      Ok(value) => Ok(value),
+      Err(err) => Err(self.resolve_error(err).await),
     }
   }
 }
