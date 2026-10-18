@@ -10,7 +10,7 @@ const expected = {};
 let parity;
 const schedule = [];
 const orders = [['base1', 'base2', 'pr1', 'pr2'], ['pr2', 'pr1', 'base2', 'base1'], ['base2', 'pr2', 'pr1', 'base1'], ['pr1', 'base1', 'base2', 'pr2']];
-fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({platform: process.platform, blocks: 10, warmups: ['base', 'pr'], orders, deadline: '2026-10-17T19:20:00Z'}, null, 2));
+fs.writeFileSync(path.join(results, 'protocol.json'), JSON.stringify({platform: process.platform, blocks: 10, warmups: ['base', 'pr'], orders, deadline: '2026-10-19T00:35:00Z'}, null, 2));
 for (const arm of ['base', 'pr']) {
   const file = path.resolve(`bench-data/bindings/${arm}.node`);
   expected[arm] = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -18,7 +18,7 @@ for (const arm of ['base', 'pr']) {
 fs.writeFileSync(path.join(results, 'identity-manifest.json'), JSON.stringify(expected, null, 2));
 if (expected.base === expected.pr) throw new Error('Base and PR binding hashes are equal; no timing is allowed');
 function run(arm, label, family = arm, block = 0) {
-  if (Date.now() >= Date.parse('2026-10-17T19:20:00Z')) throw new Error('Measurement deadline reached');
+  if (Date.now() >= Date.parse('2026-10-19T00:35:00Z')) throw new Error('Measurement deadline reached');
   fs.copyFileSync(`bench-data/bindings/${arm}.node`, binding);
   fs.rmSync(path.join(root, 'out'), {recursive: true, force: true});
   const resultPath = path.join(results, `${label}-${arm}.json`);

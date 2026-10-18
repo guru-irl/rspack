@@ -1,10 +1,10 @@
-name: Loader Result Readback
+name: Single-wake cross-platform memory
 on:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: loader-result-readback-${{ github.ref }}
+  group: single-wake-memory-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   memory:
@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, windows-2025]
+        runner: [ubuntu-24.04, macos-15, windows-2025]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 135
     defaults:
@@ -22,11 +22,11 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '3'
       TMPDIR: ${{ github.workspace }}/bench-data/temp
-      BASE: 96dcd72db4d25a89c37d22d514285ab82fc46a3d
-      PR: 300a8a6a38d1251db2e75d5933676e123eddbdd0
-      EXPECTED_OS: ${{ matrix.runner == 'macos-15' && 'darwin' || 'win32' }}
+      BASE: d9d09d4152cd15fc46eb5d1cb8d9b227bfcd39eb
+      PR: aad661921bdd07380ad7cb9f2bf3debef2f210d7
+      EXPECTED_OS: ${{ matrix.runner == 'macos-15' && 'darwin' || matrix.runner == 'windows-2025' && 'win32' || 'linux' }}
       EXPECTED_ARCH: ${{ matrix.runner == 'macos-15' && 'arm64' || 'x64' }}
-      NATIVE_FILE: ${{ matrix.runner == 'macos-15' && 'rspack.darwin-arm64.node' || 'rspack.win32-x64-msvc.node' }}
+      NATIVE_FILE: ${{ matrix.runner == 'macos-15' && 'rspack.darwin-arm64.node' || matrix.runner == 'windows-2025' && 'rspack.win32-x64-msvc.node' || 'rspack.linux-x64-gnu.node' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -36,6 +36,8 @@ jobs:
           set -euo pipefail
           mkdir -p bench-data/temp bench-data/results bench-data/bindings
           echo "BINDING_PATH=$GITHUB_WORKSPACE/crates/node_binding/$NATIVE_FILE" >> "$GITHUB_ENV"
+          if [ "$EXPECTED_OS" = linux ]; then echo "CLOCK_TICKS=$(getconf CLK_TCK)" >> "$GITHUB_ENV"; fi
+          git restore --source="$BASE" -- . ':(exclude).github' ':(exclude)scripts/loader-result-readback' ':(exclude)scripts/program-native'
       - uses: ./.github/actions/pnpm/setup
       - name: Install dependencies
         run: |
@@ -44,7 +46,7 @@ jobs:
           npm install --prefix bench-data/parser --no-package-lock --ignore-scripts acorn@8.15.0 escodegen@2.1.0
       - uses: ./.github/actions/rustup
         with:
-          key: ${{ matrix.runner == 'macos-15' && 'aarch64-apple-darwin-ci' || 'x86_64-pc-windows-msvc-ci' }}
+          key: ${{ matrix.runner == 'macos-15' && 'aarch64-apple-darwin-ci' || matrix.runner == 'windows-2025' && 'x86_64-pc-windows-msvc-ci' || 'x86_64-unknown-linux-gnu-ci' }}
           save-if: true
       - name: Harness preflight
         run: |
@@ -68,27 +70,33 @@ jobs:
           { uname -a; rustc -Vv; git rev-parse HEAD; df -h .; } | tee bench-data/results/environment.txt
           git merge-base "$BASE" "$PR" | tee bench-data/results/merge-base.txt
           test "$(git merge-base "$BASE" "$PR")" = "$BASE"
+          test "$(git rev-parse origin/perf-js-call-single-wake)" = "$PR"
+          printf '%s\n' crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/rspack_napi/src/threadsafe_function.rs > bench-data/results/expected-source-files.txt
+          git diff --name-only "$BASE" "$PR" > bench-data/results/actual-source-files.txt
+          diff -u bench-data/results/expected-source-files.txt bench-data/results/actual-source-files.txt
           git diff "$BASE" "$PR" > bench-data/results/source.diff
           if [ "$EXPECTED_OS" != win32 ]; then cargo fmt --all --check; fi
       - name: Build base and JavaScript artifacts
         run: |
           set -euo pipefail
-          git restore --source="$BASE" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/node_binding/napi-binding.d.ts
-          git diff --exit-code "$BASE" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
+          git restore --source="$BASE" -- . ':(exclude).github' ':(exclude)scripts/loader-result-readback' ':(exclude)scripts/program-native'
+          git diff --exit-code "$BASE" -- . ':(exclude).github' ':(exclude)scripts/loader-result-readback' ':(exclude)scripts/program-native'
           cargo codegen
           rm -f "$BINDING_PATH"
           pnpm run build:binding:ci 2>&1 | tee bench-data/results/base-build.log
           grep -F 'Compiling rspack_binding_api' bench-data/results/base-build.log
+          grep -F 'Compiling rspack_napi' bench-data/results/base-build.log
           cp "$BINDING_PATH" bench-data/bindings/base.node
           pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
       - name: Build candidate with identical settings
         run: |
           set -euo pipefail
-          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/context.rs crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/node_binding/napi-binding.d.ts
-          git diff --exit-code "$PR" -- crates packages Cargo.toml Cargo.lock rust-toolchain.toml pnpm-lock.yaml
+          git restore --source="$PR" -- crates/rspack_binding_api/src/plugins/js_loader/mod.rs crates/rspack_binding_api/src/plugins/js_loader/scheduler.rs crates/rspack_napi/src/threadsafe_function.rs
+          git diff --exit-code "$PR" -- . ':(exclude).github' ':(exclude)scripts/loader-result-readback' ':(exclude)scripts/program-native'
           rm -f "$BINDING_PATH"
           pnpm run build:binding:ci 2>&1 | tee bench-data/results/pr-build.log
           grep -F 'Compiling rspack_binding_api' bench-data/results/pr-build.log
+          grep -F 'Compiling rspack_napi' bench-data/results/pr-build.log
           cp "$BINDING_PATH" bench-data/bindings/pr.node
           git diff --exit-code "$PR" -- crates/node_binding/napi-binding.d.ts
       - name: Native identity gate before timing
@@ -119,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: loader-result-readback-newhead-${{ matrix.runner }}
+          name: single-wake-memory-${{ matrix.runner }}
           retention-days: 30
           path: |
             bench-data/results/

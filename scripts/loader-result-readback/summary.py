@@ -8,9 +8,9 @@ from exact import paired_location
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'bench-data/results')
 environment = json.loads((root / 'environment.json').read_text())
 windows = environment['platform'] == 'win32'
-assert (environment['platform'], environment['arch']) in [('win32', 'x64'), ('darwin', 'arm64')]
-assert environment['base'] == '96dcd72db4d25a89c37d22d514285ab82fc46a3d'
-assert environment['pr'] == '300a8a6a38d1251db2e75d5933676e123eddbdd0'
+assert (environment['platform'], environment['arch']) in [('win32', 'x64'), ('darwin', 'arm64'), ('linux', 'x64')]
+assert environment['base'] == 'd9d09d4152cd15fc46eb5d1cb8d9b227bfcd39eb'
+assert environment['pr'] == 'aad661921bdd07380ad7cb9f2bf3debef2f210d7'
 parity = json.loads((root / 'parity.json').read_text())
 identities = json.loads((root / 'build-identities.json').read_text())
 assert parity['bindings'] == identities and identities['base'] != identities['pr']
@@ -29,6 +29,8 @@ for item in schedule:
     identity = record['bindingIdentity']
     assert record['bindingSha256'] == identity['bindingSha256'] == identities[item['arm']]
     assert identity['verifiedInRequireCache']
+    if environment['platform'] == 'linux':
+        assert identity['verifiedInMaps'] and identity['mappedSegments'] > 0
     assert record['outputFiles'] == parity['files']
     assert record['loaderCalls'] == {'noop': 60701, 'ast': 6000, 'rewrite': 3000}
     for snapshot in ['end', 'close', 'postGc']:
@@ -88,7 +90,7 @@ used = by_metric['snapshots.postGc.v8.used_heap_size']
 native = by_metric['snapshots.postGc.nativeEstimate']
 memory_rows = [row for row in rows if row['unit'] == 'MiB']
 classification = 'GC timing under the pre-registered rule' if not used['increased'] and not native['increased'] else 'unexplained under the pre-registered rule'
-summary = dict(environment=environment, parity=parity, rows=rows, aa=aa, memoryIncreaseDetected=any(row['increased'] for row in memory_rows), increasedMetrics=[row['metric'] for row in memory_rows if row['increased']], windowsClassification=classification if windows else None, samples=len(measured), inference='Ten Windows contrasts (mean PR minus mean base) or ten macOS paired differences; exact signed-rank inversion; marginal intervals, not multiplicity-adjusted')
+summary = dict(environment=environment, parity=parity, rows=rows, aa=aa, memoryIncreaseDetected=any(row['increased'] for row in memory_rows), increasedMetrics=[row['metric'] for row in memory_rows if row['increased']], windowsClassification=classification if windows else None, samples=len(measured), inference='Ten Windows contrasts (mean PR minus mean base) or ten macOS/Linux paired differences; exact signed-rank inversion; marginal intervals, not multiplicity-adjusted')
 (root / 'summary.json').write_text(json.dumps(summary, indent=2))
 
 def scale(unit):
