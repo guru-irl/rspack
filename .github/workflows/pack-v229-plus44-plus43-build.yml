@@ -43,6 +43,7 @@ jobs:
               print('pairs=' + json.dumps(pairs), file=f)
           PY
   build:
+    name: Build ${{ matrix.key }}
     needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 110
@@ -140,8 +141,10 @@ jobs:
         with:
           name: sprint-${{ matrix.key }}-evidence
           path: bench-data/results/
+          include-hidden-files: true
           compression-level: 1
   verify:
+    name: Verify ${{ matrix.pair }}
     needs: [plan, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 50
@@ -230,11 +233,24 @@ jobs:
         if: matrix.pair == 'sw'
         run: |
           set -euo pipefail
-          for arm in control treatment; do
-            native="$GITHUB_WORKSPACE/bench-data/$arm.node"
-            NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" MAPS_FILE="$GITHUB_WORKSPACE/bench-data/results/error-$arm.maps" IDENTITY_FILE="$GITHUB_WORKSPACE/bench-data/results/error-$arm.identity.json" node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/error-parity.mjs "bench-data/results/error-$arm.json" 2>&1 | tee "bench-data/results/error-$arm.log"
-          done
-          cmp bench-data/results/error-control.json bench-data/results/error-treatment.json
+          mkdir -p bench-data/sw-error
+          trap 'cp -a bench-data/sw-error bench-data/results/sw-error-work' EXIT
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          bindings = {}
+          for arm in ['control', 'treatment']:
+              native = Path(f'bench-data/{arm}.node').resolve()
+              digest = hashlib.sha256(native.read_bytes()).hexdigest()
+              identity = json.loads(Path(f'bench-data/results/{arm}.identity.json').read_text())
+              assert identity['path'] == str(native) and identity['sha256'] == digest and identity['mapped'] == [str(native)]
+              bindings[arm] = dict(path=str(native), sha256=digest)
+          Path('bench-data/sw-error/bindings.json').write_text(json.dumps(bindings))
+          Path('bench-data/sw-error/identity-accepted.json').write_text(json.dumps(dict(accepted=True, bindings=bindings)))
+          PY
+          node bench-data/scripts/single-wake-error-parity.mjs 2>&1 | tee bench-data/results/sw-error.log
+          cp -a bench-data/sw-error/error-parity bench-data/results/sw-error
+          cp bench-data/sw-error/error-parity.json bench-data/results/sw-error-summary.json
       - name: Native watcher burst counts
         if: matrix.pair == 'nw'
         run: |
