@@ -1,14 +1,16 @@
 use std::{
   cell::{Cell, RefCell},
   collections::HashMap,
+  ffi::c_void,
+  ptr,
   rc::Rc,
+  time::{Duration, Instant},
 };
 
 use napi::{
   Env, Status,
-  bindgen_prelude::{
-    CallbackContext, Either3, Function, JsObjectValue, JsValuesTupleIntoVec, Unknown,
-  },
+  bindgen_prelude::{CallbackContext, Either3, JsObjectValue, JsValuesTupleIntoVec, Unknown},
+  sys,
   threadsafe_function::ThreadsafeFunctionCallMode,
 };
 use rspack_core::{AdditionalData, LoaderContext, NormalModuleLoaderStartYielding, RunnerContext};
@@ -44,12 +46,33 @@ impl Drop for CompletionBatch {
 struct CompletionQueue {
   batch: RefCell<CompletionBatch>,
   scheduled: Cell<bool>,
+  oldest: Cell<Option<Instant>>,
+  flush_trigger: sys::napi_threadsafe_function,
   closing: Cell<bool>,
   runtime: tokio::runtime::Handle,
 }
 
 thread_local! {
   static COMPLETION_QUEUES: RefCell<HashMap<usize, Rc<CompletionQueue>>> = RefCell::default();
+}
+
+// N-API invokes this on the environment thread through its native async handle.
+// The JS function is deliberately NULL, so JS timer patches cannot intercept it.
+unsafe extern "C" fn flush_completions_callback(
+  env: sys::napi_env,
+  _js_callback: sys::napi_value,
+  _context: *mut c_void,
+  _data: *mut c_void,
+) {
+  if env.is_null() {
+    // The environment cleanup hook drains the queue during teardown.
+    return;
+  }
+  let queue = COMPLETION_QUEUES.with_borrow(|queues| queues.get(&(env as usize)).cloned());
+  if let Some(queue) = queue {
+    queue.scheduled.set(false);
+    flush_completions(&queue);
+  }
 }
 
 fn completion_queue(
@@ -60,26 +83,81 @@ fn completion_queue(
   if let Some(queue) = COMPLETION_QUEUES.with_borrow(|queues| queues.get(&key).cloned()) {
     return Ok(queue);
   }
+  let resource_name = b"flushLoaderCompletions";
+  let mut name = ptr::null_mut();
+  napi::check_status!(unsafe {
+    sys::napi_create_string_utf8(
+      env.raw(),
+      resource_name.as_ptr().cast(),
+      resource_name.len() as isize,
+      &mut name,
+    )
+  })?;
+  let mut flush_trigger = ptr::null_mut();
+  napi::check_status!(unsafe {
+    sys::napi_create_threadsafe_function(
+      env.raw(),
+      ptr::null_mut(),
+      ptr::null_mut(),
+      name,
+      0,
+      1,
+      ptr::null_mut(),
+      None,
+      ptr::null_mut(),
+      Some(flush_completions_callback),
+      &mut flush_trigger,
+    )
+  })?;
+  let unref_status = unsafe { sys::napi_unref_threadsafe_function(env.raw(), flush_trigger) };
+  if unref_status != sys::Status::napi_ok {
+    unsafe {
+      sys::napi_release_threadsafe_function(
+        flush_trigger,
+        sys::ThreadsafeFunctionReleaseMode::abort,
+      );
+    }
+    return Err(napi::Error::from_status(Status::from(unref_status)));
+  }
   let queue = Rc::new(CompletionQueue {
     batch: RefCell::default(),
     scheduled: Cell::new(false),
+    oldest: Cell::new(None),
+    flush_trigger,
     closing: Cell::new(false),
     runtime: runtime.clone(),
   });
-  env.add_env_cleanup_hook(key, |key| {
+  let cleanup = env.add_env_cleanup_hook(key, |key| {
     let queue = COMPLETION_QUEUES.with_borrow_mut(|queues| queues.remove(&key));
     if let Some(queue) = queue {
       queue.closing.set(true);
       queue.scheduled.set(false);
+      queue.oldest.set(None);
       // No JavaScript or runtime access is needed at environment teardown.
       queue.batch.borrow_mut().deliver();
+      unsafe {
+        sys::napi_release_threadsafe_function(
+          queue.flush_trigger,
+          sys::ThreadsafeFunctionReleaseMode::abort,
+        );
+      }
     }
-  })?;
+  });
+  if let Err(err) = cleanup {
+    unsafe {
+      sys::napi_release_threadsafe_function(
+        flush_trigger,
+        sys::ThreadsafeFunctionReleaseMode::abort,
+      );
+    }
+    return Err(err);
+  }
   COMPLETION_QUEUES.with_borrow_mut(|queues| queues.insert(key, Rc::clone(&queue)));
   Ok(queue)
 }
 
 fn flush_completions(queue: &CompletionQueue) {
+  queue.oldest.set(None);
   let mut batch = std::mem::take(&mut *queue.batch.borrow_mut());
   if batch.0.is_empty() {
     return;
@@ -102,28 +180,34 @@ fn enqueue_completion(
     let _ = sender.send(result);
     return;
   };
-  queue.batch.borrow_mut().0.push((sender, result));
-  if queue.batch.borrow().0.len() >= 64 {
+  let should_flush = {
+    let mut batch = queue.batch.borrow_mut();
+    if batch.0.is_empty() {
+      queue.oldest.set(Some(Instant::now()));
+    }
+    batch.0.push((sender, result));
+    batch.0.len() >= 64
+      || queue
+        .oldest
+        .get()
+        .is_some_and(|oldest| oldest.elapsed() >= Duration::from_millis(1))
+  };
+  if should_flush {
     flush_completions(&queue);
   }
-  if queue.scheduled.replace(true) {
+  if queue.batch.borrow().0.is_empty() || queue.scheduled.replace(true) {
     return;
   }
-  let schedule = || -> napi::Result<()> {
-    let queue = Rc::clone(&queue);
-    let callback =
-      env.create_function_from_closure::<(), (), _>("flushLoaderCompletions", move |_| {
-        queue.scheduled.set(false);
-        flush_completions(&queue);
-        Ok(())
-      })?;
-    let immediate: Function<'_, Function<'_, (), ()>, Unknown<'_>> =
-      env.get_global()?.get_named_property("setImmediate")?;
-    immediate.call(callback)?;
-    Ok(())
+  let status = unsafe {
+    sys::napi_call_threadsafe_function(
+      queue.flush_trigger,
+      ptr::null_mut(),
+      sys::ThreadsafeFunctionCallMode::nonblocking,
+    )
   };
-  if schedule().is_err() {
+  if status != sys::Status::napi_ok {
     queue.scheduled.set(false);
+    queue.oldest.set(None);
     queue.batch.borrow_mut().deliver();
   }
 }
