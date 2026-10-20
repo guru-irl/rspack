@@ -62,7 +62,7 @@ jobs:
       - name: Prepare official release build
         run: |
           set -euo pipefail
-          command -v clang
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
           rustup target add x86_64-unknown-linux-gnu
           cargo codegen 2>&1 | tee bench-data/results/codegen.log
           printf '\ntrim-paths = true\n' >> .cargo/config.toml
