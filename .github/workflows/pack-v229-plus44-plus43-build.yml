@@ -46,12 +46,11 @@ jobs:
           done
           test ! -d target
       - uses: ./.github/actions/pnpm/setup
-        with:
-          node-version: 22.18.0
       - name: Install binding dependencies
         run: |
           set -euo pipefail
           pnpm --filter @rspack/binding install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+          node -e 'const {createRequire}=require("node:module"); const local=createRequire(process.cwd()+"/crates/node_binding/package.json"); const cli=local.resolve("@napi-rs/cli"); const cross=createRequire(cli).resolve("@napi-rs/cross-toolchain"); const r=createRequire(cross); for(const name of ["@napi-rs/lzma","@napi-rs/tar"]) {r(name); console.log(name,r.resolve(name));}' | tee bench-data/results/cross-toolchain-native.txt
       - uses: ./.github/actions/rustup
         with:
           key: wake-release-228
