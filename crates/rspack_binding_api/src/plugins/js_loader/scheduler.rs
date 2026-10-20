@@ -1,6 +1,5 @@
 use std::{
   cell::{Cell, RefCell},
-  collections::HashMap,
   ffi::c_void,
   ptr,
   rc::Rc,
@@ -17,6 +16,7 @@ use rspack_core::{AdditionalData, LoaderContext, NormalModuleLoaderStartYielding
 use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rspack_hook::plugin_hook;
 use rspack_loader_runner::State as LoaderState;
+use rustc_hash::FxHashMap;
 
 use super::{JsLoaderContext, JsLoaderRspackPlugin, JsLoaderRspackPluginInner, JsLoaderRunner};
 
@@ -53,7 +53,7 @@ struct CompletionQueue {
 }
 
 thread_local! {
-  static COMPLETION_QUEUES: RefCell<HashMap<usize, Rc<CompletionQueue>>> = RefCell::default();
+  static COMPLETION_QUEUES: RefCell<FxHashMap<usize, Rc<CompletionQueue>>> = RefCell::default();
 }
 
 // N-API invokes this on the environment thread through its native async handle.
