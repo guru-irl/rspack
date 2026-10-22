@@ -448,13 +448,19 @@ impl JsCompilation {
   pub fn chunk_groups(&self) -> Result<Vec<ChunkGroupWrapper>> {
     let compilation = self.as_ref()?;
 
+    let mut chunk_group_ukeys = compilation
+      .build_chunk_graph_artifact
+      .chunk_group_by_ukey
+      .keys()
+      .copied()
+      .collect::<Vec<_>>();
+    // Match the creation order of webpack's chunkGroups array.
+    chunk_group_ukeys.sort_unstable();
     Ok(
-      compilation
-        .build_chunk_graph_artifact
-        .chunk_group_by_ukey
-        .keys()
-        .map(|ukey| ChunkGroupWrapper::new(*ukey, compilation))
-        .collect::<Vec<ChunkGroupWrapper>>(),
+      chunk_group_ukeys
+        .into_iter()
+        .map(|ukey| ChunkGroupWrapper::new(ukey, compilation))
+        .collect(),
     )
   }
 
