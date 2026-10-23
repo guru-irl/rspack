@@ -1,11 +1,6 @@
-name: v2.2.9 hot pack with same-run control
+name: v2.2.9 prefix release builds
 on:
   workflow_dispatch:
-    inputs:
-      source_run:
-        description: Existing paired build/test run to verify without rebuilding or rerunning suites
-        type: string
-        default: ''
 permissions:
   contents: read
   actions: read
@@ -13,7 +8,6 @@ defaults:
   run:
     shell: bash
 env:
-  SOURCE_RUN_ID: ${{ inputs.source_run || github.run_id }}
   CARGO_INCREMENTAL: 0
   npm_config_registry: https://registry.npmjs.org
   pnpm_config_pm_on_fail: ignore
@@ -21,18 +15,21 @@ env:
   PUPPETEER_SKIP_DOWNLOAD: true
 jobs:
   build:
-    if: ${{ inputs.source_run == '' }}
-    name: Build and test ${{ matrix.arm }}
+    name: Build and smoke ${{ matrix.arm }}
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arm: CONTROL
-            source: 428b70684309de4068e32baf81d28194441dd64e
-          - arm: TREATMENT
-            source: b6703e272dbc52294d745073c7f00c3a838989c2
+          - arm: P5
+            source: 91246a0627ef336f76a34b53c77d82801f3ee82a
+          - arm: P6
+            source: 4ee64cbd79c65874acfdc672c937f8fee72c2d35
+          - arm: P7
+            source: aaf6befd70cf10a156ababe9fddb05bdba25eb27
+          - arm: P8
+            source: 4346a48383c9478dbde5f02d9004ba4480cc92ba
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,9 +50,9 @@ jobs:
             cp "$file" "bench-data/results/settings/$file"
             git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e HEAD -- "$file"
           done
-          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e b6703e272dbc52294d745073c7f00c3a838989c2 -- crates/node_binding/binding.js crates/node_binding/webcontainer-fallback.cjs crates/node_binding/package.json
-          printf 'Runtime files are identical between source arms. Ship the official 2.2.9 wrapper.\n' > bench-data/results/wrapper-origin.txt
-          for file in identity.cjs; do
+          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e HEAD -- crates/node_binding/binding.js crates/node_binding/webcontainer-fallback.cjs crates/node_binding/package.json
+          printf 'Runtime files match v2.2.9. Ship the official 2.2.9 wrapper.\n' > bench-data/results/wrapper-origin.txt
+          for file in identity.cjs smoke.cjs; do
             git show '${{ github.sha }}:.github/scripts/hot-pack/'"$file" > "bench-data/scripts/$file"
           done
           test ! -d target
@@ -120,12 +117,12 @@ jobs:
           cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
           cp crates/node_binding/napi-binding.d.ts bench-data/results/generated-napi-binding.d.ts
           git diff -- crates/node_binding/napi-binding.d.ts > bench-data/results/generated-types.diff
-      - name: Rebuild this arm's core and JavaScript test artifacts
+      - name: Rebuild this source's core
         run: |
           set -euo pipefail
           pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
           pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack" 2>&1 | tee bench-data/results/pack-core.log
-          sha256sum packages/rspack/dist/index.js > bench-data/results/bootstrap-core.sha256
+          sha256sum packages/rspack/dist/index.js > bench-data/results/built-core.sha256
           git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
       - name: Package exact 2.2.9 identities and inspect glibc
         run: |
@@ -152,154 +149,73 @@ jobs:
           built=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/built-readelf.txt | sort -Vu | tail -1)
           printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
           test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
-          python3 - <<'PY'
-          import json, tarfile
-          from pathlib import Path
-          for file in Path('bench-data/pack').glob('*.tgz'):
-              with tarfile.open(file) as tf:
-                  package=json.load(tf.extractfile('package/package.json'))
-                  assert package['version']=='2.2.9',package
-          PY
-      - name: Align launcher copies with this arm's rebuilt core
+      - name: Cold development smoke on the pinned public fixture
         run: |
           set -euo pipefail
-          for p in node_modules/.pnpm/@rspack+core@*/node_modules/@rspack/core; do
-            test -d "$p"
-            tar -xzf bench-data/pack/rspack-core-2.2.9.tgz -C "$p" --strip-components=1
-            cmp packages/rspack/dist/index.js "$p/dist/index.js"
-          done
-          for p in node_modules/.pnpm/@rspack+binding@*/node_modules/@rspack/binding; do
-            test -d "$p"
-            tar -xzf bench-data/pack/rspack-binding-2.2.9.tgz -C "$p" --strip-components=1
-          done
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('tests/rspack-test/rstack.config.mts')
-          text=p.read_text()
-          assert text.count('execArgv: [')==1
-          preload=str(Path('bench-data/scripts/identity.cjs').resolve())
-          p.write_text(text.replace('execArgv: [', 'execArgv: [\n        "--require='+preload+'",'))
-          PY
-          native="$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node"
-          echo "RSPACK_BINDING=$native" >> "$GITHUB_ENV"
-          echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/test-native-identities.jsonl" >> "$GITHUB_ENV"
-          echo "NODE_OPTIONS=--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
-      - name: Run the v2.2.9 Linux CI test command without changing cases
-        run: |
-          set -euo pipefail
-          rc=0
-          pnpm run test:ci 2>&1 | tee bench-data/results/test-ci.log || rc=${PIPESTATUS[0]}
-          printf '%s\n' "$rc" > bench-data/results/test-ci.exit
-          for file in *-report.txt; do test -f "$file"; cp "$file" bench-data/results/; done
-          test -s bench-data/results/rspack-test-event-report.txt
-          grep -F 'TEST_RUN_END' bench-data/results/rspack-test-event-report.txt
-          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
-      - name: Freeze the core that the CI command rebuilt and tested
-        run: |
-          set -euo pipefail
-          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack" 2>&1 | tee bench-data/results/pack-tested-core.log
-          sha256sum packages/rspack/dist/index.js > bench-data/results/built-core.sha256
+          git show a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
+          npm install --prefix bench-data/parser --ignore-scripts --no-audit --no-fund acorn escodegen
+          node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
+          mkdir -p bench-data/runtime
+          printf '{"private":true}\n' > bench-data/runtime/package.json
+          pack="$GITHUB_WORKSPACE/bench-data/pack"
+          npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund "$pack/rspack-core-2.2.9.tgz" "$pack/rspack-binding-2.2.9.tgz" "$pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
+          cmp bench-data/runtime/node_modules/@rspack/binding-linux-x64-gnu/rspack.linux-x64-gnu.node "$pack/rspack.linux-x64-gnu.node"
+          cmp packages/rspack/dist/index.js bench-data/runtime/node_modules/@rspack/core/dist/index.js
+          result="$GITHUB_WORKSPACE/bench-data/results"
+          CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" RSPACK_BINDING="$pack/rspack.linux-x64-gnu.node" EXPECTED_NATIVE_SHA="$(sha256sum "$pack/rspack.linux-x64-gnu.node" | cut -d' ' -f1)" NATIVE_IDENTITY_LOG="$result/native.jsonl" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/smoke.cjs 2>&1 | tee "$result/smoke.log"
           (cd bench-data/pack; sha256sum *.tgz *.node > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: hot-${{ matrix.arm }}-packages
+          name: bisect-${{ matrix.arm }}-packages
           path: bench-data/pack/
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: hot-${{ matrix.arm }}-evidence
+          name: bisect-${{ matrix.arm }}-evidence
           path: bench-data/results/
           include-hidden-files: true
           if-no-files-found: error
           compression-level: 1
-  verify:
-    name: Compare tests and emitted bytes
+  export:
+    name: Check identities and export
     needs: build
-    if: ${{ always() && !cancelled() && (needs.build.result == 'success' || inputs.source_run != '') }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
       - uses: actions/download-artifact@v4
         with:
-          pattern: hot-*-packages
+          pattern: bisect-*-packages
           path: bench-data/packages
-          run-id: ${{ inputs.source_run || github.run_id }}
-          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
-          pattern: hot-*-evidence
+          pattern: bisect-*-evidence
           path: bench-data/evidence
-          run-id: ${{ inputs.source_run || github.run_id }}
-          github-token: ${{ github.token }}
-      - name: Check same build image, payload identities and test outcomes
+      - name: Check same image and assemble delivery
         run: |
           set -euo pipefail
-          mkdir -p bench-data/tmp bench-data/results bench-data/parser bench-data/scripts
-          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
-          cp .github/scripts/hot-pack/* bench-data/scripts/
-          cmp bench-data/evidence/hot-CONTROL-evidence/runner-image.txt bench-data/evidence/hot-TREATMENT-evidence/runner-image.txt
-          cmp bench-data/evidence/hot-CONTROL-evidence/wrapper-runtime.sha256 bench-data/evidence/hot-TREATMENT-evidence/wrapper-runtime.sha256
-          for arm in CONTROL TREATMENT; do (cd "bench-data/packages/hot-$arm-packages"; sha256sum -c SHA256SUMS); done
-          python3 bench-data/scripts/classify.py
-          python3 bench-data/scripts/audit-cases.py
-      - name: Prepare public fixture from its pinned source
-        run: |
-          set -euo pipefail
-          git show a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
-          npm install --prefix bench-data/parser --ignore-scripts --no-audit --no-fund acorn escodegen
-          node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
-          python3 bench-data/scripts/compare.py --self-test
-          for arm in CONTROL TREATMENT; do
-            pack="$GITHUB_WORKSPACE/bench-data/packages/hot-$arm-packages"
-            mkdir -p "bench-data/runtime/$arm"
-            printf '{"private":true}\n' > "bench-data/runtime/$arm/package.json"
-            npm install --prefix "bench-data/runtime/$arm" --ignore-scripts --no-audit --no-fund "$pack/rspack-core-2.2.9.tgz" "$pack/rspack-binding-2.2.9.tgz" "$pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
-            cmp "bench-data/runtime/$arm/node_modules/@rspack/binding-linux-x64-gnu/rspack.linux-x64-gnu.node" "$pack/rspack.linux-x64-gnu.node"
+          mkdir -p bench-data/tmp bench-data/results
+          export TMPDIR="$GITHUB_WORKSPACE/bench-data/tmp"
+          for arm in P5 P6 P7 P8; do
+            cmp bench-data/evidence/bisect-P5-evidence/runner-image.txt "bench-data/evidence/bisect-$arm-evidence/runner-image.txt"
+            cmp bench-data/evidence/bisect-P5-evidence/wrapper-runtime.sha256 "bench-data/evidence/bisect-$arm-evidence/wrapper-runtime.sha256"
+            (cd "bench-data/packages/bisect-$arm-packages"; sha256sum -c SHA256SUMS)
           done
-      - name: Compare cold, content-edit and deterministic topology rebuild output
-        run: |
-          set -euo pipefail
-          for variant in deterministic split-chunks; do
-            for arm in CONTROL TREATMENT; do
-              native="$GITHUB_WORKSPACE/bench-data/packages/hot-$arm-packages/rspack.linux-x64-gnu.node"
-              result="$GITHUB_WORKSPACE/bench-data/results/$variant/$arm"
-              mkdir -p "$result"
-              VARIANT="$variant" CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/$arm/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" RSPACK_BINDING="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" NATIVE_IDENTITY_LOG="$result/native.jsonl" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/watch.cjs 2>&1 | tee "$result/watch.log"
-            done
-            steps=(cold rebuild)
-            if [[ "$variant" == deterministic ]]; then steps+=(add-module); fi
-            for step in "${steps[@]}"; do
-              python3 bench-data/scripts/compare.py "bench-data/results/$variant/CONTROL/$step" "bench-data/results/$variant/TREATMENT/$step"
-            done
-          done
-          printf 'Cold and content-edit outputs match under both configurations. Deterministic add-module and new-import output also matches.\n' > bench-data/results/output-parity.txt
-      - name: Assemble the checked delivery with README and checksums
-        run: |
-          set -euo pipefail
-          python3 bench-data/scripts/export.py
+          python3 .github/scripts/hot-pack/export-bisect.py
           (cd bench-data/delivery; sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: hot-pack-delivery
+          name: hot-bisect-delivery
           path: bench-data/delivery/
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: hot-verification-evidence
-          path: |
-            bench-data/results/
-            bench-data/scripts/
+          name: hot-bisect-summary
+          path: bench-data/results/
           if-no-files-found: error
-          compression-level: 1
