@@ -10,8 +10,9 @@ use rustc_hash::FxHasher;
 use crate::{
   BoxSource, MapOptions, RawBufferSource, Source, SourceExt, SourceMap,
   helpers::{
-    Chunks, GeneratedInfo, StreamChunks, TextSpan, stream_and_get_source_and_map,
-    stream_chunks_of_raw_source, stream_chunks_of_source_map,
+    Chunks, GeneratedInfo, StreamChunks, TextSpan, get_generated_source_info,
+    stream_and_get_source_and_map, stream_chunks_of_raw_source, stream_chunks_of_source_map,
+    stream_chunks_of_source_map_lines_final_with_generated_info,
   },
   object_pool::ObjectPool,
   source::SourceValue,
@@ -250,6 +251,29 @@ impl<'source> Chunks<'source> for CachedSourceChunks<'source> {
       &self.cache_source.cache.line_only_map
     };
     match cell.get() {
+      Some(Some(map)) if !options.columns && options.final_source => {
+        // Final line-only replay needs the terminal position, not borrowed text spans.
+        // Scan the cached rope instead of allocating a flat copy of the source.
+        let mut generated_info = GeneratedInfo {
+          generated_line: 1,
+          generated_column: 0,
+        };
+        self.cache_source.rope(&mut |chunk| {
+          let chunk_info = get_generated_source_info(TextSpan::new(chunk));
+          generated_info.generated_line += chunk_info.generated_line - 1;
+          if chunk_info.generated_line == 1 {
+            generated_info.generated_column += chunk_info.generated_column;
+          } else {
+            generated_info.generated_column = chunk_info.generated_column;
+          }
+        });
+        stream_chunks_of_source_map_lines_final_with_generated_info(
+          generated_info,
+          map.fields(),
+          on_chunk,
+          on_source,
+        )
+      }
       Some(map) => {
         let source = self.get_or_init_source();
         if let Some(map) = map {
