@@ -44,7 +44,11 @@ const compiler = rspack({
   cache: false,
   devtool: 'cheap-module-source-map',
   incremental: { silent: false },
-  output: { path: path.join(root, 'out'), filename: 'bundle.cjs', chunkFilename: '[name].cjs' },
+  output: {
+    path: path.join(root, 'out'),
+    filename: variant === 'split-chunks' ? '[name].cjs' : 'bundle.cjs',
+    chunkFilename: variant === 'split-chunks' ? '[name].[id].cjs' : '[name].cjs',
+  },
   module: { rules: [
     { test: /\.ts$/, use: { loader: 'builtin:swc-loader', options: { jsc: { parser: { syntax: 'typescript' } } } } },
     { test: /[\\/]m\d*0\.js$/, use: path.join(root, 'ast.cjs') },
@@ -72,7 +76,10 @@ const watching = compiler.watch({}, (error, stats) => {
   fs.writeFileSync(path.join(results, 'warnings.json'), JSON.stringify(rows.map(row => ({ step: row.step, warnings: row.warnings, logging: row.logging })), null, 2) + '\n');
   if (step++ === 0) {
     assert.deepEqual(globalThis.loaderCalls, { noop: 60701, ast: 6000, rewrite: 3000 });
-    if (variant === 'split-chunks') for (const value of Object.values(callbacks)) assert(value > 0, 'A requested callback did not execute');
+    if (variant === 'split-chunks') {
+      assert(json.chunks.length > 1, 'SplitChunks cold build must create more than one chunk');
+      for (const value of Object.values(callbacks)) assert(value > 0, 'A requested callback did not execute');
+    }
     setImmediate(() => {
       fs.writeFileSync(file, Buffer.concat([original, Buffer.from('\nmodule.exports += 1;\n')]));
       compiler.inputFileSystem.purge([file]);

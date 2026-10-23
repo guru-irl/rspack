@@ -50,6 +50,9 @@ for arm, source in [('CONTROL', base), ('TREATMENT', head)]:
         rows = json.loads((result / 'builds.json').read_text())
         steps = ['cold', 'rebuild', 'add-module'] if variant == 'deterministic' else ['cold', 'rebuild']
         assert [row['step'] for row in rows] == steps
+        if variant == 'split-chunks':
+            assert rows[0]['chunkCount'] > 1
+            assert all(rows[0]['callbacks'][key] > 0 for key in ('test', 'name', 'chunks'))
         identities = [json.loads(line) for line in (result / 'native.jsonl').read_text().splitlines()]
         assert identities and all(row['sha256'] == sha(native) and row['mapped'] == [row['path']] for row in identities)
         assert all(row['path'] in (result / 'native.maps').read_text() for row in identities)
@@ -195,7 +198,7 @@ Of the 30 failed tests, 27 need test-only builtin loaders, two need the test-onl
 
 Separately, both arms failed to load `NativeWatcherIgnoredFunction.test.mjs`: the native-path guard rejected its direct source-tree binding path. That file's tests did not run. This shared harness limitation is not included in the 30 failed tests. The evidence retains the complete terminal summaries, raw event reports, equal failing-ID lists, per-PR case audit and failure messages.
 
-The public `bench/program-native` fixture is pinned at `a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc`. Each arm completed a cold build and a rebuild after one module content edit in development mode under two configurations. Both use deterministic module and chunk IDs. The second also uses function-valued SplitChunks `test`, `name` and `chunks` callbacks with a `javascript/auto` type filter. Both configurations use cheap module source maps. All requested callbacks executed.
+The public `bench/program-native` fixture is pinned at `a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc`. Each arm completed a cold build and a rebuild after one module content edit in development mode under two configurations. Both use deterministic module and chunk IDs. The second also uses function-valued SplitChunks `test`, `name` and `chunks` callbacks with a `javascript/auto` type filter. Both configurations use cheap module source maps. Each SplitChunks cold build created more than one chunk, and all requested callbacks executed.
 
 The first configuration then completed a second rebuild in the same watch process. That rebuild added one module and a new `import()` in an existing module, and created an additional chunk. Emitted filenames and bytes match between arms after all three deterministic builds and both SplitChunks builds. Each edit changed the emitted bytes. Both arms use the development default incremental passes. The identical `silent: false` setting makes fallback diagnostics visible without changing those passes.
 
