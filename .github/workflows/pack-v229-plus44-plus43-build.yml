@@ -246,7 +246,7 @@ jobs:
             npm install --prefix "bench-data/runtime/$arm" --ignore-scripts --no-audit --no-fund "$pack/rspack-core-2.2.9.tgz" "$pack/rspack-binding-2.2.9.tgz" "$pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
             cmp "bench-data/runtime/$arm/node_modules/@rspack/binding-linux-x64-gnu/rspack.linux-x64-gnu.node" "$pack/rspack.linux-x64-gnu.node"
           done
-      - name: Compare cold and one-edit rebuild output under both configurations
+      - name: Compare cold, content-edit and deterministic topology rebuild output
         run: |
           set -euo pipefail
           for variant in deterministic split-chunks; do
@@ -256,11 +256,13 @@ jobs:
               mkdir -p "$result"
               VARIANT="$variant" CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/$arm/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" NATIVE_IDENTITY_LOG="$result/native.jsonl" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/watch.cjs 2>&1 | tee "$result/watch.log"
             done
-            for step in cold rebuild; do
+            steps=(cold rebuild)
+            if [[ "$variant" == deterministic ]]; then steps+=(add-module); fi
+            for step in "${steps[@]}"; do
               python3 bench-data/scripts/compare.py "bench-data/results/$variant/CONTROL/$step" "bench-data/results/$variant/TREATMENT/$step"
             done
           done
-          printf 'Both cold builds and both one-edit rebuilds emit identical file names and bytes.\n' > bench-data/results/output-parity.txt
+          printf 'Cold and content-edit outputs match under both configurations. Deterministic add-module and new-import output also matches.\n' > bench-data/results/output-parity.txt
       - name: Assemble the checked delivery with README and checksums
         run: |
           set -euo pipefail

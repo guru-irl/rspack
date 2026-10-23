@@ -45,7 +45,8 @@ for arm, source in [('CONTROL', base), ('TREATMENT', head)]:
     for variant in ('deterministic', 'split-chunks'):
         result = root / 'results' / variant / arm
         rows = json.loads((result / 'builds.json').read_text())
-        assert [row['step'] for row in rows] == ['cold', 'rebuild']
+        steps = ['cold', 'rebuild', 'add-module'] if variant == 'deterministic' else ['cold', 'rebuild']
+        assert [row['step'] for row in rows] == steps
         identities = [json.loads(line) for line in (result / 'native.jsonl').read_text().splitlines()]
         assert identities and all(row['sha256'] == sha(native) and row['mapped'] == [row['path']] for row in identities)
         assert all(row['path'] in (result / 'native.maps').read_text() for row in identities)
@@ -55,7 +56,15 @@ for arm, source in [('CONTROL', base), ('TREATMENT', head)]:
             pass
         else:
             raise AssertionError('The source edit did not change emitted bytes')
-        for step in ('cold', 'rebuild'):
+        if variant == 'deterministic':
+            assert rows[2]['chunkCount'] > rows[1]['chunkCount']
+            try:
+                compare(result / 'rebuild', result / 'add-module')
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError('The new module and import did not change emitted bytes')
+        for step in steps:
             compare(root / 'results' / variant / 'CONTROL' / step, root / 'results' / variant / 'TREATMENT' / step)
         parity[f'{variant}/{arm}'] = {'nativeSha256': sha(native), 'rows': rows}
     (delivery / arm).mkdir()
@@ -105,6 +114,8 @@ Each PR is one commit, applied in this order. The deterministic chunk-ID commit 
 - #40 processes SplitChunks callback combinations in bounded rounds. It applies to the callback path without a new option.
 
 Use development/watch mode with incremental compilation enabled to exercise the rebuild changes. Keep the workload, edit, options and process environment identical between arms.
+
+With a progress plugin enabled, rspack#16069 adds one scan over all modules on every rebuild before module IDs are assigned. Output is unchanged. Keep the progress setting identical between arms. The parity runs enable no progress plugin in either arm.
 
 ## Left out
 
@@ -169,7 +180,11 @@ The official published 2.2.9 native file has SHA-256 `6e791a118da96ece3fc1bb03b9
 
 Both arms ran `pnpm run test:ci`, the Linux CI command at v2.2.9. CONTROL exited {summary['CONTROL']['ciExit']}, and TREATMENT exited {summary['TREATMENT']['ciExit']}. There are {len(summary['sharedFailures'])} shared failed test or suite events, {len(summary['controlOnlyFailures'])} control-only failed events, and zero treatment-only failures. Shared failures are not counted as passes. The release binding omits test loaders and DEBUG trace events. `compilerCases/persistent-cache-issuer-updates` is expected to fail without those DEBUG events. The evidence artifact retains every test outcome and failure message.
 
-The public `bench/program-native` fixture is pinned at `a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc`. Each arm completed a cold build and a rebuild after one module edit in development mode under two configurations. Both use deterministic module and chunk IDs. The second also uses function-valued SplitChunks `test`, `name` and `chunks` callbacks with a `javascript/auto` type filter. Both configurations use cheap module source maps. All requested callbacks executed. Emitted filenames and bytes match between arms after both cold builds and both rebuilds. Each edit changed the emitted bytes.
+The public `bench/program-native` fixture is pinned at `a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc`. Each arm completed a cold build and a rebuild after one module content edit in development mode under two configurations. Both use deterministic module and chunk IDs. The second also uses function-valued SplitChunks `test`, `name` and `chunks` callbacks with a `javascript/auto` type filter. Both configurations use cheap module source maps. All requested callbacks executed.
+
+The first configuration then completed a second rebuild in the same watch process. That rebuild added one module and a new `import()` in an existing module, and created an additional chunk. Emitted filenames and bytes match between arms after all three deterministic builds and both SplitChunks builds. Each edit changed the emitted bytes. Both arms use the development default incremental passes. The identical `silent: false` setting makes fallback diagnostics visible without changing those passes.
+
+Each arm's warnings and logger output are retained per build in `warnings.json`. CONTROL is expected to report deterministic-ID incremental fallbacks and TREATMENT is expected not to. Warning differences are evidence of which paths ran, not a delivery gate.
 
 The comparator rejected seeded byte, missing-file, extra-file and missing-directory errors before comparing outputs. Every parity process recorded the selected native SHA-256 from its mapped file. Each GNU tarball's native payload matches its bare file. `readelf` confirms neither rebuilt binding requires a newer GLIBC version than the official binary.
 
