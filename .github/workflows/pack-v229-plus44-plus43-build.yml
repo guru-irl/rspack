@@ -1,4 +1,4 @@
-name: wake pack on 2.2.8 (rebuilt control, single wake, batched v2)
+name: v2.2.9 hot pack with same-run control
 on:
   workflow_dispatch:
 permissions:
@@ -9,21 +9,24 @@ defaults:
 env:
   CARGO_INCREMENTAL: 0
   npm_config_registry: https://registry.npmjs.org
+  npm_config_manage_package_manager_versions: false
+  npm_config_package_manager_strict_version: false
+  npm_config_engine_strict: false
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: true
+  PUPPETEER_SKIP_DOWNLOAD: true
 jobs:
   build:
-    name: Build ${{ matrix.arm }}
+    name: Build and test ${{ matrix.arm }}
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arm: W0
-            source: a6e6347cb6335b637e6bb03ceafc12a75581b745
-          - arm: W46
-            source: 468d7d365cc9b45112f3ce6b9dcd7921ea0827d2
-          - arm: WB2
-            source: 2612dec986801265f3f6be3a4d04a09b8030ba91
+          - arm: CONTROL
+            source: 428b70684309de4068e32baf81d28194441dd64e
+          - arm: TREATMENT
+            source: b6703e272dbc52294d745073c7f00c3a838989c2
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,7 +36,7 @@ jobs:
       - name: Record exact source and release settings
         run: |
           set -euo pipefail
-          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack bench-data/scripts
           echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
           printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
           date -u +%FT%TZ > bench-data/results/start-utc.txt
@@ -42,18 +45,32 @@ jobs:
           for file in .github/workflows/reusable-release-npm.yml .github/workflows/reusable-build.yml .github/workflows/reusable-build-build.yml rust-toolchain.toml crates/node_binding/scripts/build.mjs Cargo.toml .cargo/config.toml; do
             mkdir -p "bench-data/results/settings/$(dirname "$file")"
             cp "$file" "bench-data/results/settings/$file"
-            git diff --exit-code a6e6347cb6335b637e6bb03ceafc12a75581b745 HEAD -- "$file"
+            git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e HEAD -- "$file"
+          done
+          git diff --exit-code 428b70684309de4068e32baf81d28194441dd64e b6703e272dbc52294d745073c7f00c3a838989c2 -- crates/node_binding/binding.js crates/node_binding/webcontainer-fallback.cjs crates/node_binding/package.json
+          printf 'Runtime files are identical between source arms. Ship the official 2.2.9 wrapper.\n' > bench-data/results/wrapper-origin.txt
+          for file in identity.cjs; do
+            git show '${{ github.sha }}:.github/scripts/hot-pack/'"$file" > "bench-data/scripts/$file"
           done
           test ! -d target
-      - uses: ./.github/actions/pnpm/setup
-      - name: Install binding dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Pin pnpm independently of the source packageManager field
         run: |
           set -euo pipefail
-          pnpm --filter @rspack/binding install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+          npm install --global pnpm@11.26.0
+          test "$(node --version)" = v22.23.3
+          test "$(pnpm --version)" = 11.26.0
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+          test "$(pnpm --version)" = 11.26.0
           node -e 'const {createRequire}=require("node:module"); const local=createRequire(process.cwd()+"/crates/node_binding/package.json"); const cli=local.resolve("@napi-rs/cli"); const cross=createRequire(cli).resolve("@napi-rs/cross-toolchain"); const r=createRequire(cross); for(const name of ["@napi-rs/lzma","@napi-rs/tar"]) {r(name); console.log(name,r.resolve(name));}' | tee bench-data/results/cross-toolchain-native.txt
       - uses: ./.github/actions/rustup
         with:
-          key: wake-release-228
+          key: hot-release-229
           use-cache: false
       - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
@@ -61,11 +78,17 @@ jobs:
       - name: Prepare official release build
         run: |
           set -euo pipefail
-          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
-          rustup target add x86_64-unknown-linux-gnu
-          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          command -v clang-14 || { sudo apt-get update; sudo apt-get install -y clang-14; }
+          mkdir -p bench-data/bin
+          ln -s "$(command -v clang-14)" bench-data/bin/clang
+          ln -s "$(command -v clang++-14)" bench-data/bin/clang++
+          echo "$GITHUB_WORKSPACE/bench-data/bin" >> "$GITHUB_PATH"
+          rustup component add rust-src --toolchain nightly-2026-04-16
+          rustup target add x86_64-unknown-linux-gnu --toolchain nightly-2026-04-16
+          test "$(rustup show active-toolchain | cut -d' ' -f1)" = nightly-2026-04-16-x86_64-unknown-linux-gnu
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/bench-data/codegen-target" cargo codegen 2>&1 | tee bench-data/results/codegen.log
           printf '\ntrim-paths = true\n' >> .cargo/config.toml
-          { date -u; node --version; pnpm --version; rustc -Vv; clang --version; ldd --version; df -h .; } > bench-data/results/environment.txt
+          { date -u; node --version; pnpm --version; rustc -Vv; clang-14 --version; ldd --version; df -h .; } > bench-data/results/environment.txt
           test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}"
           test -z "${ALLOCATIVE:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}"
       - name: Build release binding from scratch
@@ -75,6 +98,7 @@ jobs:
           TARGET_CC: clang
         run: |
           set -euo pipefail
+          test ! -d target
           start=$(date +%s)
           date -u +%FT%TZ > bench-data/results/build-start-utc.txt
           pnpm run build:binding:release 2>&1 | tee bench-data/results/native-build.log
@@ -85,45 +109,103 @@ jobs:
           grep -F -- '--no-default-features --no-dts-cache --features plugin,info-level' bench-data/results/native-build.log
           grep -F -- '-Zbuild-std=panic_abort,std' bench-data/results/native-build.log
           cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
-      - name: Package exact 2.2.8 identity and check glibc
+          cp crates/node_binding/napi-binding.d.ts bench-data/results/generated-napi-binding.d.ts
+          git diff -- crates/node_binding/napi-binding.d.ts > bench-data/results/generated-types.diff
+      - name: Rebuild this arm's core and JavaScript test artifacts
         run: |
           set -euo pipefail
-          mkdir -p bench-data/official bench-data/package bench-data/unpacked
-          (cd bench-data/official; npm pack @rspack/binding-linux-x64-gnu@2.2.8)
-          echo '3ed0980de069d57787dcf635f1cef20c5d9be3d2dbd6a7d6576f48f06a6221d8  bench-data/official/rspack-binding-linux-x64-gnu-2.2.8.tgz' | sha256sum -c -
-          tar -xzf bench-data/official/rspack-binding-linux-x64-gnu-2.2.8.tgz -C bench-data/official
-          cp -a bench-data/official/package bench-data/package/
-          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/package/package/
-          node -e 'const p=require("./bench-data/package/package/package.json"); if(p.name!=="@rspack/binding-linux-x64-gnu"||p.version!=="2.2.8")throw Error("Wrong package identity")'
-          (cd bench-data/package/package; npm pack --pack-destination ../../pack)
-          tar -xzf bench-data/pack/rspack-binding-linux-x64-gnu-2.2.8.tgz -C bench-data/unpacked
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack" 2>&1 | tee bench-data/results/pack-core.log
+          sha256sum packages/rspack/dist/index.js > bench-data/results/built-core.sha256
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Package exact 2.2.9 identities and inspect glibc
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official bench-data/native-package bench-data/unpacked bench-data/wrapper
+          (cd bench-data/official; npm pack @rspack/binding@2.2.9; npm pack @rspack/binding-linux-x64-gnu@2.2.9)
+          echo '04e1989833d4077e64a1a8569a68119a7633c2bb4be7e5759dab4e6f0d70e116  bench-data/official/rspack-binding-2.2.9.tgz' | sha256sum -c -
+          echo '11e6a686ef2756332fe6d29acc4f8c2c8c2bf2c59ea593e2381d9a52b0121d89  bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz' | sha256sum -c -
+          tar -xzf bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/native-package
+          readelf --version-info bench-data/native-package/package/rspack.linux-x64-gnu.node > bench-data/results/official-readelf.txt
+          echo '6e791a118da96ece3fc1bb03b940772d3e141f47bbb3097fec36a097e7bded9c  bench-data/native-package/package/rspack.linux-x64-gnu.node' | sha256sum -c -
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/native-package/package/
+          (cd bench-data/native-package/package; npm pack --pack-destination ../../pack)
+          cp bench-data/official/rspack-binding-2.2.9.tgz bench-data/pack/
+          tar -xzf bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/unpacked
           cmp bench-data/pack/rspack.linux-x64-gnu.node bench-data/unpacked/package/rspack.linux-x64-gnu.node
-          sha256sum bench-data/pack/* > bench-data/results/pack.sha256
-          readelf --version-info bench-data/official/package/rspack.linux-x64-gnu.node > bench-data/results/official-readelf.txt
+          tar -xzf bench-data/pack/rspack-binding-2.2.9.tgz -C bench-data/wrapper
+          for file in binding.js webcontainer-fallback.cjs; do
+            sha256sum "crates/node_binding/$file" >> bench-data/results/wrapper-runtime.sha256
+            cmp "crates/node_binding/$file" "bench-data/wrapper/package/$file"
+          done
           readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/built-readelf.txt
           official=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/official-readelf.txt | sort -Vu | tail -1)
           built=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/built-readelf.txt | sort -Vu | tail -1)
           printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
           test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+          (cd bench-data/pack; sha256sum *.tgz *.node > SHA256SUMS)
+          python3 - <<'PY'
+          import json, tarfile
+          from pathlib import Path
+          for file in Path('bench-data/pack').glob('*.tgz'):
+              with tarfile.open(file) as tf:
+                  package=json.load(tf.extractfile('package/package.json'))
+                  assert package['version']=='2.2.9',package
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: wake-${{ matrix.arm }}-binding
+          name: hot-${{ matrix.arm }}-packages
           path: bench-data/pack/
           if-no-files-found: error
           compression-level: 0
+      - name: Align launcher copies with this arm's rebuilt core
+        run: |
+          set -euo pipefail
+          for p in node_modules/.pnpm/@rspack+core@*/node_modules/@rspack/core; do
+            test -d "$p"
+            tar -xzf bench-data/pack/rspack-core-2.2.9.tgz -C "$p" --strip-components=1
+            cmp packages/rspack/dist/index.js "$p/dist/index.js"
+          done
+          for p in node_modules/.pnpm/@rspack+binding@*/node_modules/@rspack/binding; do
+            test -d "$p"
+            tar -xzf bench-data/pack/rspack-binding-2.2.9.tgz -C "$p" --strip-components=1
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/rspack-test/rstack.config.mts')
+          text=p.read_text()
+          assert text.count('execArgv: [')==1
+          preload=str(Path('bench-data/scripts/identity.cjs').resolve())
+          p.write_text(text.replace('execArgv: [', 'execArgv: [\n        "--require='+preload+'",'))
+          PY
+          native="$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node"
+          echo "NAPI_RS_NATIVE_LIBRARY_PATH=$native" >> "$GITHUB_ENV"
+          echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/test-native-identities.jsonl" >> "$GITHUB_ENV"
+          echo "NODE_OPTIONS=--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
+      - name: Run the v2.2.9 Linux CI test command without changing cases
+        run: |
+          set -euo pipefail
+          rc=0
+          pnpm run test:ci 2>&1 | tee bench-data/results/test-ci.log || rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" > bench-data/results/test-ci.exit
+          for file in *-report.txt; do test -f "$file"; cp "$file" bench-data/results/; done
+          test -s bench-data/results/rspack-test-event-report.txt
+          grep -F 'TEST_RUN_END' bench-data/results/rspack-test-event-report.txt
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wake-${{ matrix.arm }}-evidence
+          name: hot-${{ matrix.arm }}-evidence
           path: bench-data/results/
           include-hidden-files: true
           if-no-files-found: error
           compression-level: 1
   verify:
-    name: Verify all four bindings
+    name: Compare tests and emitted bytes
     needs: build
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,101 +213,71 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.18.0
+          node-version: 22.23.3
       - uses: actions/download-artifact@v4
         with:
-          pattern: wake-*-binding
-          path: bench-data/bindings
+          pattern: hot-*-packages
+          path: bench-data/packages
       - uses: actions/download-artifact@v4
         with:
-          pattern: wake-*-evidence
-          path: bench-data/build-evidence
-      - name: Prepare official runtime and generic fixture
+          pattern: hot-*-evidence
+          path: bench-data/evidence
+      - name: Check same build image, payload identities and test outcomes
         run: |
           set -euo pipefail
-          mkdir -p bench-data/tmp bench-data/results bench-data/scripts bench-data/runtime bench-data/official
-          export TMPDIR="$GITHUB_WORKSPACE/bench-data/tmp"
-          echo "TMPDIR=$TMPDIR" >> "$GITHUB_ENV"
-          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
-          for arm in W0 W46 WB2; do
-            cmp bench-data/results/runner-image.txt "bench-data/build-evidence/wake-$arm-evidence/runner-image.txt"
-          done
-          (cd bench-data/official; npm pack @rspack/core@2.2.8; npm pack @rspack/binding@2.2.8; npm pack @rspack/binding-linux-x64-gnu@2.2.8)
-          cat > bench-data/results/official-tarballs.sha256 <<'SUMS'
-          d4e4d95245daa215f07ca7c37faa1c62e45c7a453e3e845aad3250160c241702  bench-data/official/rspack-core-2.2.8.tgz
-          a53c8675985b397cb86898352f08067a5716488c7bb1122d37ef18bd6c5049d3  bench-data/official/rspack-binding-2.2.8.tgz
-          3ed0980de069d57787dcf635f1cef20c5d9be3d2dbd6a7d6576f48f06a6221d8  bench-data/official/rspack-binding-linux-x64-gnu-2.2.8.tgz
-          SUMS
-          sha256sum -c bench-data/results/official-tarballs.sha256
-          printf '{"private":true}\n' > bench-data/runtime/package.json
-          npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund @rspack/core@2.2.8 acorn escodegen
-          tar -xzf bench-data/official/rspack-core-2.2.8.tgz -C bench-data/runtime/node_modules/@rspack/core --strip-components=1
-          tar -xzf bench-data/official/rspack-binding-2.2.8.tgz -C bench-data/runtime/node_modules/@rspack/binding --strip-components=1
-          tar -xzf bench-data/official/rspack-binding-linux-x64-gnu-2.2.8.tgz -C bench-data/official
-          cp bench-data/official/package/rspack.linux-x64-gnu.node bench-data/official.node
-          for arm in W0 W46 WB2; do
-            cp "bench-data/bindings/wake-$arm-binding/rspack.linux-x64-gnu.node" "bench-data/$arm.node"
-          done
-          sha256sum bench-data/official.node bench-data/W0.node bench-data/W46.node bench-data/WB2.node | tee bench-data/results/native-identities.sha256
-          test "$(cut -d' ' -f1 bench-data/results/native-identities.sha256 | sort -u | wc -l)" -eq 4
-          cp .github/scripts/wake-3arm/* bench-data/scripts/
+          mkdir -p bench-data/tmp bench-data/results bench-data/parser bench-data/scripts
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          cp .github/scripts/hot-pack/* bench-data/scripts/
+          cmp bench-data/evidence/hot-CONTROL-evidence/runner-image.txt bench-data/evidence/hot-TREATMENT-evidence/runner-image.txt
+          cmp bench-data/evidence/hot-CONTROL-evidence/wrapper-runtime.sha256 bench-data/evidence/hot-TREATMENT-evidence/wrapper-runtime.sha256
+          for arm in CONTROL TREATMENT; do (cd "bench-data/packages/hot-$arm-packages"; sha256sum -c SHA256SUMS); done
+          python3 bench-data/scripts/classify.py
+      - name: Prepare public fixture from its pinned source
+        run: |
+          set -euo pipefail
+          git show a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
+          npm install --prefix bench-data/parser --ignore-scripts --no-audit --no-fund acorn escodegen
           node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
           python3 bench-data/scripts/compare.py --self-test
-      - name: Output parity on 60701 modules
+          for arm in CONTROL TREATMENT; do
+            pack="$GITHUB_WORKSPACE/bench-data/packages/hot-$arm-packages"
+            mkdir -p "bench-data/runtime/$arm"
+            printf '{"private":true}\n' > "bench-data/runtime/$arm/package.json"
+            npm install --prefix "bench-data/runtime/$arm" --ignore-scripts --no-audit --no-fund "$pack/rspack-core-2.2.9.tgz" "$pack/rspack-binding-2.2.9.tgz" "$pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
+            cmp "bench-data/runtime/$arm/node_modules/@rspack/binding-linux-x64-gnu/rspack.linux-x64-gnu.node" "$pack/rspack.linux-x64-gnu.node"
+          done
+      - name: Compare cold and one-edit rebuild output under both configurations
         run: |
           set -euo pipefail
-          for arm in official W0 W46 WB2; do
-            native="$GITHUB_WORKSPACE/bench-data/$arm.node"
-            rm -rf bench-data/fixture/out
-            NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" MAPS_FILE="$GITHUB_WORKSPACE/bench-data/results/$arm.maps" IDENTITY_FILE="$GITHUB_WORKSPACE/bench-data/results/$arm.identity.json" node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/run.mjs bench-data/fixture "bench-data/results/$arm.json" 2>&1 | tee "bench-data/results/$arm.log"
-            cp -a bench-data/fixture/out "bench-data/results/$arm-output"
-            test -s "bench-data/results/$arm-output/bundle.cjs"
+          for variant in deterministic split-chunks; do
+            for arm in CONTROL TREATMENT; do
+              native="$GITHUB_WORKSPACE/bench-data/packages/hot-$arm-packages/rspack.linux-x64-gnu.node"
+              result="$GITHUB_WORKSPACE/bench-data/results/$variant/$arm"
+              mkdir -p "$result"
+              VARIANT="$variant" CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/$arm/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" NATIVE_IDENTITY_LOG="$result/native.jsonl" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/watch.cjs 2>&1 | tee "$result/watch.log"
+            done
+            for step in cold rebuild; do
+              python3 bench-data/scripts/compare.py "bench-data/results/$variant/CONTROL/$step" "bench-data/results/$variant/TREATMENT/$step"
+            done
           done
-          for arm in W0 W46 WB2; do
-            python3 bench-data/scripts/compare.py bench-data/results/official-output "bench-data/results/$arm-output"
-          done
-          sha256sum bench-data/results/*-output/* > bench-data/results/output.sha256
-      - name: Six-case error parity against official
+          printf 'Both cold builds and both one-edit rebuilds emit identical file names and bytes.\n' > bench-data/results/output-parity.txt
+      - name: Assemble the checked delivery with README and checksums
         run: |
           set -euo pipefail
-          mkdir -p bench-data/sw-error
-          for arm in W46 WB2; do
-            ARM="$arm" python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          bindings = {}
-          for key, arm in [('control', 'official'), ('treatment', os.environ['ARM'])]:
-              native = Path(f'bench-data/{arm}.node').resolve()
-              digest = hashlib.sha256(native.read_bytes()).hexdigest()
-              identity = json.loads(Path(f'bench-data/results/{arm}.identity.json').read_text())
-              assert identity['path'] == str(native) and identity['sha256'] == digest and identity['mapped'] == [str(native)]
-              bindings[key] = dict(path=str(native), sha256=digest)
-          Path('bench-data/sw-error/bindings.json').write_text(json.dumps(bindings))
-          Path('bench-data/sw-error/identity-accepted.json').write_text(json.dumps(dict(accepted=True, bindings=bindings)))
-          PY
-            node bench-data/scripts/single-wake-error-parity.mjs 2>&1 | tee "bench-data/results/error-$arm.log"
-            cp -a bench-data/sw-error "bench-data/results/error-$arm"
-          done
-      - name: Fake timers on official and WB2
-        run: |
-          set -euo pipefail
-          for arm in official WB2; do
-            native="$GITHUB_WORKSPACE/bench-data/$arm.node"
-            rm -rf bench-data/fixture/out
-            FAKE_TIMERS=1 NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" MAPS_FILE="$GITHUB_WORKSPACE/bench-data/results/fake-$arm.maps" IDENTITY_FILE="$GITHUB_WORKSPACE/bench-data/results/fake-$arm.identity.json" timeout --kill-after=5 120 node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/run.mjs bench-data/fixture "bench-data/results/fake-$arm.json" 2>&1 | tee "bench-data/results/fake-$arm.log"
-            python3 bench-data/scripts/compare.py bench-data/results/official-output bench-data/fixture/out
-          done
-      - name: Record verification success
-        run: |
-          set -euo pipefail
-          cp -a bench-data/scripts bench-data/results/scripts
-          python3 bench-data/scripts/summarize.py | tee bench-data/results/summary.json
-          printf '%s\n' 'All identity, glibc, output, error and fake-timer checks passed.' > bench-data/results/PASS
-          date -u +%FT%TZ > bench-data/results/end-utc.txt
+          python3 bench-data/scripts/export.py
+          (cd bench-data/delivery; sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hot-pack-delivery
+          path: bench-data/delivery/
+          if-no-files-found: error
+          compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wake-verification
-          path: bench-data/results/
+          name: hot-verification-evidence
+          path: |
+            bench-data/results/
+            bench-data/scripts/
           if-no-files-found: error
           compression-level: 1
