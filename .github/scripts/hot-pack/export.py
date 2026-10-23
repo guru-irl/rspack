@@ -163,10 +163,10 @@ For a workspace with transitive Rspack pins, override all three packages to the 
 The bare native file is byte-identical to the corresponding GNU tarball payload. To select it explicitly in a fresh process:
 
 ```sh
-export NAPI_RS_NATIVE_LIBRARY_PATH="$PACK/$ARM/rspack.linux-x64-gnu.node"
+export RSPACK_BINDING="$PACK/$ARM/rspack.linux-x64-gnu.node"
 ```
 
-Check the native file actually loaded by the workload, not only the installed package path. The verification processes checked its SHA-256 and `/proc/self/maps`.
+`RSPACK_BINDING` is specific to this rebuilt core. Avoid a global `NAPI_RS_NATIVE_LIBRARY_PATH` override because unrelated N-API packages can also read that variable. Check the native file actually loaded by the workload, not only the installed package path. The verification processes checked its SHA-256 and `/proc/self/maps`.
 
 ## Payload SHA-256 values
 

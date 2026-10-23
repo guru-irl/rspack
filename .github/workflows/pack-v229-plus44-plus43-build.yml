@@ -117,7 +117,7 @@ jobs:
           set -euo pipefail
           pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
           pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack" 2>&1 | tee bench-data/results/pack-core.log
-          sha256sum packages/rspack/dist/index.js > bench-data/results/built-core.sha256
+          sha256sum packages/rspack/dist/index.js > bench-data/results/bootstrap-core.sha256
           git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
       - name: Package exact 2.2.9 identities and inspect glibc
         run: |
@@ -144,7 +144,6 @@ jobs:
           built=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/built-readelf.txt | sort -Vu | tail -1)
           printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
           test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
-          (cd bench-data/pack; sha256sum *.tgz *.node > SHA256SUMS)
           python3 - <<'PY'
           import json, tarfile
           from pathlib import Path
@@ -153,12 +152,6 @@ jobs:
                   package=json.load(tf.extractfile('package/package.json'))
                   assert package['version']=='2.2.9',package
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hot-${{ matrix.arm }}-packages
-          path: bench-data/pack/
-          if-no-files-found: error
-          compression-level: 0
       - name: Align launcher copies with this arm's rebuilt core
         run: |
           set -euo pipefail
@@ -180,7 +173,7 @@ jobs:
           p.write_text(text.replace('execArgv: [', 'execArgv: [\n        "--require='+preload+'",'))
           PY
           native="$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node"
-          echo "NAPI_RS_NATIVE_LIBRARY_PATH=$native" >> "$GITHUB_ENV"
+          echo "RSPACK_BINDING=$native" >> "$GITHUB_ENV"
           echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/test-native-identities.jsonl" >> "$GITHUB_ENV"
           echo "NODE_OPTIONS=--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
@@ -194,6 +187,18 @@ jobs:
           test -s bench-data/results/rspack-test-event-report.txt
           grep -F 'TEST_RUN_END' bench-data/results/rspack-test-event-report.txt
           git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Freeze the core that the CI command rebuilt and tested
+        run: |
+          set -euo pipefail
+          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack" 2>&1 | tee bench-data/results/pack-tested-core.log
+          sha256sum packages/rspack/dist/index.js > bench-data/results/built-core.sha256
+          (cd bench-data/pack; sha256sum *.tgz *.node > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hot-${{ matrix.arm }}-packages
+          path: bench-data/pack/
+          if-no-files-found: error
+          compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -255,7 +260,7 @@ jobs:
               native="$GITHUB_WORKSPACE/bench-data/packages/hot-$arm-packages/rspack.linux-x64-gnu.node"
               result="$GITHUB_WORKSPACE/bench-data/results/$variant/$arm"
               mkdir -p "$result"
-              VARIANT="$variant" CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/$arm/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" NAPI_RS_NATIVE_LIBRARY_PATH="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" NATIVE_IDENTITY_LOG="$result/native.jsonl" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/watch.cjs 2>&1 | tee "$result/watch.log"
+              VARIANT="$variant" CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/$arm/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" RSPACK_BINDING="$native" EXPECTED_NATIVE_SHA="$(sha256sum "$native" | cut -d' ' -f1)" NATIVE_IDENTITY_LOG="$result/native.jsonl" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/watch.cjs 2>&1 | tee "$result/watch.log"
             done
             steps=(cold rebuild)
             if [[ "$variant" == deterministic ]]; then steps+=(add-module); fi
