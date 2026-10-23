@@ -13,6 +13,9 @@ head = 'b6703e272dbc52294d745073c7f00c3a838989c2'
 sha = lambda data: hashlib.sha256(data).hexdigest()
 summary = json.loads((root / 'results/test-summary.json').read_text())
 assert not summary['treatmentOnlyFailures']
+assert summary['failedTestIdSetsIdentical']
+case_audit = json.loads((root / 'results/case-audit.json').read_text())
+assert case_audit['source'] == head and case_audit['newTestCount'] == 43
 assert (root / 'results/output-parity.txt').is_file()
 images = [(root / 'evidence' / f'hot-{arm}-evidence/runner-image.txt').read_text() for arm in ('CONTROL', 'TREATMENT')]
 assert images[0] == images[1]
@@ -85,14 +88,15 @@ for commit in commits:
     trailers = dict(line.split(': ', 1) for line in body.splitlines() if line.startswith(('Source-PR: ', 'Source-head: ', 'Source-base: ')))
     assert len(trailers) == 3
     pr_rows.append(f"| [{subject}]({trailers['Source-PR']}) | `{trailers['Source-head']}` | `{commit}` |")
-run_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+run_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['SOURCE_RUN_ID']}"
+verification_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
 readme = f'''# Rspack v2.2.9 hot-reload comparison pack
 
 This Linux x64 GNU pack compares hot-reload behavior and time with eight performance PRs against plain v2.2.9. It is an unreleased diagnostic build. All packages retain version 2.2.9.
 
 CONTROL is plain v2.2.9 at `{base}`. TREATMENT is `{head}` on `pack/v2.2.9-hot`.
 
-Both arms rebuild the native binding and core from their own source in one [GitHub run]({run_url}). The wrapper runtime files are identical between arms and match the official package. Both arms therefore ship the official 2.2.9 wrapper, not a rebuilt wrapper. Added native exports are returned directly by that unchanged wrapper.
+Both arms rebuilt the native binding and core from their own source and ran the suites in one [GitHub run]({run_url}). [Classification, parity and export]({verification_url}) reuse that run's frozen packages and reports; the suites were not rerun. The wrapper runtime files are identical between arms and match the official package. Both arms therefore ship the official 2.2.9 wrapper, not a rebuilt wrapper. Added native exports are returned directly by that unchanged wrapper.
 
 ## Included PRs
 
@@ -178,7 +182,18 @@ The official published 2.2.9 native file has SHA-256 `6e791a118da96ece3fc1bb03b9
 
 ## Verification summary
 
-Both arms ran `pnpm run test:ci`, the Linux CI command at v2.2.9. CONTROL exited {summary['CONTROL']['ciExit']}, and TREATMENT exited {summary['TREATMENT']['ciExit']}. There are {len(summary['sharedFailures'])} shared failed test or suite events, {len(summary['controlOnlyFailures'])} control-only failed events, and zero treatment-only failures. Shared failures are not counted as passes. The release binding omits test loaders and DEBUG trace events. `compilerCases/persistent-cache-issuer-updates` is expected to fail without those DEBUG events. The evidence artifact retains every test outcome and failure message.
+Both arms ran `pnpm run test:ci`, the Linux CI command at v2.2.9. CONTROL exited {summary['CONTROL']['ciExit']}, and TREATMENT exited {summary['TREATMENT']['ciExit']}.
+
+| Arm | Passed tests | Failed tests | Skipped tests |
+| --- | ---: | ---: | ---: |
+| CONTROL | {summary['CONTROL']['primaryTestCounts'].get('passed', 0)} | {summary['CONTROL']['primaryTestCounts'].get('failed', 0)} | {summary['CONTROL']['primaryTestCounts'].get('skipped', 0)} |
+| TREATMENT | {summary['TREATMENT']['primaryTestCounts'].get('passed', 0)} | {summary['TREATMENT']['primaryTestCounts'].get('failed', 0)} | {summary['TREATMENT']['primaryTestCounts'].get('skipped', 0)} |
+
+The sets of failing test IDs are identical. There are zero treatment-only failed test, suite or file records. All 43 treatment-added test IDs passed. The audit also confirms every case named in the included PRs' test lists passed in TREATMENT, including the native layer filter case. Shared failures are not counted as passes.
+
+Of the 30 failed tests, 27 need test-only builtin loaders, two need the test-only binding-builder plugin export, and one is `compilerCases/persistent-cache-issuer-updates`, which needs DEBUG trace events. The release profile omits those features. None of these failed IDs is an ID-allocation, SplitChunks, source-map or chunk-API case.
+
+Separately, both arms failed to load `NativeWatcherIgnoredFunction.test.mjs`: the native-path guard rejected its direct source-tree binding path. That file's tests did not run. This shared harness limitation is not included in the 30 failed tests. The evidence retains the complete terminal summaries, raw event reports, equal failing-ID lists, per-PR case audit and failure messages.
 
 The public `bench/program-native` fixture is pinned at `a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc`. Each arm completed a cold build and a rebuild after one module content edit in development mode under two configurations. Both use deterministic module and chunk IDs. The second also uses function-valued SplitChunks `test`, `name` and `chunks` callbacks with a `javascript/auto` type filter. Both configurations use cheap module source maps. All requested callbacks executed.
 
@@ -188,13 +203,13 @@ Each arm's warnings and logger output are retained per build in `warnings.json`.
 
 The comparator rejected seeded byte, missing-file, extra-file and missing-directory errors before comparing outputs. Every parity process recorded the selected native SHA-256 from its mapped file. Each GNU tarball's native payload matches its bare file. `readelf` confirms neither rebuilt binding requires a newer GLIBC version than the official binary.
 
-Build logs, source SHAs, settings, runner images, GLIBC requirements, test summaries, process maps and parity outputs are retained in the run artifacts. This pack establishes source provenance and correctness checks. It makes no performance or cross-platform memory claim.
+Build logs, source SHAs, settings, runner images, GLIBC requirements and raw suite reports are retained in the build run's artifacts. Classification, case-audit records, process maps and parity outputs are retained in the verification run's artifacts. This pack establishes source provenance and correctness checks. It makes no performance or cross-platform memory claim.
 '''
 # Keep the distributed prose plain and generic.
 assert all(chr(code) not in readme for code in (0x2014, 0x201C, 0x201D))
 (delivery / 'README.md').write_text(readme)
 files = sorted(file for file in delivery.rglob('*') if file.is_file())
 (delivery / 'SHA256SUMS').write_text(''.join(f'{sha(file.read_bytes())}  {file.relative_to(delivery).as_posix()}\n' for file in files))
-result = {'run': run_url, 'source': {'CONTROL': base, 'TREATMENT': head}, 'runnerImage': images[0].splitlines(), 'payloadHashes': payload_hashes, 'manifestSha256': sha((delivery / 'SHA256SUMS').read_bytes()), 'tests': summary, 'parity': parity}
+result = {'run': run_url, 'verificationRun': verification_url, 'source': {'CONTROL': base, 'TREATMENT': head}, 'runnerImage': images[0].splitlines(), 'payloadHashes': payload_hashes, 'manifestSha256': sha((delivery / 'SHA256SUMS').read_bytes()), 'tests': summary, 'parity': parity}
 (root / 'results' / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
 print(json.dumps({key: value for key, value in result.items() if key not in ('tests', 'parity')}, indent=2))
