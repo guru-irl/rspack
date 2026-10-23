@@ -7,11 +7,7 @@ use std::{
   },
 };
 
-use futures::{
-  FutureExt, StreamExt,
-  channel::{mpsc, oneshot},
-  future::join_all,
-};
+use futures::future::join_all;
 use itertools::Either;
 use rayon::prelude::*;
 use rspack_collections::SsoHashSet;
@@ -19,10 +15,9 @@ use rspack_core::{
   ChunkByUkey, ChunkUkey, Compilation, ExportsInfoArtifact, Module, ModuleIdentifier,
   RuntimeKeyMap, UsageKey, get_runtime_key,
 };
-use rspack_error::{Result, ToStringResultToRspackResultExt};
+use rspack_error::Result;
 use rspack_util::{fx_hash::FxDashMap, tracing_preset::TRACING_BENCH_TARGET};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
-use tokio::sync::OnceCell;
 use tracing::instrument;
 
 use super::{
@@ -30,7 +25,7 @@ use super::{
   intersections::{Intersection, collect_intersections},
 };
 use crate::{
-  SplitChunksNameBatchFn, SplitChunksPlugin,
+  SplitChunksPlugin,
   common::{
     ChunkFilter, ModuleChunkMap, ModuleSizes, is_default_module_layer_filter,
     is_default_module_type_filter,
@@ -199,12 +194,12 @@ impl Deref for ChunkCombination {
   }
 }
 
-struct SelectedChunksCacheEntry {
-  combination: Arc<ChunkCombinationData>,
-  selected: Arc<OnceCell<FxHashSet<ChunkUkey>>>,
+struct SelectedChunksMemoEntry<'a> {
+  combination: &'a ChunkCombination,
+  selected: Option<FxHashSet<ChunkUkey>>,
 }
 
-type SelectedChunksCache = FxDashMap<(u32, ChunksKey), Vec<SelectedChunksCacheEntry>>;
+type SelectedChunksMemo<'a> = FxHashMap<ChunksKey, Vec<SelectedChunksMemoEntry<'a>>>;
 
 enum SelectedChunks<'a> {
   All(&'a ChunkCombination),
@@ -243,17 +238,12 @@ struct MatchedItem<'a> {
   selected_chunks: SelectedChunks<'a>,
 }
 
-struct PendingNameRequest {
-  module: ModuleIdentifier,
-  chunks: Vec<ChunkUkey>,
-  cache_group_position: usize,
-  response: Option<oneshot::Sender<Option<String>>>,
-}
-
 // Keep each N-API payload bounded while amortizing the fixed cost of crossing into JavaScript.
 const JS_CHUNK_NAME_BATCH_SIZE: usize = 1024;
 
 const JS_TEST_BATCH_SIZE: usize = 2048;
+const SCALAR_WINDOW: usize = 256;
+const ROUND_MODULE_LIMIT: usize = 16_384;
 
 // As on main, report the lowest failing module and skip that module's later groups.
 struct CallbackFailures {
@@ -289,64 +279,22 @@ pub(super) fn cache_group_uses_intersections(
         .any(|(_, size)| *size > 0.0))
 }
 
-async fn process_name_requests(
-  mut receiver: mpsc::UnboundedReceiver<PendingNameRequest>,
-  cache_groups: &[IndexedCacheGroup<'_>],
-  name_batch_getters: &[Option<SplitChunksNameBatchFn>],
+fn select_native_chunks<'a>(
+  combination: &'a ChunkCombination,
+  group: &CacheGroup,
   compilation: &Compilation,
-) -> Result<()> {
-  let module_graph = compilation.get_module_graph();
-
-  while let Some(first_request) = receiver.next().await {
-    let mut requests = Vec::with_capacity(JS_CHUNK_NAME_BATCH_SIZE);
-    requests.push(first_request);
-    while requests.len() < JS_CHUNK_NAME_BATCH_SIZE
-      && let Ok(request) = receiver.try_recv()
-    {
-      requests.push(request);
-    }
-
-    let mut run_start = 0;
-    while run_start < requests.len() {
-      let cache_group_position = requests[run_start].cache_group_position;
-      let mut run_end = run_start + 1;
-      while run_end < requests.len()
-        && requests[run_end].cache_group_position == cache_group_position
-      {
-        run_end += 1;
-      }
-
-      let indexed_cache_group = &cache_groups[cache_group_position];
-      let cache_group = indexed_cache_group.cache_group;
-      let get_name = name_batch_getters
-        .get(indexed_cache_group.cache_group_index as usize)
-        .and_then(Option::as_ref)
-        .expect("pending name request should use a batch name callback");
-      let contexts = requests[run_start..run_end]
+) -> SelectedChunks<'a> {
+  if matches!(group.chunk_filter, ChunkFilter::All) {
+    SelectedChunks::All(combination)
+  } else {
+    SelectedChunks::Filtered(
+      combination
         .iter()
-        .map(|request| ChunkNameGetterFnCtx {
-          module: module_graph
-            .module_by_identifier(&request.module)
-            .expect("should have module")
-            .as_ref(),
-          compilation,
-          chunks: &request.chunks,
-          cache_group_key: &cache_group.key,
-        })
-        .collect();
-      let names = get_name(contexts).await?;
-      debug_assert_eq!(names.len(), run_end - run_start);
-
-      for (request, name) in requests[run_start..run_end].iter_mut().zip(names) {
-        if let Some(response) = request.response.take() {
-          let _ = response.send(name);
-        }
-      }
-      run_start = run_end;
-    }
+        .filter(|chunk| group.chunk_filter.test_internal(chunk, compilation))
+        .copied()
+        .collect(),
+    )
   }
-
-  Ok(())
 }
 
 fn get_key<I: Iterator<Item = ChunkUkey>>(
@@ -423,7 +371,34 @@ impl<'a> Iterator for ChunkCombinationsIter<'a> {
   }
 }
 
-impl ChunkCombinations<'_> {
+impl<'a> ChunkCombinations<'a> {
+  fn next_combination(&self, cursor: &mut [u32; 2]) -> Option<&'a ChunkCombination> {
+    match self {
+      Self::Slice(values) => {
+        let value = values.get(cursor[1] as usize)?;
+        cursor[1] += 1;
+        Some(value)
+      }
+      Self::UsedExports {
+        keys,
+        combinations,
+        include_intersections,
+      } => loop {
+        let key = keys.get(cursor[0] as usize)?;
+        let values = combinations
+          .get(key)
+          .expect("prepared chunk set")
+          .get(*include_intersections);
+        if let Some(value) = values.get(cursor[1] as usize) {
+          cursor[1] += 1;
+          return Some(value);
+        }
+        cursor[0] += 1;
+        cursor[1] = 0;
+      },
+    }
+  }
+
   fn iter(&self) -> ChunkCombinationsIter<'_> {
     match self {
       Self::Slice(values) => ChunkCombinationsIter::Slice(values.iter()),
@@ -936,12 +911,6 @@ impl SplitChunksPlugin {
   ) -> Result<ModuleGroupMap> {
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
-    // Only function filters use this preparation-scoped memo. Native-only
-    // preparation does not allocate a table or change its Rayon fast path.
-    let selected_chunks_cache = cache_groups
-      .iter()
-      .any(|indexed| indexed.cache_group.chunk_filter.is_func())
-      .then(SelectedChunksCache::default);
     let name_batch_getters = self.name_batch_getters.as_deref();
     let test_batch_getters = self.test_batch_getters.as_deref();
     let group_positions: Vec<_> = (0..cache_groups.len()).collect();
@@ -974,23 +943,20 @@ impl SplitChunksPlugin {
           .is_some_and(Option::is_some)
       })
     });
-    // These filters cannot yield or invoke user callbacks. Run their CPU work
-    // on Rayon instead of allocating and joining one Tokio task per module.
+    // These filters cannot yield or invoke user callbacks, so run them on Rayon.
     let use_native_preparation = !has_name_batch_callback
       && cache_groups
         .iter()
         .all(|indexed| is_native_cache_group(indexed.cache_group));
-    let process_module = async |positions: &[usize],
-                                prechecked: bool,
-                                module_index: usize,
-                                module_identifier: ModuleIdentifier,
-                                name_sender: Option<mpsc::UnboundedSender<PendingNameRequest>>|
-           -> Result<()> {
+    let process_module = |positions: &[usize],
+                          prechecked: bool,
+                          module_index: usize,
+                          module_identifier: ModuleIdentifier| {
       let belong_to_chunks = module_chunks
         .get(module_index)
         .expect("should have module chunks");
       if belong_to_chunks.is_empty() {
-        return Ok(());
+        return;
       }
 
       let module = module_graph
@@ -1017,14 +983,12 @@ impl SplitChunksPlugin {
           continue;
         }
         if !prechecked && !is_default_module_layer_filter(&cache_group.layer) {
-          let matched = if let Some(filter) = cache_group.layer.native() {
-            filter(module.get_layer().map(|layer| layer.as_str()))
-          } else {
-            cache_group
-              .layer
-              .call(module.get_layer().map(ToString::to_string))
-              .await?
-          };
+          let matched = cache_group
+            .layer
+            .native()
+            .expect("only native cache groups reach here")(
+            module.get_layer().map(|layer| layer.as_str()),
+          );
           if !matched {
             continue;
           }
@@ -1038,12 +1002,7 @@ impl SplitChunksPlugin {
           CacheGroupTest::RegExp(test) => module
             .name_for_condition()
             .is_some_and(|name| test.test(&name)),
-          CacheGroupTest::Fn(test) => test(CacheGroupTestFnCtx {
-            compilation,
-            module,
-          })
-          .await?
-          .unwrap_or_default(),
+          CacheGroupTest::Fn(_) => unreachable!("only native cache groups reach here"),
           CacheGroupTest::Enabled => true,
         };
         if !is_match || belong_to_chunks.len() < cache_group.min_chunks as usize {
@@ -1099,110 +1058,17 @@ impl SplitChunksPlugin {
             continue;
           }
 
-          let selected_chunks = match &cache_group.chunk_filter {
-            ChunkFilter::All => SelectedChunks::All(chunk_combination),
-            ChunkFilter::Func(_) => {
-              let selected = {
-                let mut entries = selected_chunks_cache
-                  .as_ref()
-                  .expect("function filters should have a selected chunks cache")
-                  .entry((indexed_cache_group.cache_group_index, chunk_combination.key))
-                  .or_default();
-                // ChunksKey is a hash, not exact set identity. Compare membership
-                // on every hit, including combinations from used-export grouping.
-                if let Some(entry) = entries.iter().find(|entry| {
-                  Arc::ptr_eq(&entry.combination, &chunk_combination.data)
-                    || entry.combination.chunks == chunk_combination.data.chunks
-                }) {
-                  Arc::clone(&entry.selected)
-                } else {
-                  let selected = Arc::new(OnceCell::new());
-                  entries.push(SelectedChunksCacheEntry {
-                    combination: Arc::clone(&chunk_combination.data),
-                    selected: Arc::clone(&selected),
-                  });
-                  selected
-                }
-              };
-              // Drop the map guard before awaiting the single-flight initializer.
-              // Failed/cancelled initializations leave the cell empty for retries.
-              let selected = selected
-                .get_or_try_init(|| async {
-                  let chunks = join_all(chunk_combination.iter().map(|chunk| async move {
-                    cache_group
-                      .chunk_filter
-                      .test_func(chunk, compilation)
-                      .await
-                      .map(|matched| (chunk, matched))
-                  }))
-                  .await
-                  .into_iter()
-                  .collect::<Result<Vec<_>>>()?
-                  .into_iter()
-                  .filter_map(|(chunk, matched)| matched.then_some(*chunk))
-                  .collect::<FxHashSet<_>>();
-                  Ok::<_, rspack_error::Error>(chunks)
-                })
-                .await?;
-              // Equal memberships can have different hash-set layouts. Keep
-              // only filter results in the cell, never the initializer's order.
-              // Every module follows its own combination, exactly as uncached
-              // filtering does, including the original Filtered/key() path.
-              SelectedChunks::Filtered(
-                chunk_combination
-                  .iter()
-                  .filter(|chunk| selected.contains(chunk))
-                  .copied()
-                  .collect(),
-              )
-            }
-            _ => SelectedChunks::Filtered(
-              chunk_combination
-                .iter()
-                .filter(|chunk| cache_group.chunk_filter.test_internal(chunk, compilation))
-                .copied()
-                .collect(),
-            ),
-          };
+          let selected_chunks = select_native_chunks(chunk_combination, cache_group, compilation);
 
           if selected_chunks.len() < cache_group.min_chunks as usize {
             continue;
           }
 
-          let chunk_name = if has_name_batch_getter {
-            let name_sender = name_sender
-              .as_ref()
-              .expect("name callback should have a batch coordinator");
-            let (response, response_receiver) = oneshot::channel();
-            if name_sender
-              .unbounded_send(PendingNameRequest {
-                module: module.identifier(),
-                chunks: selected_chunks.iter().copied().collect(),
-                cache_group_position,
-                response: Some(response),
-              })
-              .is_err()
-            {
-              return Ok(());
-            }
-            let Ok(chunk_name) = response_receiver.await else {
-              return Ok(());
-            };
-            chunk_name
-          } else {
-            match &cache_group.name {
-              ChunkNameGetter::String(name) => Some(name.clone()),
-              ChunkNameGetter::Disabled => None,
-              ChunkNameGetter::Fn(get_name) => {
-                let chunks = selected_chunks.iter().copied().collect::<Vec<_>>();
-                get_name(ChunkNameGetterFnCtx {
-                  module,
-                  compilation,
-                  chunks: &chunks,
-                  cache_group_key: &cache_group.key,
-                })
-                .await?
-              }
+          let chunk_name = match &cache_group.name {
+            ChunkNameGetter::String(name) => Some(name.clone()),
+            ChunkNameGetter::Disabled => None,
+            ChunkNameGetter::Fn(_) => {
+              unreachable!("only native cache groups reach here")
             }
           };
 
@@ -1219,24 +1085,15 @@ impl SplitChunksPlugin {
           );
         }
       }
-      Ok(())
     };
 
     if use_native_preparation {
       all_modules
         .par_iter()
         .enumerate()
-        .try_for_each(|(module_index, module_identifier)| {
-          process_module(
-            &group_positions,
-            false,
-            module_index,
-            *module_identifier,
-            None,
-          )
-          .now_or_never()
-          .expect("native cache-group preparation should not yield")
-        })?;
+        .for_each(|(module_index, module_identifier)| {
+          process_module(&group_positions, false, module_index, *module_identifier)
+        });
     } else {
       let has_name = |position: usize| {
         name_batch_getters.is_some_and(|getters| {
@@ -1253,11 +1110,7 @@ impl SplitChunksPlugin {
       all_modules
         .par_iter()
         .enumerate()
-        .try_for_each(|(index, module)| {
-          process_module(&native_positions, false, index, *module, None)
-            .now_or_never()
-            .expect("native cache-group preparation should not yield")
-        })?;
+        .for_each(|(index, module)| process_module(&native_positions, false, index, *module));
       let mut failures = CallbackFailures {
         failed: vec![false; all_modules.len()],
         first: None,
@@ -1354,60 +1207,168 @@ impl SplitChunksPlugin {
           && !group.chunk_filter.is_func()
           && !matches!(group.name, ChunkNameGetter::Fn(_))
         {
-          matched.par_iter().try_for_each(|&index| {
-            process_module(&positions, true, index, all_modules[index], None)
-              .now_or_never()
-              .expect("native cache-group preparation should not yield")
-          })?;
+          matched
+            .par_iter()
+            .for_each(|&index| process_module(&positions, true, index, all_modules[index]));
         } else {
-          let (sender, receiver) = if has_name {
-            let (sender, receiver) = mpsc::unbounded();
-            (Some(sender), Some(receiver))
-          } else {
-            (None, None)
-          };
-          let results = rspack_parallel::scope::<_, Result<_>>(|token| {
-            if let Some(receiver) = receiver {
-              let coordinator = unsafe {
-                token.used((
-                  receiver,
-                  &cache_groups,
-                  name_batch_getters.expect("should have batch name getters"),
-                  compilation,
-                ))
-              };
-              coordinator.spawn(|(receiver, groups, getters, compilation)| async move {
-                process_name_requests(receiver, groups, getters, compilation).await
-              });
+          let include_intersections =
+            self.dedup_depth > 0 && cache_group_uses_intersections(group, has_name);
+          let mut memo = SelectedChunksMemo::default();
+          let mut active: Vec<_> = matched.into_iter().map(|index| (index, [0, 0])).collect();
+          let mut chunk_refs = Vec::new();
+          let get_name = name_batch_getters
+            .and_then(|getters| getters[indexed.cache_group_index as usize].as_ref());
+          while !active.is_empty() {
+            let mut offset = 0;
+            while offset < active.len() {
+              let end = (offset + ROUND_MODULE_LIMIT).min(active.len());
+              let mut items = Vec::with_capacity(end - offset);
+              while offset < end {
+                let (index, cursor) = &mut active[offset];
+                let index = *index;
+                offset += 1;
+                if failures.failed[index] {
+                  continue;
+                }
+                let combinations =
+                  combinator.get_combinations(index, group.used_exports, include_intersections);
+                let combination = loop {
+                  let Some(combination) = combinations.next_combination(cursor) else {
+                    *cursor = [u32::MAX; 2];
+                    break None;
+                  };
+                  if !combination.is_empty() && combination.len() >= group.min_chunks as usize {
+                    break Some(combination);
+                  }
+                };
+                let Some(combination) = combination else {
+                  continue;
+                };
+                let selected = if group.chunk_filter.is_func() {
+                  let entries = memo.entry(combination.key).or_default();
+                  // Hash collisions must not share filter results.
+                  let slot = entries.iter().position(|entry| {
+                    Arc::ptr_eq(&entry.combination.data, &combination.data)
+                      || entry.combination.data.chunks == combination.data.chunks
+                  });
+                  let slot = slot.unwrap_or_else(|| {
+                    entries.push(SelectedChunksMemoEntry {
+                      combination,
+                      selected: None,
+                    });
+                    entries.len() - 1
+                  });
+                  let entry = &mut entries[slot];
+                  if entry.selected.is_none() {
+                    let result = join_all(combination.iter().map(|chunk| async move {
+                      group
+                        .chunk_filter
+                        .test_func(chunk, compilation)
+                        .await
+                        .map(|matched| (chunk, matched))
+                    }))
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()
+                    .map(|results| {
+                      results
+                        .into_iter()
+                        .filter_map(|(chunk, matched)| matched.then_some(*chunk))
+                        .collect::<FxHashSet<_>>()
+                    });
+                    // Failed filters are retried by the next waiting module.
+                    let Some(selected) = failures.record(index, result) else {
+                      continue;
+                    };
+                    entry.selected = Some(selected);
+                  }
+                  let selected = entry
+                    .selected
+                    .as_ref()
+                    .expect("successful selection should be cached");
+                  // Keep this module's chunk order; the cached set's order can differ.
+                  SelectedChunks::Filtered(
+                    combination
+                      .iter()
+                      .filter(|chunk| selected.contains(chunk))
+                      .copied()
+                      .collect(),
+                  )
+                } else {
+                  select_native_chunks(combination, group, compilation)
+                };
+                if selected.len() >= group.min_chunks as usize {
+                  items.push((index, selected));
+                }
+              }
+              let mut names = Vec::with_capacity(items.len());
+              if get_name.is_none() && !matches!(group.name, ChunkNameGetter::Fn(_)) {
+                names.extend(items.iter().map(|_| match &group.name {
+                  ChunkNameGetter::String(name) => Some(name.clone()),
+                  _ => None,
+                }));
+              } else {
+                let batch_size = if get_name.is_some() {
+                  JS_CHUNK_NAME_BATCH_SIZE
+                } else {
+                  SCALAR_WINDOW
+                };
+                for batch in items.chunks(batch_size) {
+                  chunk_refs.resize_with(chunk_refs.len().max(batch.len()), Vec::new);
+                  for (chunks, (_, selected)) in chunk_refs.iter_mut().zip(batch) {
+                    chunks.clear();
+                    chunks.extend(selected.iter().copied());
+                  }
+                  let contexts = batch
+                    .iter()
+                    .zip(&chunk_refs)
+                    .map(|((index, _), chunks)| ChunkNameGetterFnCtx {
+                      module: module_graph
+                        .module_by_identifier(&all_modules[*index])
+                        .expect("should have module")
+                        .as_ref(),
+                      compilation,
+                      chunks,
+                      cache_group_key: &group.key,
+                    })
+                    .collect();
+                  if let Some(get_name) = get_name {
+                    // Name-batch errors win over module errors, as on main.
+                    let results = get_name(contexts).await?;
+                    debug_assert_eq!(
+                      results.len(),
+                      batch.len(),
+                      "name batch should preserve item count"
+                    );
+                    names.extend(results);
+                  } else if let ChunkNameGetter::Fn(get_name) = &group.name {
+                    let results = join_all(contexts.into_iter().map(|ctx| get_name(ctx))).await;
+                    for ((index, _), result) in batch.iter().zip(results) {
+                      names.push(failures.record(*index, result).flatten());
+                    }
+                  }
+                }
+              }
+              for ((index, selected_chunks), chunk_name) in items.into_iter().zip(names) {
+                if !failures.failed[index] {
+                  merge_matched_item_into_module_group_map(
+                    MatchedItem {
+                      module: module_graph
+                        .module_by_identifier(&all_modules[index])
+                        .expect("should have module")
+                        .as_ref(),
+                      cache_group: group,
+                      cache_group_index: indexed.cache_group_index,
+                      selected_chunks,
+                    },
+                    chunk_name,
+                    &module_group_map,
+                    chunk_index_map,
+                  );
+                }
+              }
             }
-            for &index in &matched {
-              let task = unsafe {
-                token.used((
-                  &process_module,
-                  &positions,
-                  index,
-                  all_modules[index],
-                  sender.clone(),
-                ))
-              };
-              task.spawn(|(process, positions, index, module, sender)| async move {
-                process(positions, true, index, module, sender).await
-              });
-            }
-            drop(sender);
-          })
-          .await
-          .into_iter()
-          .map(|result| result.to_rspack_result())
-          .collect::<Result<Vec<_>>>()?;
-          let mut results = results.into_iter();
-          if has_name {
-            results
-              .next()
-              .expect("should have name coordinator result")?;
-          }
-          for (&index, result) in matched.iter().zip(results) {
-            let _ = failures.record(index, result);
+            active.retain(|(index, cursor)| !failures.failed[*index] && cursor[0] != u32::MAX);
           }
         }
       }
