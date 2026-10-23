@@ -130,7 +130,7 @@ With a progress plugin enabled, rspack#16069 adds one scan over all modules on e
 
 ## Build settings
 
-Both native builds used the same ubuntu-22.04 image, `{images[0].strip().replace(chr(10), ' / ')}`, Rust nightly-2026-04-16 with rust-src, clang 14, Node 22.23.3 and pnpm 11.26.0. Each release target was fresh. No Rust cache was restored.
+Both native builds used the same ubuntu-22.04 image, `{images[0].strip().replace(chr(10), ' / ')}`, Rust nightly-2026-04-16 with rust-src, clang 14, Node 22.23.3 and pnpm 11.26.0. Each release target was fresh. No Rust cache was restored. Runner setup pins the root `packageManager` and `engines.pnpm` metadata to 11.26.0 instead of the source tag's 11.28.5. That setup change does not alter package runtime sources or package versions.
 
 The build command was:
 
