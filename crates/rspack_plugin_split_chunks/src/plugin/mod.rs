@@ -30,6 +30,15 @@ use crate::{
 type ModuleGroupMap = FxIndexMap<ModuleGroupKey, ModuleGroup>;
 
 #[doc(hidden)]
+pub type SplitChunksTestBatchFn = Arc<
+  dyn for<'a> Fn(
+      Vec<crate::CacheGroupTestFnCtx<'a>>,
+    ) -> BoxFuture<'static, Result<Vec<Result<Option<bool>>>>>
+    + Sync
+    + Send,
+>;
+
+#[doc(hidden)]
 pub type SplitChunksNameBatchFn = Arc<
   dyn for<'a> Fn(Vec<ChunkNameGetterFnCtx<'a>>) -> BoxFuture<'static, Result<Vec<Option<String>>>>
     + Sync
@@ -49,6 +58,7 @@ pub struct SplitChunksPlugin {
   dedup_depth: u32,
   cache_groups: Box<[CacheGroup]>,
   name_batch_getters: Option<Box<[Option<SplitChunksNameBatchFn>]>>,
+  test_batch_getters: Option<Box<[Option<SplitChunksTestBatchFn>]>>,
   fallback_cache_group: FallbackCacheGroup,
   hide_path_info: bool,
 }
@@ -60,16 +70,23 @@ impl SplitChunksPlugin {
       options.dedup_depth,
       options.cache_groups.into(),
       None,
+      None,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
     )
   }
 
   #[doc(hidden)]
-  pub fn new_with_name_batch_getters(
+  pub fn new_with_batch_getters(
     options: PluginOptions,
     name_batch_getters: Vec<Option<SplitChunksNameBatchFn>>,
+    test_batch_getters: Vec<Option<SplitChunksTestBatchFn>>,
   ) -> Self {
+    assert_eq!(options.cache_groups.len(), test_batch_getters.len());
+    let test_batch_getters = test_batch_getters
+      .iter()
+      .any(Option::is_some)
+      .then(|| test_batch_getters.into());
     assert_eq!(
       options.cache_groups.len(),
       name_batch_getters.len(),
@@ -84,6 +101,7 @@ impl SplitChunksPlugin {
       options.dedup_depth,
       options.cache_groups.into(),
       name_batch_getters,
+      test_batch_getters,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
     )
