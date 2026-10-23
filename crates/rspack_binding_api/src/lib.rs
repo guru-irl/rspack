@@ -57,6 +57,7 @@ mod browserslist;
 mod build_info;
 mod cache;
 mod chunk;
+mod chunk_collections;
 mod chunk_graph;
 mod chunk_group;
 mod clean_options;
@@ -629,6 +630,7 @@ impl JsCompiler {
   fn cleanup_last_compilation(&self, compilation: &Compilation) {
     let compilation_id = compilation.id();
 
+    chunk_collections::cleanup(compilation_id);
     JsCompilationWrapper::cleanup_last_compilation(compilation_id);
     ChunkWrapper::cleanup_last_compilation(compilation_id);
     ChunkGroupWrapper::cleanup_last_compilation(compilation_id);
