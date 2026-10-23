@@ -869,6 +869,13 @@ impl Combinator {
   }
 }
 
+fn is_native_cache_group(group: &crate::CacheGroup) -> bool {
+  group.layer.native().is_some()
+    && !matches!(group.test, CacheGroupTest::Fn(_))
+    && !group.chunk_filter.is_func()
+    && !matches!(group.name, ChunkNameGetter::Fn(_))
+}
+
 impl SplitChunksPlugin {
   // #[tracing::instrument(skip_all)]
   pub(crate) fn find_best_module_group(
@@ -952,14 +959,9 @@ impl SplitChunksPlugin {
     // These filters cannot yield or invoke user callbacks. Run their CPU work
     // on Rayon instead of allocating and joining one Tokio task per module.
     let use_native_preparation = !has_name_batch_callback
-      && cache_groups.iter().all(|indexed| {
-        let group = indexed.cache_group;
-        is_default_module_type_filter(&group.r#type)
-          && is_default_module_layer_filter(&group.layer)
-          && !matches!(group.test, CacheGroupTest::Fn(_))
-          && !group.chunk_filter.is_func()
-          && !matches!(group.name, ChunkNameGetter::Fn(_))
-      });
+      && cache_groups
+        .iter()
+        .all(|indexed| is_native_cache_group(indexed.cache_group));
     let process_module = async |module_index: usize,
                                 module_identifier: ModuleIdentifier,
                                 name_sender: Option<mpsc::UnboundedSender<PendingNameRequest>>|
@@ -987,11 +989,21 @@ impl SplitChunksPlugin {
         });
         let include_intersections = self.dedup_depth > 0
           && cache_group_uses_intersections(cache_group, has_name_batch_getter);
-        if !use_native_preparation
-          && (!(cache_group.r#type)(module)
-            || !(cache_group.layer)(module.get_layer().map(ToString::to_string)).await?)
-        {
+        if !is_default_module_type_filter(&cache_group.r#type) && !(cache_group.r#type)(module) {
           continue;
+        }
+        if !is_default_module_layer_filter(&cache_group.layer) {
+          let matched = if let Some(filter) = cache_group.layer.native() {
+            filter(module.get_layer().map(|layer| layer.as_str()))
+          } else {
+            cache_group
+              .layer
+              .call(module.get_layer().map(ToString::to_string))
+              .await?
+          };
+          if !matched {
+            continue;
+          }
         }
 
         let is_match = match &cache_group.test {
