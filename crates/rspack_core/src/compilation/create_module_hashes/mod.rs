@@ -20,6 +20,8 @@ impl PassExt for CreateModuleHashesPass {
     // Hashes now match the current ids, so the next rebuild takes a fresh copy.
     // A build that fails before this point keeps the old copy.
     compilation.module_ids_diff_artifact.previous_ids = None;
+    // Module hashes now reflect the current chunk ids; make them the baseline.
+    compilation.chunk_ids_diff_artifact.advance_hash_baseline();
     Ok(())
   }
 }

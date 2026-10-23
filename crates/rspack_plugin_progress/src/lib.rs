@@ -12,16 +12,16 @@ use futures::future::BoxFuture;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rspack_collections::{IdentifierMap, IdentifierSet};
 use rspack_core::{
-  AsyncModulesArtifact, BoxModule, ChunkByUkey, ChunkNamedIdArtifact, CircularModulesInfo,
-  Compilation, CompilationAfterOptimizeModules, CompilationAfterProcessAssets,
-  CompilationBeforeModuleIds, CompilationBuildModule, CompilationChunkIds,
-  CompilationFinishModules, CompilationId, CompilationOptimizeChunkModules,
+  AsyncModulesArtifact, BoxModule, CircularModulesInfo, Compilation,
+  CompilationAfterOptimizeModules, CompilationAfterProcessAssets, CompilationBeforeModuleIds,
+  CompilationBuildModule, CompilationFinishModules, CompilationId, CompilationOptimizeChunkModules,
   CompilationOptimizeChunks, CompilationOptimizeCodeGeneration, CompilationOptimizeDependencies,
   CompilationOptimizeModules, CompilationOptimizeTree, CompilationParams, CompilationProcessAssets,
-  CompilationSeal, CompilationSucceedModule, CompilerAfterEmit, CompilerClose, CompilerCompilation,
-  CompilerEmit, CompilerFinishMake, CompilerId, CompilerMake, CompilerThisCompilation,
-  ExportsInfoArtifact, ModuleIdentifier, ModuleIdsArtifact, Plugin, SideEffectsOptimizeArtifact,
-  SideEffectsStateArtifact, build_module_graph::BuildModuleGraphArtifact,
+  CompilationRecordModules, CompilationSeal, CompilationSucceedModule, CompilerAfterEmit,
+  CompilerClose, CompilerCompilation, CompilerEmit, CompilerFinishMake, CompilerId, CompilerMake,
+  CompilerThisCompilation, ExportsInfoArtifact, ModuleIdentifier, ModuleIdsArtifact, Plugin,
+  SideEffectsOptimizeArtifact, SideEffectsStateArtifact,
+  build_module_graph::BuildModuleGraphArtifact,
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
@@ -512,13 +512,13 @@ async fn before_module_ids(
   self.sealing_hooks_report("assign module ids", 16).await
 }
 
-#[plugin_hook(CompilationChunkIds for ProgressPlugin)]
-async fn chunk_ids(
+// Report from recordModules, the closest hook before chunk ids (there is no
+// beforeChunkIds). Tapping chunkIds would stop deterministic ids from being reused.
+#[plugin_hook(CompilationRecordModules for ProgressPlugin)]
+async fn record_modules(
   &self,
   _compilation: &Compilation,
-  _chunk_by_ukey: &mut ChunkByUkey,
-  _named_chunk_ids_artifact: &mut ChunkNamedIdArtifact,
-  _diagnostics: &mut Vec<Diagnostic>,
+  _module_ids: &ModuleIdsArtifact,
 ) -> Result<()> {
   self.sealing_hooks_report("assign chunk ids", 21).await
 }
@@ -634,7 +634,10 @@ impl Plugin for ProgressPlugin {
       .compilation_hooks
       .before_module_ids
       .tap(before_module_ids::new(self));
-    ctx.compilation_hooks.chunk_ids.tap(chunk_ids::new(self));
+    ctx
+      .compilation_hooks
+      .record_modules
+      .tap(record_modules::new(self));
     ctx
       .compilation_hooks
       .optimize_code_generation
