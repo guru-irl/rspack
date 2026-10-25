@@ -93,9 +93,9 @@ jobs:
           set -euo pipefail
           export NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs"
           rc=0
-          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'should reuse the same options and replace cycle handlers' 2>&1 | tee bench-data/results/red.log || rc=${PIPESTATUS[0]}
+          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse/same-options' 2>&1 | tee bench-data/results/red.log || rc=${PIPESTATUS[0]}
           test "$rc" -ne 0
-          grep -F 'should reuse the same options and replace cycle handlers' bench-data/results/red.log
+          grep -F 'watchpack-reuse/same-options' bench-data/results/red.log
           cp rspack-test-event-report.txt bench-data/results/red.events
       - name: Run compiler cases and prove both regressions
         if: inputs.mode == 'full'

@@ -19,7 +19,7 @@ assert s.count(old) == 1, (old, s.count(old))
 p.write_text(s.replace(old, 'if (false) {'))
 PY
   pnpm --filter @rspack/core build > "bench-data/results/mutant-$mutation-build.log" 2>&1
-  if [[ "$mutation" == flush ]]; then filter='should flush an edit made during a held rebuild exactly once'; else filter='should consume paused changes on manual invalidate without replay'; fi
+  if [[ "$mutation" == flush ]]; then filter='watchpack-reuse/held-build'; else filter='watchpack-reuse/manual-invalidate'; fi
   rc=0
   pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t "$filter" --retry 0 2>&1 | tee "bench-data/results/mutant-$mutation.log" || rc=${PIPESTATUS[0]}
   cp rspack-test-event-report.txt "bench-data/results/mutant-$mutation.events"
