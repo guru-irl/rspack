@@ -1,9 +1,9 @@
-name: SplitChunks replay pack
+name: Code splitting cache diagnostic pack
 on:
   workflow_dispatch:
     inputs:
       source:
-        description: Exact replay implementation commit
+        description: Exact diagnostic implementation commit
         type: string
         required: true
 permissions:
@@ -28,6 +28,11 @@ jobs:
           ref: ${{ inputs.source }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: debug-harness
+          persist-credentials: false
       - name: Record source and official settings
         run: |
           set -euo pipefail
@@ -42,7 +47,7 @@ jobs:
             git diff --exit-code b6703e272dbc52294d745073c7f00c3a838989c2 HEAD -- "$file"
           done
           git diff --exit-code b6703e272dbc52294d745073c7f00c3a838989c2 HEAD -- crates/node_binding/binding.js crates/node_binding/webcontainer-fallback.cjs crates/node_binding/package.json
-          cp .github/scripts/split-chunks-replay/* bench-data/scripts/
+          cp debug-harness/.github/scripts/split-chunks-replay/* bench-data/scripts/
           test ! -d target
       - uses: actions/setup-node@v4
         with:
@@ -57,7 +62,7 @@ jobs:
           pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
       - uses: ./.github/actions/rustup
         with:
-          key: split-chunks-replay-release
+          key: code-splitting-cache-debug-release
           use-cache: false
       - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
@@ -121,6 +126,16 @@ jobs:
           built=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/built-readelf.txt | sort -Vu | tail -1)
           printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
           test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+      - name: Reuse the unchanged SW core archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 40183417082 --repo guru-irl/rspack --name watchpack-reuse-delivery --dir bench-data/sw
+          echo 'bbe897e6cd0ae6a5d670ad0629fcd62166a59aa25954d796539030b2775e7c83  bench-data/sw/rspack-core-2.2.9.tgz' | sha256sum -c -
+          cp bench-data/sw/rspack-core-2.2.9.tgz bench-data/pack/
+          cmp bench-data/sw/rspack-binding-2.2.9.tgz bench-data/pack/rspack-binding-2.2.9.tgz
+          cmp crates/node_binding/binding.js debug-harness/crates/node_binding/binding.js
       - name: Select the exact native file in test workers
         run: |
           set -euo pipefail
@@ -143,22 +158,15 @@ jobs:
           echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/test-native-identities.jsonl" >> "$GITHUB_ENV"
           echo "NODE_OPTIONS=--stack-trace-limit=100 --require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
-      - name: Run config cases, watch stress and normal stats output
+      - name: Run normal watch cases with diagnostics unset
         run: |
           set -euo pipefail
-          pnpm --dir tests/rspack-test run test --project base -t 'configCases/split-chunks/' 2>&1 | tee bench-data/results/config-cases.log
-          cp rspack-test-event-report.txt bench-data/results/config-cases.events
-          for arm in normal forced; do
-            if [[ "$arm" == forced ]]; then export RSPACK_SPLIT_CHUNKS_REPLAY=force; else unset RSPACK_SPLIT_CHUNKS_REPLAY; fi
-            rc=0
-            pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs Incremental-watch.test.mjs NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee "bench-data/results/watch-$arm.log" || rc=${PIPESTATUS[0]}
-            echo "$rc" > "bench-data/results/watch-$arm.exit"
-            cp rspack-test-event-report.txt "bench-data/results/watch-$arm.events"
-          done
-          unset RSPACK_SPLIT_CHUNKS_REPLAY
-          python3 bench-data/scripts/check-tests.py
-          pnpm --dir tests/rspack-test run test --project base StatsOutput.test.mjs 2>&1 | tee bench-data/results/stats-output.log
-          cp rspack-test-event-report.txt bench-data/results/stats-output.events
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG RSPACK_SPLIT_CHUNKS_REPLAY
+          rc=0
+          pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs Incremental-watch.test.mjs NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee bench-data/results/watch-normal.log || rc=${PIPESTATUS[0]}
+          echo "$rc" > bench-data/results/watch-normal.exit
+          cp rspack-test-event-report.txt bench-data/results/watch-normal.events
+          python3 bench-data/scripts/check-debug-tests.py
       - name: Prepare the pinned public fixture and pack runtime
         run: |
           set -euo pipefail
@@ -169,32 +177,36 @@ jobs:
           python3 bench-data/scripts/compare.py --self-test
           printf '{"private":true}\n' > bench-data/runtime/package.json
           npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/bench-data/pack/rspack-core-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
-      - name: Compare replay on and off after every watch step
+      - name: Compare diagnostic on and unset after every watch step
         run: |
           set -euo pipefail
-          for arm in OFF ON; do
-            if [[ "$arm" == ON ]]; then export RSPACK_SPLIT_CHUNKS_REPLAY=1; else unset RSPACK_SPLIT_CHUNKS_REPLAY; fi
+          export RSPACK_SPLIT_CHUNKS_REPLAY=1
+          for arm in ON OFF; do
+            if [[ "$arm" == ON ]]; then export RSPACK_CODE_SPLITTING_CACHE_DEBUG=1; else unset RSPACK_CODE_SPLITTING_CACHE_DEBUG; fi
             result="$GITHUB_WORKSPACE/bench-data/results/parity/$arm"
             mkdir -p "$result"
-            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" NATIVE_IDENTITY_LOG="$result/native.jsonl" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/watch.cjs 2>&1 | tee "$result/watch.log"
+            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" NATIVE_IDENTITY_LOG="$result/native.jsonl" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/debug-watch.cjs 2>&1 | tee "$result/watch.log"
           done
-          unset RSPACK_SPLIT_CHUNKS_REPLAY
-          for step in cold content-1 content-2 topology content-3; do
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG
+          for step in cold content topology; do
             python3 bench-data/scripts/compare.py "bench-data/results/parity/OFF/$step" "bench-data/results/parity/ON/$step"
           done
-          printf 'All five emitted filename-and-byte comparisons passed.\n' > bench-data/results/parity.txt
-          python3 bench-data/scripts/export.py
-          (cd bench-data/delivery; sha256sum -c SHA256SUMS)
+          printf 'All three emitted filename-and-byte comparisons passed.\n' > bench-data/results/parity.txt
+          mkdir -p bench-data/delivery
+          cp bench-data/pack/* bench-data/delivery/
+          cp bench-data/scripts/DEBUG-README.md bench-data/delivery/README.md
+          printf '\nSource: `%s`\n\nNative SHA-256: `%s`\n' '${{ inputs.source }}' "$EXPECTED_NATIVE_SHA" >> bench-data/delivery/README.md
+          (cd bench-data/delivery; sha256sum README.md *.tgz *.node > SHA256SUMS; sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: split-chunks-replay-delivery
+          name: cs-cache-debug-delivery
           path: bench-data/delivery/
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: split-chunks-replay-evidence
+          name: cs-cache-debug-evidence
           path: |
             bench-data/results/
             bench-data/scripts/
@@ -203,7 +215,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: split-chunks-replay-packages
+          name: cs-cache-debug-packages
           path: bench-data/pack/
           if-no-files-found: warn
           compression-level: 0
