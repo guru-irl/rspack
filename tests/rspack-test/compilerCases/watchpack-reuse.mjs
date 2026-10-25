@@ -12,8 +12,9 @@ const until = async predicate => {
 };
 const close = watching => new Promise((resolve, reject) => watching.close(error => error ? reject(error) : resolve()));
 
-function watchCase(description, run) {
+function watchCase(name, description, run) {
   return {
+    name,
     description,
     options() {
       return { experiments: { nativeWatcher: false } };
@@ -61,7 +62,7 @@ function watchCase(description, run) {
 }
 
 export default [
-  watchCase("should reuse the same options and replace cycle handlers", async ({ compiler, entry, wait, quiet }) => {
+  watchCase("same-options", "should reuse the same options and replace cycle handlers", async ({ compiler, entry, wait, quiet }) => {
     const first = compiler.watchFileSystem.watcher;
     fs.writeFileSync(entry, "module.exports = 3;\n");
     await wait(2);
@@ -70,7 +71,7 @@ export default [
     expect(first.listenerCount("aggregated")).toBe(2);
     await quiet(2);
   }),
-  watchCase("should flush an edit made during a held rebuild exactly once", async ({ compiler, entry, watching, wait, quiet }) => {
+  watchCase("held-build", "should flush an edit made during a held rebuild exactly once", async ({ compiler, entry, watching, wait, quiet }) => {
     let release;
     let held = false;
     compiler.hooks.make.tapPromise("WatchpackReuseTest", async () => {
@@ -89,7 +90,7 @@ export default [
     await wait(3);
     await quiet(3);
   }),
-  watchCase("should consume paused changes on manual invalidate without replay", async ({ compiler, entry, watching, wait, quiet }) => {
+  watchCase("manual-invalidate", "should consume paused changes on manual invalidate without replay", async ({ compiler, entry, watching, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
     watcher.pause();
     fs.writeFileSync(entry, "module.exports = 5;\n");
@@ -99,7 +100,7 @@ export default [
     expect(compiler.modifiedFiles.has(entry)).toBe(true);
     await quiet(2);
   }),
-  watchCase("should watch an added dependency and stop watching a removed dependency", async ({ compiler, entry, dep, wait, quiet }) => {
+  watchCase("dependency-diff", "should watch an added dependency and stop watching a removed dependency", async ({ compiler, entry, dep, wait, quiet }) => {
     fs.writeFileSync(entry, 'module.exports = require("./dep.js");\n');
     await wait(2);
     fs.writeFileSync(dep, "module.exports = 6;\n");
@@ -110,14 +111,14 @@ export default [
     fs.writeFileSync(dep, "module.exports = 8;\n");
     await quiet(4);
   }),
-  watchCase("should rebuild after deleting a watched file", async ({ compiler, entry, builds, wait, quiet }) => {
+  watchCase("delete", "should rebuild after deleting a watched file", async ({ compiler, entry, builds, wait, quiet }) => {
     fs.unlinkSync(entry);
     await wait(2);
     expect(builds[1].hasErrors()).toBe(true);
     expect(compiler.removedFiles.has(entry)).toBe(true);
     await quiet(2);
   }),
-  watchCase("should close and watch again with a fresh instance", async state => {
+  watchCase("close-rewatch", "should close and watch again with a fresh instance", async state => {
     const first = state.compiler.watchFileSystem.watcher;
     await close(state.watching);
     expect(state.compiler.watchFileSystem.watcher).toBeFalsy();
@@ -129,6 +130,7 @@ export default [
     await state.quiet(3);
   }),
   {
+    name: "options-identity",
     description: "should replace the instance when options identity changes and honor explicit opt-out",
     options() {
       return { experiments: { nativeWatcher: false } };
