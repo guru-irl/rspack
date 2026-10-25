@@ -1,3 +1,3 @@
 import shared from "./shared";
-import("./lazy");
+export const lazy = import(/* webpackChunkName: "lazy" */ "./lazy").then(module => module.default);
 export default shared;

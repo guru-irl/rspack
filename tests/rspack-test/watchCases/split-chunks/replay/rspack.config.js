@@ -1,4 +1,6 @@
+const path = require("path");
 module.exports = {
+	entry: { main: "./index.js" },
 	mode: "development",
 	target: "node",
 	devtool: false,
@@ -28,6 +30,14 @@ module.exports = {
 					const entries = logging?.["rspack.SplitChunksPlugin"]?.entries || [];
 					const lines = entries.map(entry => entry.message).filter(message => message.startsWith("replay:"));
 					compilation.emitAsset("replay-log.json", new compiler.rspack.sources.RawSource(JSON.stringify(lines)));
+					const placement = Object.fromEntries(Array.from(compilation.chunks, chunk => [
+						chunk.name,
+						Array.from(compilation.chunkGraph.getChunkModulesIterable(chunk))
+							.filter(module => module.resource)
+							.map(module => path.relative(compiler.context, module.resource).replaceAll("\\", "/"))
+							.sort()
+					]));
+					compilation.emitAsset("replay-map.json", new compiler.rspack.sources.RawSource(JSON.stringify(placement)));
 				});
 			});
 		}

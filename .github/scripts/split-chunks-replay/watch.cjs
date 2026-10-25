@@ -63,9 +63,10 @@ const watching = compiler.watch({}, (error, stats) => {
   const json = stats.toJson({ all: false, assets: true, chunks: true, warnings: true, logging: 'verbose', loggingDebug: [/^rspack\.(SplitChunksPlugin|Compilation|incremental)/] });
   const entries = json.logging?.['rspack.SplitChunksPlugin']?.entries || [];
   const replay = entries.filter(entry => entry.message.startsWith('replay:')).map(entry => entry.message);
-  assert.equal(replay.length, 1, 'Expected one replay decision per compilation');
+  if (enabled) assert.equal(replay.length, 1, 'Expected one replay decision per compilation');
+  else assert.deepEqual(replay, [], 'Replay OFF must not add log lines');
   const hit = enabled && [1, 2, 4].includes(step);
-  assert(replay[0].includes(hit ? 'replay: replayed ' : 'replay: full run ('), replay[0]);
+  if (enabled) assert(replay[0].includes(hit ? 'replay: replayed ' : 'replay: full run ('), replay[0]);
   if (enabled && step === 0) assert(replay[0].includes('no record'), replay[0]);
   if (enabled && step === 3) assert(replay[0].includes('inputs changed'), replay[0]);
   const delta = Object.fromEntries(Object.entries(callbacks).map(([key, value]) => [key, value - previousCallbacks[key]]));
@@ -77,7 +78,7 @@ const watching = compiler.watch({}, (error, stats) => {
   const processCacheGroups = entries.filter(entry => entry.message.startsWith('process cache groups:')).map(entry => entry.message);
   if (hit) assert.equal(processCacheGroups.length, 0);
   else assert.equal(processCacheGroups.length, 1);
-  rows.push({ step: label, replay: replay[0], processCacheGroups, callbacks: delta, loaderCalls: { ...globalThis.loaderCalls }, chunkCount: json.chunks.length, warnings: json.warnings || [], logging: json.logging });
+  rows.push({ step: label, replay: replay[0] ?? null, processCacheGroups, callbacks: delta, loaderCalls: { ...globalThis.loaderCalls }, chunkCount: json.chunks.length, warnings: json.warnings || [], logging: json.logging });
   console.log(JSON.stringify({ step: label, replay: replay[0], processCacheGroups, callbacks: delta }));
   if (step === 0) assert.equal(globalThis.loaderCalls.noop, 60701);
   if (step++ < 4) {

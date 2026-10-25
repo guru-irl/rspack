@@ -126,6 +126,13 @@ impl SplitChunksPlugin {
   #[instrument(name = "Compilation:SplitChunks",target=TRACING_BENCH_TARGET, skip_all)]
   async fn inner_impl(&self, compilation: &mut Compilation) -> Result<()> {
     let logger = compilation.get_logger(self.name());
+    if !self.replay_options.enabled {
+      let settings = self.full_impl(compilation, &mut None).await?;
+      let start = logger.time("ensure max size fit");
+      self.ensure_max_size_fit(compilation, &settings).await?;
+      logger.time_end(start);
+      return Ok(());
+    }
     let first_invocation = {
       let mut last = self
         .last_compilation
@@ -145,8 +152,7 @@ impl SplitChunksPlugin {
     // The opt-in contract permits size drift and skips identity/graph-only callbacks.
     // maxSize is still evaluated against current sizes after either path.
     let replay_start = Instant::now();
-    let active = self.replay_options.enabled
-      && (self.replay_options.force || compilation.options.mode.is_development());
+    let active = self.replay_options.force || compilation.options.mode.is_development();
     let errors_present = compilation.get_errors().next().is_some();
     let digest_start = Instant::now();
     let digest = (active && !errors_present).then(|| self.entry_digest(compilation));
@@ -161,7 +167,7 @@ impl SplitChunksPlugin {
       .expect("replay record lock")
       .clone();
     let reason = if !active {
-      "disabled".to_string()
+      "disabled: mode is not development".to_string()
     } else if errors_present {
       "errors present".to_string()
     } else if let Some(record) = previous.as_ref() {

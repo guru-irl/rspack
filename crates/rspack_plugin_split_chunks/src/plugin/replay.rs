@@ -337,9 +337,11 @@ impl SplitChunksPlugin {
   }
 
   /// Replay assumes test/name/chunks depend only on module identity and the chunk
-  /// graph. Non-strict mode deliberately retains prior minSize, minSizeReduction
-  /// and enforceSizeThreshold decisions until topology changes. maxSize always
-  /// uses current sizes. Do not use callbacks that depend on source or call count.
+  /// graph. Non-strict mode deliberately retains prior group selection order,
+  /// minSize, minSizeReduction and enforceSizeThreshold decisions until topology
+  /// changes. Size drift can change which chunks a fresh full run would create.
+  /// maxSize always uses current sizes. Do not use callbacks that depend on source
+  /// or call count.
   pub(super) fn entry_digest(&self, compilation: &Compilation) -> u128 {
     let graph = &compilation.build_chunk_graph_artifact;
     let module_graph = compilation.get_module_graph();
