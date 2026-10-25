@@ -475,11 +475,17 @@ fn get_active_state_of_connections(
 }
 
 impl CodeSplitter {
-  pub(crate) fn can_reuse_affected_module(
+  pub(crate) fn can_reuse_affected_module<const DEBUG: bool>(
     &self,
     module: ModuleIdentifier,
     compilation: &Compilation,
-  ) -> bool {
+  ) -> std::result::Result<(), String> {
+    // The normal instantiation never formats or allocates a diagnostic.
+    macro_rules! reject {
+      ($($arg:tt)*) => {
+        return Err(if DEBUG { format!($($arg)*) } else { String::new() })
+      };
+    }
     let module_block = DependenciesBlockIdentifier::Module(module);
     let current_blocks = compilation
       .get_module_graph()
@@ -493,7 +499,13 @@ impl CodeSplitter {
       .unwrap_or_default();
 
     if current_blocks != cached_blocks {
-      return false;
+      reject!(
+        "blocks: cached count={} ids={:?}, current count={} ids={:?}",
+        cached_blocks.len(),
+        &cached_blocks[..cached_blocks.len().min(5)],
+        current_blocks.len(),
+        &current_blocks[..current_blocks.len().min(5)]
+      );
     }
 
     let module_graph = compilation.get_module_graph();
@@ -509,11 +521,15 @@ impl CodeSplitter {
           ))
           .is_some_and(|blocks| !blocks.is_empty())
       {
-        return false;
+        reject!("nested-block: block={block_id:?}");
       }
 
       if block.get_group_options() != self.prepared_block_group_options.get(block_id) {
-        return false;
+        reject!(
+          "group options: block={block_id:?}, cached={:?}, current={:?}",
+          self.prepared_block_group_options.get(block_id),
+          block.get_group_options()
+        );
       }
     }
 
@@ -562,7 +578,7 @@ impl CodeSplitter {
           .map(DependenciesBlockIdentifier::AsyncDependenciesBlock),
       ) {
         let Some(cached_modules) = block_modules.get(&block) else {
-          return false;
+          reject!("missing cached block: runtime={runtime:?}, block={block:?}");
         };
         found_cached_root |= block == module_block;
 
@@ -571,29 +587,94 @@ impl CodeSplitter {
           .map(Vec::as_slice)
           .unwrap_or_default();
         if current_connections.len() != cached_modules.len() {
-          return false;
+          reject!(
+            "count: runtime={runtime:?}, block={block:?}, cached count={} list={:?}, current count={} list={:?}",
+            cached_modules.len(),
+            cached_modules
+              .iter()
+              .take(40)
+              .map(|(module, state, _)| (module, state))
+              .collect::<Vec<_>>(),
+            current_connections.len(),
+            current_connections
+              .iter()
+              .take(40)
+              .map(|connection| (
+                connection.module,
+                get_active_state_of_connections(
+                  &connection.connections,
+                  runtime.as_deref(),
+                  module_graph,
+                  module_graph_cache,
+                  side_effects_state_artifact,
+                  exports_info_artifact,
+                ),
+              ))
+              .collect::<Vec<_>>()
+          );
         }
 
-        for (current, (cached_module, cached_state, _)) in
-          current_connections.iter().zip(cached_modules.iter())
+        for (index, (current, (cached_module, cached_state, _))) in current_connections
+          .iter()
+          .zip(cached_modules.iter())
+          .enumerate()
         {
-          if current.module != *cached_module
-            || get_active_state_of_connections(
-              &current.connections,
-              runtime.as_deref(),
-              module_graph,
-              module_graph_cache,
-              side_effects_state_artifact,
-              exports_info_artifact,
-            ) != *cached_state
-          {
-            return false;
+          if current.module != *cached_module {
+            reject!(
+              "module mismatch: runtime={runtime:?}, block={block:?}, index={index}, cached={cached_module}, current={}",
+              current.module
+            );
+          }
+          let current_state = get_active_state_of_connections(
+            &current.connections,
+            runtime.as_deref(),
+            module_graph,
+            module_graph_cache,
+            side_effects_state_artifact,
+            exports_info_artifact,
+          );
+          if current_state != *cached_state {
+            reject!(
+              "state: runtime={runtime:?}, block={block:?}, index={index}, target={}, cached={cached_state:?}, current={current_state:?}, target side effects={:?}, dependencies={:?}",
+              current.module,
+              side_effects_state_artifact.module_evaluation_side_effects_state(&current.module),
+              current
+                .connections
+                .iter()
+                .map(|id| {
+                  let dependency = module_graph.dependency_by_id(id);
+                  let connection = module_graph
+                    .connection_by_dependency_id(id)
+                    .expect("should have connection");
+                  (
+                    dependency.dependency_type(),
+                    id,
+                    connection.active_state(
+                      module_graph,
+                      runtime.as_deref(),
+                      module_graph_cache,
+                      side_effects_state_artifact,
+                      exports_info_artifact,
+                    ),
+                  )
+                })
+                .collect::<Vec<_>>()
+            );
           }
         }
       }
     }
 
-    found_cached_root
+    if !found_cached_root {
+      reject!(
+        "not-cached root: any runtime contains module block={}",
+        self
+          .block_modules_runtime_map
+          .values()
+          .any(|blocks| blocks.contains_key(&module_block))
+      );
+    }
+    Ok(())
   }
 
   pub(crate) fn chunk_group_info(&self, ukey: &CgiUkey) -> &ChunkGroupInfo {

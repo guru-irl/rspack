@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, sync::LazyLock};
 
 use futures::Future;
 use rspack_collections::IdentifierMap;
@@ -14,6 +14,10 @@ use crate::{
   fast_set,
   incremental::{IncrementalPasses, Mutation},
 };
+
+static CODE_SPLITTING_CACHE_DEBUG: LazyLock<bool> = LazyLock::new(|| {
+  std::env::var("RSPACK_CODE_SPLITTING_CACHE_DEBUG").is_ok_and(|value| value == "1")
+});
 
 #[derive(Debug, Default)]
 pub struct BuildChunkGraphArtifact {
@@ -84,10 +88,52 @@ impl BuildChunkGraphArtifact {
       return false;
     }
 
+    if *CODE_SPLITTING_CACHE_DEBUG {
+      let rebuilt: rspack_collections::IdentifierSet = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+          Mutation::ModuleUpdate { module } | Mutation::ModuleAdd { module } => Some(*module),
+          _ => None,
+        })
+        .collect();
+      let mut rebuilt_list = rebuilt.iter().collect::<Vec<_>>();
+      rebuilt_list.sort_unstable();
+      let mut failures = Vec::new();
+      let mut failing_count = 0;
+      for module in &affected_modules {
+        if let Err(reason) = self
+          .code_splitter
+          .can_reuse_affected_module::<true>(*module, this_compilation)
+        {
+          if failing_count == 0 {
+            logger.log(format!("module topology change detected: {module}"));
+          }
+          failing_count += 1;
+          if failures.len() < 30 {
+            failures.push(format!(
+              "debug: module={module}, rebuilt={}, {reason}",
+              rebuilt.contains(module)
+            ));
+          }
+        }
+      }
+      logger.log(format!(
+        "debug: affected {}, failing {failing_count}, rebuilt {:?}, more={}",
+        affected_modules.len(),
+        &rebuilt_list[..rebuilt_list.len().min(20)],
+        rebuilt_list.len().saturating_sub(20)
+      ));
+      for failure in failures {
+        logger.log(failure);
+      }
+      return failing_count == 0;
+    }
+
     for module in affected_modules {
-      if !self
+      if self
         .code_splitter
-        .can_reuse_affected_module(module, this_compilation)
+        .can_reuse_affected_module::<false>(module, this_compilation)
+        .is_err()
       {
         logger.log(format!("module topology change detected: {module}"));
         return false;
