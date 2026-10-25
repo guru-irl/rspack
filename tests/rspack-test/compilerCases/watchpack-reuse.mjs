@@ -25,6 +25,10 @@ function watchCase(name, description, run) {
       dep = path.join(root, "dep.js");
       fs.writeFileSync(entry, "module.exports = 1;\n");
       fs.writeFileSync(dep, "module.exports = 2;\n");
+      // Initial fixture creation is not an edit during watch mode.
+      const beforeWatch = new Date(Date.now() - 10000);
+      fs.utimesSync(entry, beforeWatch, beforeWatch);
+      fs.utimesSync(dep, beforeWatch, beforeWatch);
       return { entry, experiments: { nativeWatcher: false }, infrastructureLogging: { level: "none", debug: false } };
     },
     async build(context, compiler) {
@@ -176,8 +180,15 @@ export default [
     },
     build(context, compiler) {
       const WatchFileSystem = compiler.watchFileSystem.constructor;
+      const lines = [];
+      compiler.hooks.infrastructureLog.tap("WatchpackReuseDecisions", (name, type, args) => {
+        if (name === "rspack.NodeWatchFileSystem" && type === "debug") lines.push(args[0]);
+      });
       for (const reuse of [false, true]) {
-        const watcher = new WatchFileSystem(compiler.inputFileSystem, { reuse });
+        const watcher = new WatchFileSystem(compiler.inputFileSystem, {
+          reuse,
+          logger: compiler.getInfrastructureLogger("rspack.NodeWatchFileSystem")
+        });
         const options = { aggregateTimeout: 30 };
         const arm = opts => watcher.watch([], [], [], Date.now(), opts, () => {}, () => {});
         let handle = arm(options);
@@ -189,6 +200,7 @@ export default [
           const second = watcher.watcher;
           handle = arm({ aggregateTimeout: 30 });
           expect(watcher.watcher).not.toBe(second);
+          expect(lines).toEqual(reuse ? ["reuse: new instance", "reuse: diffed", "reuse: new instance"] : []);
         } finally {
           handle.close();
         }

@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import util from 'node:util';
 import type Watchpack from 'watchpack';
 
+import type { Logger } from '../logging/Logger';
 import type {
   FileSystemInfoEntry,
   InputFileSystem,
@@ -25,6 +26,14 @@ const require = createRequire(import.meta.url);
 
 type WatchpackInstance = InstanceType<typeof Watchpack>;
 
+const sameSet = (current: Set<string>, previous: Set<string>): boolean => {
+  if (current.size !== previous.size) return false;
+  for (const item of current) {
+    if (!previous.has(item)) return false;
+  }
+  return true;
+};
+
 export default class NodeWatchFileSystem implements WatchFileSystem {
   inputFileSystem: InputFileSystem;
   watcherOptions: Watchpack.WatchOptions;
@@ -33,16 +42,25 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
   // replacement of the Watchpack instance.
   #events = new EventEmitter();
   #reuse: boolean;
+  #skipUnchanged: boolean;
+  #logger?: Logger;
   #watchOptions?: Watchpack.WatchOptions;
+  #watchInputs?: {
+    files: Set<string>;
+    directories: Set<string>;
+    missing: Set<string>;
+  };
   #changeHandler?: (fileName: string, changeTime: number) => void;
   #aggregatedHandler?: (changes: Set<string>, removals: Set<string>) => void;
 
   constructor(
     inputFileSystem: InputFileSystem,
-    options: { reuse?: boolean } = {},
+    options: { reuse?: boolean; skipUnchanged?: boolean; logger?: Logger } = {},
   ) {
     this.inputFileSystem = inputFileSystem;
     this.#reuse = options.reuse ?? process.env.RSPACK_WATCHPACK_REUSE === '1';
+    this.#skipUnchanged = options.skipUnchanged ?? true;
+    this.#logger = options.logger;
     this.watcherOptions = {
       aggregateTimeout: 0,
     };
@@ -161,7 +179,36 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     };
     watcher.once('aggregated', this.#aggregatedHandler);
 
-    watcher.watch({ files, directories, missing, startTime });
+    const previous = this.#watchInputs;
+    const unchanged =
+      reused &&
+      this.#skipUnchanged &&
+      previous &&
+      files instanceof Set &&
+      directories instanceof Set &&
+      missing instanceof Set &&
+      sameSet(files, previous.files) &&
+      sameSet(directories, previous.directories) &&
+      sameSet(missing, previous.missing);
+    if (unchanged) {
+      watcher.paused = false;
+      watcher.startTime = startTime;
+      // Watchpack's filtered _missing set still has the same members.
+      this.#logger?.debug('reuse: skipped (sets unchanged)');
+    } else {
+      watcher.watch({ files, directories, missing, startTime });
+      if (this.#reuse) {
+        this.#logger?.debug(reused ? 'reuse: diffed' : 'reuse: new instance');
+      }
+    }
+    if (this.#reuse) {
+      this.#watchInputs =
+        files instanceof Set &&
+        directories instanceof Set &&
+        missing instanceof Set
+          ? { files, directories, missing }
+          : undefined;
+    }
 
     if (reused) {
       const { aggregatedChanges, aggregatedRemovals } = watcher;
@@ -193,6 +240,7 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
           this.watcher = null as any;
         }
         this.#watchOptions = undefined;
+        this.#watchInputs = undefined;
         this.#changeHandler = undefined;
         this.#aggregatedHandler = undefined;
       },
