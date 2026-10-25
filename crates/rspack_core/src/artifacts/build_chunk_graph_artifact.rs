@@ -1,7 +1,7 @@
 use std::{mem, sync::LazyLock};
 
 use futures::Future;
-use rspack_collections::IdentifierMap;
+use rspack_collections::{IdentifierMap, IdentifierSet};
 use rspack_error::Result;
 use rspack_util::{fx_hash::FxIndexMap, tracing_preset::TRACING_BENCH_TARGET};
 use rustc_hash::FxHashMap as HashMap;
@@ -17,6 +17,10 @@ use crate::{
 
 static CODE_SPLITTING_CACHE_DEBUG: LazyLock<bool> = LazyLock::new(|| {
   std::env::var("RSPACK_CODE_SPLITTING_CACHE_DEBUG").is_ok_and(|value| value == "1")
+});
+
+static CODE_SPLITTING_CACHE_STABLE_ABSENCE: LazyLock<bool> = LazyLock::new(|| {
+  std::env::var("RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE").is_ok_and(|value| value == "1")
 });
 
 #[derive(Debug, Default)]
@@ -88,41 +92,60 @@ impl BuildChunkGraphArtifact {
       return false;
     }
 
-    if *CODE_SPLITTING_CACHE_DEBUG {
-      let rebuilt: rspack_collections::IdentifierSet = mutations
+    let stable_absence = *CODE_SPLITTING_CACHE_STABLE_ABSENCE;
+    let rebuilt: IdentifierSet = if *CODE_SPLITTING_CACHE_DEBUG || stable_absence {
+      mutations
         .iter()
         .filter_map(|mutation| match mutation {
           Mutation::ModuleUpdate { module } | Mutation::ModuleAdd { module } => Some(*module),
           _ => None,
         })
-        .collect();
+        .collect()
+    } else {
+      IdentifierSet::default()
+    };
+
+    if *CODE_SPLITTING_CACHE_DEBUG {
       let mut rebuilt_list = rebuilt.iter().collect::<Vec<_>>();
       rebuilt_list.sort_unstable();
       let mut failures = Vec::new();
       let mut failing_count = 0;
+      let mut absent_accepted = 0;
       for module in &affected_modules {
-        if let Err(reason) = self
-          .code_splitter
-          .can_reuse_affected_module::<true>(*module, this_compilation)
-        {
-          if failing_count == 0 {
-            logger.log(format!("module topology change detected: {module}"));
+        match self.code_splitter.can_reuse_affected_module::<true>(
+          *module,
+          this_compilation,
+          stable_absence && !rebuilt.contains(module),
+        ) {
+          Ok(true) => {
+            absent_accepted += 1;
+            logger.log(format!("debug: module={module}, accepted: stable absence"));
           }
-          failing_count += 1;
-          if failures.len() < 30 {
-            failures.push(format!(
-              "debug: module={module}, rebuilt={}, {reason}",
-              rebuilt.contains(module)
-            ));
+          Ok(false) => {}
+          Err(reason) => {
+            if failing_count == 0 {
+              logger.log(format!("module topology change detected: {module}"));
+            }
+            failing_count += 1;
+            if failures.len() < 30 {
+              failures.push(format!(
+                "debug: module={module}, rebuilt={}, {reason}",
+                rebuilt.contains(module)
+              ));
+            }
           }
         }
       }
-      logger.log(format!(
+      let mut summary = format!(
         "debug: affected {}, failing {failing_count}, rebuilt {:?}, more={}",
         affected_modules.len(),
         &rebuilt_list[..rebuilt_list.len().min(20)],
         rebuilt_list.len().saturating_sub(20)
-      ));
+      );
+      if stable_absence {
+        summary.push_str(&format!(", absent-accepted {absent_accepted}"));
+      }
+      logger.log(summary);
       for failure in failures {
         logger.log(failure);
       }
@@ -132,7 +155,11 @@ impl BuildChunkGraphArtifact {
     for module in affected_modules {
       if self
         .code_splitter
-        .can_reuse_affected_module::<false>(module, this_compilation)
+        .can_reuse_affected_module::<false>(
+          module,
+          this_compilation,
+          stable_absence && !rebuilt.contains(&module),
+        )
         .is_err()
       {
         logger.log(format!("module topology change detected: {module}"));

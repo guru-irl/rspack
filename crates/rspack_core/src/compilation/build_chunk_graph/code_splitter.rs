@@ -479,7 +479,8 @@ impl CodeSplitter {
     &self,
     module: ModuleIdentifier,
     compilation: &Compilation,
-  ) -> std::result::Result<(), String> {
+    stable_absence_allowed: bool,
+  ) -> std::result::Result<bool, String> {
     // The normal instantiation never formats or allocates a diagnostic.
     macro_rules! reject {
       ($($arg:tt)*) => {
@@ -666,6 +667,23 @@ impl CodeSplitter {
     }
 
     if !found_cached_root {
+      if stable_absence_allowed
+        && !self
+          .block_modules_runtime_map
+          .values()
+          .any(|blocks| blocks.contains_key(&module_block))
+        && compilation
+          .build_chunk_graph_artifact
+          .chunk_graph
+          .get_number_of_module_chunks(module)
+          == 0
+      {
+        // This module was unreachable and was not rebuilt, so its own analysis
+        // is unchanged. It can enter a chunk only if a reachable module changes
+        // its connection to it; reachable affected modules still get the full
+        // check. Modules previously in a chunk are never covered by this rule.
+        return Ok(true);
+      }
       reject!(
         "not-cached root: any runtime contains module block={}",
         self
@@ -674,7 +692,7 @@ impl CodeSplitter {
           .any(|blocks| blocks.contains_key(&module_block))
       );
     }
-    Ok(())
+    Ok(false)
   }
 
   pub(crate) fn chunk_group_info(&self, ukey: &CgiUkey) -> &ChunkGroupInfo {
