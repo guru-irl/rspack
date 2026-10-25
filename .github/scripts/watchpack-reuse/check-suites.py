@@ -17,7 +17,8 @@ for repeat in (1, 2):
                 if len(fields) >= 4 and fields[1] in ('TEST_END', 'SUITE_END'):
                     states[(fields[0], fields[1])] = fields[3]
             tests = {key[0]: value for key, value in states.items() if key[1] == 'TEST_END'}
-            assert len(tests) >= {'watch': 200, 'native': 200, 'compiler': 20, 'multi': 3}[suite], (label, len(tests))
+            active = sum(value in ('pass', 'fail') for value in tests.values())
+            assert active >= {'watch': 200, 'native': 200, 'compiler': 20, 'multi': 3}[suite], (label, active)
             failures = sorted(key[0] for key, value in states.items() if value == 'fail')
             failed_tests = sorted(name for name, value in tests.items() if value == 'fail')
             code = int((root / f'{label}.exit').read_text())

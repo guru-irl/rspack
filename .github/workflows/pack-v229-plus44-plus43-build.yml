@@ -70,6 +70,8 @@ jobs:
       - name: Build JavaScript artifacts
         run: |
           set -euo pipefail
+          python3 bench-data/scripts/filters.py
+          git diff -- packages/rspack-test-tools/src/test/creator.ts packages/rspack-test-tools/src/case/compiler.ts packages/rspack-test-tools/src/case/multi-compiler.ts > bench-data/results/test-filter-alignment.diff
           env -u RSPACK_BINDING pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
           for p in node_modules/.pnpm/@rspack+core@*/node_modules/@rspack/core; do
             tar -xzf bench-data/replay/rspack-core-2.2.9.tgz -C "$p" --strip-components=1
