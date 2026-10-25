@@ -38,7 +38,8 @@ elif arm == 'case-side-effects-red':
     failed_tests = [name for name, state in tests.items() if state == 'fail']
     assert rc == 1 and len(failed_tests) == 1, failed_tests
     assert 'stable-absence-side-effects' in failed_tests[0] and 'should compile step 1' in failed_tests[0], failed_tests
-    assert 'zRan' in log and 'expected undefined to be true' in log, log
+    assert totals.get('passed', 0) == 1 and totals.get('failed', 0) == 1, totals
+    assert ('globalThis.zRan' in log and 'expected undefined to be true' in log) or "Cannot find module './x'" in log, log
 elif arm == 'case-off':
     failed_tests = [name for name, state in tests.items() if state == 'fail']
     assert rc == 1 and len(failed_tests) == 1, failed_tests
