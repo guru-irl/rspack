@@ -58,7 +58,7 @@ The added work that still runs when unset is the constructor's environment-varia
 
 Reuse requires the same watch options object. Each cycle removes the previous one-shot handlers and installs new ones. Forwarding listeners are installed once per instance.
 
-If files, directories, and missing are Sets and all three have the same sizes and members as the previous call, re-arm skips Watchpack's watch(). It sets paused=false and updates startTime. Watchpack's filtered missing-path set remains valid because the input members are unchanged. Changed sets, or any non-Set argument, fall back to Watchpack's reuse diff. This compares complete sets, not dependency deltas. The previous Set references are released on close.
+If files, directories, and missing are Sets and all three have the same sizes and members as the previous call, re-arm skips Watchpack's watch(). It sets paused=false and updates startTime. Watchpack's filtered missing-path set remains valid because the input members are unchanged. Changed sets, or any non-Set argument, fall back to Watchpack's reuse diff. This compares complete sets, not dependency deltas. When normalized followSymlinks is true, skipping is disabled so Watchpack re-resolves targets, and those re-arms log reuse: diffed. The previous Set references are released on close.
 
 Changes recorded while paused are forwarded after re-arm and aggregated on a timer. getInfo takes ownership of pending sets while paused, so changes consumed by a manually started build do not replay. Closing forgets the instance and options identity. Re-watching creates a fresh instance.
 
