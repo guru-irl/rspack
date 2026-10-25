@@ -6,7 +6,7 @@ restore() { cp bench-data/results/NodeWatchFileSystem.original.ts "$source_file"
 trap restore EXIT
 pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse' --retry 0 2>&1 | tee bench-data/results/new-cases.log
 cp rspack-test-event-report.txt bench-data/results/new-cases.events
-for mutation in flush ownership listeners synchronous synthetic identity; do
+for mutation in flush ownership listeners synchronous synthetic identity directory; do
   restore
   MUTATION="$mutation" python3 - <<'PY'
 import os
@@ -29,10 +29,12 @@ elif mutation == 'listeners':
 elif mutation == 'synchronous':
     replace('process.nextTick(() => {', '((callback: () => void) => callback())(() => {')
 elif mutation == 'synthetic':
-    replace('entry.safeTime >= startTime', 'entry.safeTime >= 0')
+    replace('safeTime >= startTime', 'safeTime >= 0')
 elif mutation == 'identity':
     for field in ['files', 'directories', 'missing']:
         replace(f'{field} !== previous.{field} &&', '')
+elif mutation == 'directory':
+    replace('safeTime = directoryWatcher.lastWatchEvent;', "safeTime = (() => { const entry = directoryTimes.get(watchedPath); return entry && 'safeTime' in entry ? entry.safeTime : 0; })();")
 else:
     raise AssertionError(mutation)
 p.write_text(s)
@@ -45,6 +47,7 @@ PY
     synchronous) filter=watchpack-reuse/reentrant-invalidate ;;
     synthetic) filter=watchpack-reuse/synthetic-paused ;;
     identity) filter=watchpack-reuse/mutable-sets ;;
+    directory) filter=watchpack-reuse/nested-directory ;;
   esac
   rc=0
   pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t "$filter" --retry 0 2>&1 | tee "bench-data/results/mutant-$mutation.log" || rc=${PIPESTATUS[0]}
