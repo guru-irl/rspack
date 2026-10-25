@@ -30,7 +30,10 @@ if arm in ('watch-normal', 'watch-forced'):
     assert totals['failed'] == 6 and totals['passed'] >= 960, totals
     assert rc == 1
 elif arm == 'case-on':
-    assert rc == 0 and not failures and totals.get('passed', 0) == 4, totals
+    assert rc == 0 and not failures and totals.get('passed', 0) == 6, totals
+    for suffix, count in [('stable-absence', 4), ('stable-absence-side-effects', 2)]:
+        selected = [state for name, state in tests.items() if f'/{suffix} > ' in name]
+        assert len(selected) == count and all(state == 'pass' for state in selected), (suffix, selected)
 elif arm == 'case-side-effects-red':
     failed_tests = [name for name, state in tests.items() if state == 'fail']
     assert rc == 1 and len(failed_tests) == 1, failed_tests
@@ -40,6 +43,9 @@ elif arm == 'case-off':
     failed_tests = [name for name, state in tests.items() if state == 'fail']
     assert rc == 1 and len(failed_tests) == 1, failed_tests
     assert 'stable-absence' in failed_tests[0] and 'should compile step 1' in failed_tests[0], failed_tests
+    assert totals.get('passed', 0) == 5 and totals.get('failed', 0) == 1, totals
+    side_effects = [state for name, state in tests.items() if '/stable-absence-side-effects > ' in name]
+    assert len(side_effects) == 2 and all(state == 'pass' for state in side_effects), side_effects
     assert 'module topology change detected' in log
 else:
     raise AssertionError(f'Unknown arm: {arm}')

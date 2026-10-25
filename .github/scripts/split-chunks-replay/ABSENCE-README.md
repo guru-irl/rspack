@@ -12,19 +12,25 @@ With stable absence unset, control flow and logs match the diagnostic pack. With
 
 ## Rule
 
-After the existing block, nested-block, group-option and connection checks, a module without a cached root can pass only when stable absence is enabled, it has no module-add or module-update mutation in this compilation, no cached runtime contains its module block, and the recovered chunk graph places it in zero chunks.
+The rule applies only when `optimization.sideEffects` is not the analysed `true` mode and `optimization.usedExports` is disabled. Development defaults meet these conditions.
+
+After the existing block, nested-block, group-option and connection checks, a module without a cached root can pass only when stable absence is enabled under those options, it has no module-add or module-update mutation in this compilation, no cached runtime contains its module block, and the recovered chunk graph places it in zero chunks.
 
 The recovered graph is the previous compilation's snapshot taken immediately after code splitting, before later chunk optimization. The current pass checks it before resetting or rebuilding it.
 
-The module was unreachable and was not rebuilt, so its own analysis is unchanged. It can enter a chunk only if a reachable module changes its connection to it. Reachable affected modules still receive the full check. A module previously in a chunk never qualifies.
+In side-effect flag mode or disabled mode, side-effect state comes only from the module's factory metadata. It is local to the module. With used-exports disabled, usage changes cannot flip connection states. An unreachable module that was not rebuilt can therefore become reachable only through an edge change on a module in the affected set, whose full check compares that edge. A module previously in a chunk never qualifies.
+
+Analysed side-effect mode can change an unbuilt importer's state when one of its dependencies gains a side effect. The rule is disabled in that mode. It is also disabled whenever used-exports is enabled.
 
 ## Debug lines
 
-An acceptance is logged as `debug: module=<id>, accepted: stable absence`. With stable absence enabled, the summary adds `absent-accepted <n>`. Other failures keep the existing reason lines and the first `module topology change detected` line. With stable absence unset, the summary format is unchanged.
+An acceptance is logged as `debug: module=<id>, accepted: stable absence`. At most 30 acceptance lines are logged per check. With the flag set, the summary adds `absent-accepted <n>`, counting all acceptances without a cap. Other failures keep the existing reason lines and the first `module topology change detected` line. With stable absence unset, the summary format is unchanged.
 
 ## Validation
 
-The workflow runs the watch suites with the flag unset, then with stable absence enabled and replay forced. Both runs must have exactly the same six known release-profile loader-cache failures. The focused watch case must pass with the flag on and fail specifically at step 1 with it off. Its later steps make the unused hook reachable and update its constant again.
+The workflow runs the watch suites with the flag unset, then with stable absence enabled and replay forced. Both runs must have exactly the same six known release-profile loader-cache failures. Both focused watch cases run with the flag on and off. The barrel case must pass with the flag on and fail specifically at step 1 with it off. It checks both the topology log and verbose pass timers to prove graph reuse. Its later steps make the unused hook reachable and update its constant again.
+
+The analysed-side-effects case must pass with the flag on and off. A dependency gains a side effect, which must execute at startup rather than wait for a later dynamic import. This case failed on the unguarded stable-absence binary before the fix.
 
 The pinned public fixture is compared with stable absence on and off, with replay and diagnostics enabled in both arms. Every emitted filename and byte must match after cold build, content edit, module addition with dynamic import, and a final content edit. Native identity is checked from `/proc/self/maps` and SHA-256 in the test workers and fixture processes.
 
