@@ -183,6 +183,8 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     const unchanged =
       reused &&
       this.#skipUnchanged &&
+      // Symlink targets can change even when the input path sets do not.
+      !watcher.watcherOptions.followSymlinks &&
       previous &&
       files instanceof Set &&
       directories instanceof Set &&
