@@ -142,8 +142,8 @@ jobs:
           echo "RSPACK_BINDING=$native" >> "$GITHUB_ENV"
           echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/test-native-identities.jsonl" >> "$GITHUB_ENV"
-          echo "NODE_OPTIONS=--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
-      - name: Run SplitChunks config cases and normal and forced watch cases
+          echo "NODE_OPTIONS=--stack-trace-limit=100 --require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
+      - name: Run config cases, watch stress and normal stats output
         run: |
           set -euo pipefail
           pnpm --dir tests/rspack-test run test --project base -t 'configCases/split-chunks/' 2>&1 | tee bench-data/results/config-cases.log
@@ -157,6 +157,8 @@ jobs:
           done
           unset RSPACK_SPLIT_CHUNKS_REPLAY
           python3 bench-data/scripts/check-tests.py
+          pnpm --dir tests/rspack-test run test --project base StatsOutput.test.mjs 2>&1 | tee bench-data/results/stats-output.log
+          cp rspack-test-event-report.txt bench-data/results/stats-output.events
       - name: Prepare the pinned public fixture and pack runtime
         run: |
           set -euo pipefail
