@@ -17,6 +17,9 @@ export default {
 	description: "should disable the file cache after a commit fails and keep rebuilding",
 	options(context) {
 		const cacheLocation = context.getDist("cache");
+		fs.mkdirSync(cacheLocation, { recursive: true });
+		// Seed an empty committed database so the fault reaches commit, not open.
+		fs.writeFileSync(path.join(cacheLocation, "CURRENT"), Buffer.alloc(4));
 		context.setValue("cacheLocation", cacheLocation);
 		return {
 			context: context.getSource(),
