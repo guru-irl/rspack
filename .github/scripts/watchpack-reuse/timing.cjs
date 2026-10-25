@@ -42,6 +42,23 @@ const compiler = rspack({
     },
   },
 });
+const materializations = [];
+globalThis.__watchpackMaterialization = (kind, milliseconds) => {
+  if (kind === 'files') materializations.push({});
+  materializations.at(-1)[kind] = milliseconds;
+};
+if (process.env.TIMING_ARM === 'REUSE') {
+  const WatchFileSystem = compiler.watchFileSystem.constructor;
+  compiler.watchFileSystem = new WatchFileSystem(compiler.inputFileSystem, {
+    reuse: true,
+    skipUnchanged: false,
+    logger: compiler.getInfrastructureLogger('rspack.NodeWatchFileSystem'),
+  });
+}
+const decisions = [];
+compiler.hooks.infrastructureLog.tap('WatchpackTiming', (name, type, args) => {
+  if (name === 'rspack.NodeWatchFileSystem' && type === 'debug') decisions.push(args.join(' '));
+});
 const rearms = [];
 const watchFileSystem = compiler.watchFileSystem;
 const watch = watchFileSystem.watch;
@@ -52,7 +69,10 @@ watchFileSystem.watch = function(...args) {
   const handle = watch.apply(this, args);
   const milliseconds = performance.now() - start;
   const used = process.cpuUsage(cpu);
-  rearms.push({ cycle: rearms.length, milliseconds, cpuUserMs: used.user / 1000, cpuSystemMs: used.system / 1000, reused: Boolean(before && this.watcher === before), files: this.watcher.fileWatchers.size, directories: this.watcher.directoryWatchers.size });
+  assert.equal(materializations.length, rearms.length + 1);
+  const materialization = materializations.at(-1);
+  assert.equal(Object.keys(materialization).length, 3);
+  rearms.push({ cycle: rearms.length, materializationMs: Object.values(materialization).reduce((a, b) => a + b, 0), materialization, milliseconds, cpuUserMs: used.user / 1000, cpuSystemMs: used.system / 1000, reused: Boolean(before && this.watcher === before), files: this.watcher.fileWatchers.size, directories: this.watcher.directoryWatchers.size });
   return handle;
 };
 const manifests = [];
@@ -104,7 +124,9 @@ function manifest(dir, prefix = '') {
     const enabled = process.env.RSPACK_WATCHPACK_REUSE === '1';
     assert.equal(rearms.length, 6);
     assert.equal(rearms.slice(1).every(row => row.reused === enabled), true);
-    fs.writeFileSync(path.join(results, 'timing.json'), JSON.stringify({ enabled, rearms, builds, callbacks, edits, peakRss: process.resourceUsage().maxRSS * 1024, steadyRss: process.memoryUsage().rss, coreEntrySha: hash(fs.readFileSync(process.env.CORE_ENTRY)), manifests }, null, 2) + '\n');
+    assert.equal(decisions.length, enabled ? 6 : 0);
+    if (enabled) assert.deepEqual(decisions, ['reuse: new instance', ...Array(5).fill(process.env.TIMING_ARM === 'SKIP' ? 'reuse: skipped (sets unchanged)' : 'reuse: diffed')]);
+    fs.writeFileSync(path.join(results, 'timing.json'), JSON.stringify({ enabled, arm: process.env.TIMING_ARM, decisions, rearms, builds, callbacks, edits, peakRss: process.resourceUsage().maxRSS * 1024, steadyRss: process.memoryUsage().rss, coreEntrySha: hash(fs.readFileSync(process.env.CORE_ENTRY)), manifests }, null, 2) + '\n');
     console.log(JSON.stringify({ enabled, rearms, builds, callbacks, edits }));
   } finally {
     clearTimeout(scheduled);

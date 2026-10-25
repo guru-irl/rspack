@@ -122,19 +122,26 @@ jobs:
         run: |
           set -euo pipefail
           pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack"
+          cp packages/rspack/dist/index.js bench-data/results/delivery-index.js
+          cp packages/rspack/src/Watching.ts bench-data/results/Watching.original.ts
+          python3 bench-data/scripts/instrument.py
+          pnpm --filter @rspack/core build 2>&1 | tee bench-data/results/timing-build.log
+          cp bench-data/results/Watching.original.ts packages/rspack/src/Watching.ts
           mkdir -p bench-data/parser bench-data/runtime
           git show a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
           npm install --prefix bench-data/parser --ignore-scripts --no-audit --no-fund acorn escodegen
           node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
           printf '{"private":true}\n' > bench-data/runtime/package.json
           npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/bench-data/pack/rspack-core-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
-          for arm in OFF ON; do
-            if [[ "$arm" == ON ]]; then export RSPACK_WATCHPACK_REUSE=1; else unset RSPACK_WATCHPACK_REUSE; fi
+          cp packages/rspack/dist/index.js bench-data/runtime/node_modules/@rspack/core/dist/index.js
+          export RSPACK_SPLIT_CHUNKS_REPLAY=1
+          for arm in OFF REUSE SKIP; do
+            if [[ "$arm" != OFF ]]; then export RSPACK_WATCHPACK_REUSE=1; else unset RSPACK_WATCHPACK_REUSE; fi
             result="$GITHUB_WORKSPACE/bench-data/results/timing/$arm"
             mkdir -p "$result"
-            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/timing.cjs 2>&1 | tee "$result/watch.log"
+            TIMING_ARM="$arm" CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/timing.cjs 2>&1 | tee "$result/watch.log"
           done
-          unset RSPACK_WATCHPACK_REUSE
+          unset RSPACK_WATCHPACK_REUSE RSPACK_SPLIT_CHUNKS_REPLAY
           node bench-data/scripts/export.cjs
           (cd bench-data/delivery; sha256sum -c SHA256SUMS)
           git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
