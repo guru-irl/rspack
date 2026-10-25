@@ -12,7 +12,7 @@ const until = async predicate => {
 };
 const close = watching => new Promise((resolve, reject) => watching.close(error => error ? reject(error) : resolve()));
 
-function watchCase(name, description, run) {
+function watchCase(name, description, run, prepare) {
   let root;
   let entry;
   let dep;
@@ -62,6 +62,7 @@ function watchCase(name, description, run) {
         expect(builds).toHaveLength(count);
       };
       try {
+        prepare?.({ compiler, root, entry, dep });
         start();
         await wait(1);
         expect(builds[0].hasErrors()).toBe(false);
@@ -192,6 +193,37 @@ export default [
     }
     await wait(2);
     await quiet(2);
+  }),
+  watchCase("nested-directory", "should not replay a nested non-imported write during a held build", async ({ compiler, entry, watching, wait, quiet }) => {
+    const root = path.dirname(entry);
+    const sub = path.join(root, "sub");
+    await until(() => {
+      const directory = compiler.watchFileSystem.watcher.directoryWatchers.get(root)?.watcher.directoryWatcher;
+      const nested = directory?.directories.get(sub);
+      return nested && typeof nested === "object" && !nested.directoryWatcher.initialScan;
+    });
+    let release;
+    let held = false;
+    compiler.hooks.make.tapPromise("WatchpackNestedDirectoryTest", async () => {
+      if (held) return;
+      held = true;
+      await new Promise(resolve => { release = resolve; });
+    });
+    watching.invalidate();
+    await until(() => release);
+    try {
+      fs.writeFileSync(path.join(sub, "not-imported.txt"), "generated during the build\n");
+      await until(() => compiler.watchFileSystem.watcher.aggregatedChanges.has(root));
+    } finally {
+      release();
+    }
+    await wait(2);
+    await quiet(2);
+  }, ({ compiler, root }) => {
+    fs.mkdirSync(path.join(root, "sub"));
+    compiler.hooks.afterCompile.tap("WatchpackNestedDirectoryTest", compilation => {
+      compilation.contextDependencies.add(root);
+    });
   }),
   watchCase("manual-invalidate", "should consume paused changes on manual invalidate without replay", async ({ compiler, entry, watching, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
