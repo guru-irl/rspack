@@ -5,7 +5,7 @@ const { rspack } = require(path.resolve(process.env.CORE_ENTRY));
 const root = path.resolve('bench-data/fixture');
 const results = path.resolve(process.env.RESULT_DIR);
 const debug = process.env.RSPACK_CODE_SPLITTING_CACHE_DEBUG === '1';
-const labels = ['cold', 'content', 'topology'];
+const labels = ['cold', 'content', 'topology', 'content-after-topology'];
 fs.mkdirSync(results, { recursive: true });
 fs.rmSync(path.join(root, 'out'), { recursive: true, force: true });
 const file = path.join(root, 'src/g0/m0.js');
@@ -60,9 +60,9 @@ const watching = compiler.watch({}, (error, stats) => {
   const entries = json.logging?.['rspack.Compilation.codeSplittingCache']?.entries || [];
   const lines = entries.map(entry => entry.message);
   const debugLines = lines.filter(line => line.startsWith('debug:'));
-  const failures = debugLines.filter(line => line.startsWith('debug: module='));
+  const failures = debugLines.filter(line => line.startsWith('debug: module=') && !line.endsWith('accepted: stable absence'));
   if (!debug) assert.equal(debugLines.length, 0, 'Unset flag emitted diagnostics');
-  if (debug && step === 1) {
+  if (debug && (step === 1 || step === 3)) {
     assert.equal(failures.length, 0, 'Content-only edit failed topology validation');
     assert(debugLines.some(line => /^debug: affected \d+, failing 0, rebuilt /.test(line)), 'Missing clean content summary');
   }
@@ -73,12 +73,14 @@ const watching = compiler.watch({}, (error, stats) => {
   rows.push({ step: label, lines, loaderCalls: { ...globalThis.loaderCalls } });
   for (const line of lines) console.log(label + ' ' + line);
   if (step === 0) assert.equal(globalThis.loaderCalls.noop, 60701);
-  if (step++ < 2) {
+  if (step++ < 3) {
     setImmediate(() => {
       const content = [original, Buffer.from('\nmodule.exports += ' + step + ';\n')];
       const changed = [file];
       if (step === 2) {
         fs.writeFileSync(addedFile, 'module.exports = 900001;\n'); changed.push(addedFile);
+      }
+      if (step >= 2) {
         content.push(Buffer.from('\nimport("./added-module.js").then(value => { globalThis.addedFixtureValue = value.default; });\n'));
       }
       fs.writeFileSync(file, Buffer.concat(content));

@@ -1,9 +1,9 @@
-name: Code splitting cache diagnostic pack
+name: Code splitting stable absence pack
 on:
   workflow_dispatch:
     inputs:
       source:
-        description: Exact diagnostic implementation commit
+        description: Exact stable absence implementation commit
         type: string
         required: true
 permissions:
@@ -62,7 +62,7 @@ jobs:
           pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
       - uses: ./.github/actions/rustup
         with:
-          key: code-splitting-cache-debug-release
+          key: code-splitting-stable-absence-release
           use-cache: false
       - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
@@ -161,12 +161,40 @@ jobs:
       - name: Run normal watch cases with diagnostics unset
         run: |
           set -euo pipefail
-          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG RSPACK_SPLIT_CHUNKS_REPLAY
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG RSPACK_SPLIT_CHUNKS_REPLAY RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
           rc=0
           pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs Incremental-watch.test.mjs NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee bench-data/results/watch-normal.log || rc=${PIPESTATUS[0]}
           echo "$rc" > bench-data/results/watch-normal.exit
           cp rspack-test-event-report.txt bench-data/results/watch-normal.events
-          python3 bench-data/scripts/check-debug-tests.py
+          python3 bench-data/scripts/check-absence-tests.py watch-normal
+      - name: Run watch cases with stable absence and forced replay
+        run: |
+          set -euo pipefail
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+          export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1 RSPACK_SPLIT_CHUNKS_REPLAY=force
+          rc=0
+          pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs Incremental-watch.test.mjs NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee bench-data/results/watch-forced.log || rc=${PIPESTATUS[0]}
+          echo "$rc" > bench-data/results/watch-forced.exit
+          cp rspack-test-event-report.txt bench-data/results/watch-forced.events
+          python3 bench-data/scripts/check-absence-tests.py watch-forced
+      - name: Prove focused case on and negative control off
+        run: |
+          set -euo pipefail
+          export RSPACK_CODE_SPLITTING_CACHE_DEBUG=1 RSPACK_SPLIT_CHUNKS_REPLAY=force
+          for arm in on off; do
+            if [[ "$arm" == on ]]; then
+              export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1
+              unset RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+            else
+              unset RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE
+              export RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL=1
+            fi
+            rc=0
+            pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs -t code-splitting-cache/stable-absence 2>&1 | tee "bench-data/results/case-$arm.log" || rc=${PIPESTATUS[0]}
+            echo "$rc" > "bench-data/results/case-$arm.exit"
+            cp rspack-test-event-report.txt "bench-data/results/case-$arm.events"
+            python3 bench-data/scripts/check-absence-tests.py "case-$arm"
+          done
       - name: Prepare the pinned public fixture and pack runtime
         run: |
           set -euo pipefail
@@ -177,36 +205,37 @@ jobs:
           python3 bench-data/scripts/compare.py --self-test
           printf '{"private":true}\n' > bench-data/runtime/package.json
           npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/bench-data/pack/rspack-core-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
-      - name: Compare diagnostic on and unset after every watch step
+      - name: Compare stable absence on and unset after every watch step
         run: |
           set -euo pipefail
-          export RSPACK_SPLIT_CHUNKS_REPLAY=1
+          export RSPACK_SPLIT_CHUNKS_REPLAY=1 RSPACK_CODE_SPLITTING_CACHE_DEBUG=1
+          unset RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
           for arm in ON OFF; do
-            if [[ "$arm" == ON ]]; then export RSPACK_CODE_SPLITTING_CACHE_DEBUG=1; else unset RSPACK_CODE_SPLITTING_CACHE_DEBUG; fi
+            if [[ "$arm" == ON ]]; then export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1; else unset RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE; fi
             result="$GITHUB_WORKSPACE/bench-data/results/parity/$arm"
             mkdir -p "$result"
             CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" NATIVE_IDENTITY_LOG="$result/native.jsonl" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/debug-watch.cjs 2>&1 | tee "$result/watch.log"
           done
           unset RSPACK_CODE_SPLITTING_CACHE_DEBUG
-          for step in cold content topology; do
+          for step in cold content topology content-after-topology; do
             python3 bench-data/scripts/compare.py "bench-data/results/parity/OFF/$step" "bench-data/results/parity/ON/$step"
           done
-          printf 'All three emitted filename-and-byte comparisons passed.\n' > bench-data/results/parity.txt
+          printf 'All four emitted filename-and-byte comparisons passed.\n' > bench-data/results/parity.txt
           mkdir -p bench-data/delivery
           cp bench-data/pack/* bench-data/delivery/
-          cp bench-data/scripts/DEBUG-README.md bench-data/delivery/README.md
-          printf '\nSource: `%s`\n\nNative SHA-256: `%s`\n' '${{ inputs.source }}' "$EXPECTED_NATIVE_SHA" >> bench-data/delivery/README.md
+          cp bench-data/scripts/ABSENCE-README.md bench-data/delivery/README.md
+          printf '\nSource: `%s`\n\nNative SHA-256: `%s`\n\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n' '${{ inputs.source }}' "$EXPECTED_NATIVE_SHA" >> bench-data/delivery/README.md
           (cd bench-data/delivery; sha256sum README.md *.tgz *.node > SHA256SUMS; sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: cs-cache-debug-delivery
+          name: cs-stable-absence-delivery
           path: bench-data/delivery/
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cs-cache-debug-evidence
+          name: cs-stable-absence-evidence
           path: |
             bench-data/results/
             bench-data/scripts/
@@ -215,7 +244,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cs-cache-debug-packages
+          name: cs-stable-absence-packages
           path: bench-data/pack/
           if-no-files-found: warn
           compression-level: 0
