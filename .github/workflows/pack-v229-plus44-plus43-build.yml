@@ -1,0 +1,148 @@
+name: Watchpack reuse pack
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact source commit
+        type: string
+        required: true
+      mode:
+        description: Validation phase
+        type: choice
+        options: [full, red]
+        default: full
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  npm_config_registry: https://registry.npmjs.org
+  pnpm_config_pm_on_fail: ignore
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: true
+  PUPPETEER_SKIP_DOWNLOAD: true
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare evidence and scripts
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack bench-data/scripts
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = '${{ inputs.source }}'
+          for file in $(git ls-tree -r --name-only '${{ github.sha }}' .github/scripts/watchpack-reuse/); do
+            git show '${{ github.sha }}':"$file" > "bench-data/scripts/$(basename "$file")"
+          done
+          git show 8b1a76835cb688343fbd57eb34ce7c70b5153ff9:.github/scripts/split-chunks-replay/identity.cjs > bench-data/scripts/identity.cjs
+          test ! -d target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - uses: actions/download-artifact@v4
+        with:
+          name: split-chunks-replay-packages
+          run-id: 40169154141
+          github-token: ${{ github.token }}
+          path: bench-data/replay
+      - name: Install dependencies and select the replay native file
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@11.26.0
+          node -e 'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.packageManager="pnpm@11.26.0";p.engines.pnpm="11.26.0";fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n");'
+          test "$(node --version)" = v22.23.3
+          test "$(pnpm --version)" = 11.26.0
+          pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+          cp bench-data/replay/rspack-binding-2.2.9.tgz bench-data/replay/rspack-binding-linux-x64-gnu-2.2.9.tgz bench-data/replay/rspack.linux-x64-gnu.node bench-data/pack/
+          echo 'c9ce103a4bf4f6068cb41021aac46a115153ab299f4236db2f36a073788f77da  bench-data/pack/rspack.linux-x64-gnu.node' | sha256sum -c -
+          cp bench-data/pack/rspack.linux-x64-gnu.node crates/node_binding/
+          echo "RSPACK_BINDING=$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node" >> "$GITHUB_ENV"
+          echo 'EXPECTED_NATIVE_SHA=c9ce103a4bf4f6068cb41021aac46a115153ab299f4236db2f36a073788f77da' >> "$GITHUB_ENV"
+          echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/native-identities.jsonl" >> "$GITHUB_ENV"
+          echo "NODE_OPTIONS=--stack-trace-limit=100 --require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
+      - name: Build JavaScript artifacts
+        run: |
+          set -euo pipefail
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          pnpm --dir tests/rspack-test run test:configs 2>&1 | tee bench-data/results/test-configs.log
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/rspack-test/rstack.config.mts')
+          text=p.read_text()
+          assert text.count('execArgv: [')==1
+          preload=str(Path('bench-data/scripts/identity.cjs').resolve())
+          p.write_text(text.replace('execArgv: [', 'execArgv: [\n        "--require='+preload+'",'))
+          PY
+          test ! -d target
+      - name: Verify missing reuse fails before implementation
+        if: inputs.mode == 'red'
+        run: |
+          set -euo pipefail
+          rc=0
+          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'should reuse the same options and replace cycle handlers' 2>&1 | tee bench-data/results/red.log || rc=${PIPESTATUS[0]}
+          test "$rc" -ne 0
+          grep -F 'should reuse the same options and replace cycle handlers' bench-data/results/red.log
+          cp rspack-test-event-report.txt bench-data/results/red.events
+      - name: Run compiler cases and prove both regressions
+        if: inputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          bash bench-data/scripts/mutations.sh
+      - name: Run every watch suite twice per arm
+        if: inputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          bash bench-data/scripts/suites.sh
+      - name: Pack core and time the pinned public fixture
+        if: inputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack"
+          mkdir -p bench-data/parser bench-data/runtime
+          git show a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
+          npm install --prefix bench-data/parser --ignore-scripts --no-audit --no-fund acorn escodegen
+          node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
+          printf '{"private":true}\n' > bench-data/runtime/package.json
+          npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/bench-data/pack/rspack-core-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
+          for arm in OFF ON; do
+            if [[ "$arm" == ON ]]; then export RSPACK_WATCHPACK_REUSE=1; else unset RSPACK_WATCHPACK_REUSE; fi
+            result="$GITHUB_WORKSPACE/bench-data/results/timing/$arm"
+            mkdir -p "$result"
+            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node bench-data/scripts/timing.cjs 2>&1 | tee "$result/watch.log"
+          done
+          unset RSPACK_WATCHPACK_REUSE
+          node bench-data/scripts/export.cjs
+          (cd bench-data/delivery; sha256sum -c SHA256SUMS)
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+          test ! -d target
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'full' && success()
+        with:
+          name: watchpack-reuse-delivery
+          path: bench-data/delivery/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watchpack-reuse-evidence
+          path: |
+            bench-data/results/
+            bench-data/scripts/
+          if-no-files-found: error
+          compression-level: 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watchpack-reuse-packages
+          path: bench-data/pack/
+          if-no-files-found: warn
+          compression-level: 0
