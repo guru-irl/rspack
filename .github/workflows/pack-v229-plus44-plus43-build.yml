@@ -67,11 +67,16 @@ jobs:
           echo "RSPACK_BINDING=$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node" >> "$GITHUB_ENV"
           echo 'EXPECTED_NATIVE_SHA=c9ce103a4bf4f6068cb41021aac46a115153ab299f4236db2f36a073788f77da' >> "$GITHUB_ENV"
           echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/native-identities.jsonl" >> "$GITHUB_ENV"
-          echo "NODE_OPTIONS=--stack-trace-limit=100 --require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
       - name: Build JavaScript artifacts
         run: |
           set -euo pipefail
-          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          env -u RSPACK_BINDING pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          for p in node_modules/.pnpm/@rspack+core@*/node_modules/@rspack/core; do
+            tar -xzf bench-data/replay/rspack-core-2.2.9.tgz -C "$p" --strip-components=1
+          done
+          for p in node_modules/.pnpm/@rspack+binding@*/node_modules/@rspack/binding; do
+            tar -xzf bench-data/pack/rspack-binding-2.2.9.tgz -C "$p" --strip-components=1
+          done
           pnpm --dir tests/rspack-test run test:configs 2>&1 | tee bench-data/results/test-configs.log
           python3 - <<'PY'
           from pathlib import Path
@@ -86,6 +91,7 @@ jobs:
         if: inputs.mode == 'red'
         run: |
           set -euo pipefail
+          export NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs"
           rc=0
           pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'should reuse the same options and replace cycle handlers' 2>&1 | tee bench-data/results/red.log || rc=${PIPESTATUS[0]}
           test "$rc" -ne 0
@@ -116,7 +122,7 @@ jobs:
             if [[ "$arm" == ON ]]; then export RSPACK_WATCHPACK_REUSE=1; else unset RSPACK_WATCHPACK_REUSE; fi
             result="$GITHUB_WORKSPACE/bench-data/results/timing/$arm"
             mkdir -p "$result"
-            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node bench-data/scripts/timing.cjs 2>&1 | tee "$result/watch.log"
+            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/timing.cjs 2>&1 | tee "$result/watch.log"
           done
           unset RSPACK_WATCHPACK_REUSE
           node bench-data/scripts/export.cjs
