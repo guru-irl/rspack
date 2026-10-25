@@ -2868,6 +2868,14 @@ export type OptimizationSplitChunksOptions = {
   dedupDepth?: number;
 
   /**
+   * Replay SplitChunks decisions after identity- and graph-preserving edits in development.
+   * Callbacks must depend only on module identity and the chunk graph, not source or size.
+   * Size-based selection decisions persist until topology changes; maxSize uses current sizes.
+   * @default false
+   */
+  experimentalReplay?: boolean;
+
+  /**
    * Options for module cache group
    * */
   cacheGroups?: Record<string, false | OptimizationSplitChunksCacheGroup>;

@@ -5522,6 +5522,7 @@ dependencies = [
  "rustc-hash",
  "smallvec",
  "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]

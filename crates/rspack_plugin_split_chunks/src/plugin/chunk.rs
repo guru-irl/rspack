@@ -125,6 +125,7 @@ impl SplitChunksPlugin {
     module_group: &mut ModuleGroup,
     is_reuse_existing_chunk: &mut bool,
     is_reuse_existing_chunk_with_all_modules: &mut bool,
+    recorder: &mut Option<super::replay::Recorder>,
   ) -> ChunkUkey {
     if let Some(chunk_name) = &module_group.chunk_name {
       if let Some(chunk) = compilation
@@ -135,31 +136,11 @@ impl SplitChunksPlugin {
         *is_reuse_existing_chunk = true;
         *chunk
       } else {
-        let (new_chunk_ukey, created) = Compilation::add_named_chunk(
-          chunk_name.clone(),
-          &mut compilation.build_chunk_graph_artifact.chunk_by_ukey,
-          &mut compilation.build_chunk_graph_artifact.named_chunks,
-        );
-        if created && let Some(mut mutations) = compilation.incremental.mutations_write() {
-          mutations.add(Mutation::ChunkAdd {
-            chunk: new_chunk_ukey,
-          });
+        let chunk = Self::create_split_chunk(Some(chunk_name.clone()), compilation);
+        if let Some(recorder) = recorder {
+          recorder.create(chunk, Some(chunk_name.clone()));
         }
-        let new_chunk = compilation
-          .build_chunk_graph_artifact
-          .chunk_by_ukey
-          .expect_get_mut(&new_chunk_ukey);
-
-        put_split_chunk_reason(
-          new_chunk.chunk_reason_mut(),
-          *is_reuse_existing_chunk_with_all_modules,
-        );
-
-        compilation
-          .build_chunk_graph_artifact
-          .chunk_graph
-          .add_chunk(new_chunk.ukey());
-        new_chunk.ukey()
+        chunk
       }
     } else if module_group.cache_group_reuse_existing_chunk
       && let Some(reusable_chunk) = self.find_the_best_reusable_chunk(compilation, module_group)
@@ -168,29 +149,45 @@ impl SplitChunksPlugin {
       *is_reuse_existing_chunk_with_all_modules = true;
       reusable_chunk
     } else {
-      let new_chunk_ukey =
-        Compilation::add_chunk(&mut compilation.build_chunk_graph_artifact.chunk_by_ukey);
-      if let Some(mut mutations) = compilation.incremental.mutations_write() {
-        mutations.add(Mutation::ChunkAdd {
-          chunk: new_chunk_ukey,
-        });
+      let chunk = Self::create_split_chunk(None, compilation);
+      if let Some(recorder) = recorder {
+        recorder.create(chunk, None);
       }
-      let new_chunk = compilation
-        .build_chunk_graph_artifact
-        .chunk_by_ukey
-        .expect_get_mut(&new_chunk_ukey);
+      chunk
+    }
+  }
 
-      put_split_chunk_reason(
-        new_chunk.chunk_reason_mut(),
-        *is_reuse_existing_chunk_with_all_modules,
+  pub(super) fn create_split_chunk(
+    name: Option<String>,
+    compilation: &mut Compilation,
+  ) -> ChunkUkey {
+    let chunk = if let Some(name) = name {
+      let (chunk, created) = Compilation::add_named_chunk(
+        name,
+        &mut compilation.build_chunk_graph_artifact.chunk_by_ukey,
+        &mut compilation.build_chunk_graph_artifact.named_chunks,
       );
-
+      debug_assert!(created, "recorded creation must allocate a fresh chunk");
+      chunk
+    } else {
+      Compilation::add_chunk(&mut compilation.build_chunk_graph_artifact.chunk_by_ukey)
+    };
+    if let Some(mut mutations) = compilation.incremental.mutations_write() {
+      mutations.add(Mutation::ChunkAdd { chunk });
+    }
+    put_split_chunk_reason(
       compilation
         .build_chunk_graph_artifact
-        .chunk_graph
-        .add_chunk(new_chunk.ukey());
-      new_chunk.ukey()
-    }
+        .chunk_by_ukey
+        .expect_get_mut(&chunk)
+        .chunk_reason_mut(),
+      false,
+    );
+    compilation
+      .build_chunk_graph_artifact
+      .chunk_graph
+      .add_chunk(chunk);
+    chunk
   }
 
   /// Returns the selected source chunks for modules that can move into `new_chunk`.
@@ -305,7 +302,6 @@ impl SplitChunksPlugin {
   // #[tracing::instrument(skip_all)]
   pub(crate) fn split_from_original_chunks(
     &self,
-    _item: &ModuleGroup,
     original_chunks: &FxHashSet<ChunkUkey>,
     new_chunk: ChunkUkey,
     compilation: &mut Compilation,

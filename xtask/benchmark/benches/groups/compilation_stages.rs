@@ -1997,6 +1997,7 @@ fn create_split_chunks_plugin(min_size: f64, dedup_depth: u32) -> SplitChunksPlu
   let js_zero_sizes = SplitChunkSizes::with_initial_value(&[SourceType::JavaScript], 0.0);
 
   SplitChunksPlugin::new(PluginOptions {
+    experimental_replay: false,
     dedup_depth,
     cache_groups: vec![CacheGroup {
       key: "shared-modules".to_string(),
