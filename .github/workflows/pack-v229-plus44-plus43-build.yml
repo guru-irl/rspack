@@ -9,7 +9,7 @@ on:
       mode:
         description: Validation phase
         type: choice
-        options: [full, red]
+        options: [full, red, probe]
         default: full
 permissions:
   contents: read
@@ -97,6 +97,16 @@ jobs:
           test "$rc" -ne 0
           grep -F 'watchpack-reuse/options-identity' bench-data/results/red.log
           cp rspack-test-event-report.txt bench-data/results/red.events
+      - name: Trace paused changes and manual invalidation
+        if: inputs.mode == 'probe'
+        run: |
+          set -euo pipefail
+          export NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs"
+          rc=0
+          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse/unchanged-dependencies' --retry 0 2>&1 | tee bench-data/results/skip-red.log || rc=${PIPESTATUS[0]}
+          test "$rc" -ne 0
+          python3 bench-data/scripts/probe.py
+          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse/manual-invalidate' --retry 0 2>&1 | tee bench-data/results/probe.log
       - name: Run compiler cases and prove both regressions
         if: inputs.mode == 'full'
         run: |
