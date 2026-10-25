@@ -25,11 +25,18 @@ function watchCase(name, description, run) {
       dep = path.join(root, "dep.js");
       fs.writeFileSync(entry, "module.exports = 1;\n");
       fs.writeFileSync(dep, "module.exports = 2;\n");
-      return { entry, experiments: { nativeWatcher: false } };
+      return { entry, experiments: { nativeWatcher: false }, infrastructureLogging: { level: "none", debug: false } };
     },
     async build(context, compiler) {
       const WatchFileSystem = compiler.watchFileSystem.constructor;
-      compiler.watchFileSystem = new WatchFileSystem(compiler.inputFileSystem, { reuse: true });
+      const logs = [];
+      compiler.hooks.infrastructureLog.tap("WatchpackReuseTest", (name, type, args) => {
+        if (name === "rspack.NodeWatchFileSystem" && type === "debug") logs.push(args.join(" "));
+      });
+      compiler.watchFileSystem = new WatchFileSystem(compiler.inputFileSystem, {
+        reuse: true,
+        logger: compiler.getInfrastructureLogger("rspack.NodeWatchFileSystem")
+      });
       const builds = [];
       let failure;
       let watching;
@@ -54,7 +61,7 @@ function watchCase(name, description, run) {
         start();
         await wait(1);
         expect(builds[0].hasErrors()).toBe(false);
-        await run({ compiler, entry, dep, builds, wait, quiet, start, get watching() { return watching; } });
+        await run({ compiler, entry, dep, builds, logs, wait, quiet, start, get watching() { return watching; } });
       } finally {
         if (watching && !watching.closed) await close(watching);
         fs.rmSync(root, { recursive: true, force: true });
@@ -72,6 +79,36 @@ export default [
     expect(first.listenerCount("change")).toBe(2);
     expect(first.listenerCount("aggregated")).toBe(2);
     await quiet(2);
+  }),
+  watchCase("unchanged-dependencies", "should skip unchanged sets and watch new imports after skipped re-arms", async ({ compiler, entry, dep, logs, wait, quiet }) => {
+    const watcher = compiler.watchFileSystem.watcher;
+    const watch = watcher.watch;
+    let calls = 0;
+    watcher.watch = function(...args) {
+      calls++;
+      return watch.apply(this, args);
+    };
+    fs.writeFileSync(entry, "module.exports = 10;\n");
+    await wait(2);
+    expect(calls).toBe(0);
+    fs.writeFileSync(entry, "module.exports = 11;\n");
+    await wait(3);
+    await quiet(3);
+    expect(calls).toBe(0);
+    fs.writeFileSync(entry, 'module.exports = require("./dep.js");\n');
+    await wait(4);
+    expect(calls).toBe(1);
+    fs.writeFileSync(dep, "module.exports = 12;\n");
+    await wait(5);
+    await quiet(5);
+    expect(calls).toBe(1);
+    expect(logs).toEqual([
+      "reuse: new instance",
+      "reuse: skipped (sets unchanged)",
+      "reuse: skipped (sets unchanged)",
+      "reuse: diffed",
+      "reuse: skipped (sets unchanged)"
+    ]);
   }),
   watchCase("held-build", "should flush an edit made during a held rebuild exactly once", async ({ compiler, entry, watching, wait, quiet }) => {
     let release;
