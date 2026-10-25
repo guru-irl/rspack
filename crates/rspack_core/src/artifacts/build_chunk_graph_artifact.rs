@@ -93,6 +93,9 @@ impl BuildChunkGraphArtifact {
     }
 
     let stable_absence = *CODE_SPLITTING_CACHE_STABLE_ABSENCE;
+    let stable_absence_allowed = stable_absence
+      && !this_compilation.options.optimization.side_effects.is_true()
+      && !this_compilation.options.optimization.used_exports.is_enable();
     let rebuilt: IdentifierSet = if *CODE_SPLITTING_CACHE_DEBUG || stable_absence {
       mutations
         .iter()
@@ -115,11 +118,13 @@ impl BuildChunkGraphArtifact {
         match self.code_splitter.can_reuse_affected_module::<true>(
           *module,
           this_compilation,
-          stable_absence && !rebuilt.contains(module),
+          stable_absence_allowed && !rebuilt.contains(module),
         ) {
           Ok(true) => {
             absent_accepted += 1;
-            logger.log(format!("debug: module={module}, accepted: stable absence"));
+            if absent_accepted <= 30 {
+              logger.log(format!("debug: module={module}, accepted: stable absence"));
+            }
           }
           Ok(false) => {}
           Err(reason) => {
@@ -158,7 +163,7 @@ impl BuildChunkGraphArtifact {
         .can_reuse_affected_module::<false>(
           module,
           this_compilation,
-          stable_absence && !rebuilt.contains(&module),
+          stable_absence_allowed && !rebuilt.contains(&module),
         )
         .is_err()
       {

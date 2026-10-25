@@ -678,10 +678,11 @@ impl CodeSplitter {
           .get_number_of_module_chunks(module)
           == 0
       {
-        // This module was unreachable and was not rebuilt, so its own analysis
-        // is unchanged. It can enter a chunk only if a reachable module changes
-        // its connection to it; reachable affected modules still get the full
-        // check. Modules previously in a chunk are never covered by this rule.
+        // With sideEffects in flag/disabled mode and usedExports disabled,
+        // side-effect state is local to the module and usage cannot flip edges.
+        // An unreachable module that was not rebuilt can become reachable only
+        // through an edge change on a module in the affected set, whose full
+        // check compares that edge. Previously chunked modules never qualify.
         return Ok(true);
       }
       reject!(
