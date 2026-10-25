@@ -50,8 +50,6 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     directories: Set<string>;
     missing: Set<string>;
   };
-  #changeHandler?: (fileName: string, changeTime: number) => void;
-  #aggregatedHandler?: (changes: Set<string>, removals: Set<string>) => void;
 
   constructor(
     inputFileSystem: InputFileSystem,
@@ -114,31 +112,25 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     this.#watchOptions = options;
 
     if (reused && oldWatcher) {
-      if (this.#changeHandler) {
-        oldWatcher.removeListener('change', this.#changeHandler);
-      }
-      if (this.#aggregatedHandler) {
-        oldWatcher.removeListener('aggregated', this.#aggregatedHandler);
-      }
+      // Plugins attach listeners after watch(). Drop the previous cycle's
+      // listeners just as replacing the instance would.
+      watcher.removeAllListeners('change');
+      watcher.removeAllListeners('remove');
+      watcher.removeAllListeners('aggregated');
     }
-    this.#changeHandler = callbackUndelayed;
     if (callbackUndelayed) {
-      // Keep the undelayed callback ahead of the forwarding listener on reuse.
-      watcher.prependOnceListener('change', callbackUndelayed);
+      watcher.once('change', callbackUndelayed);
     }
 
-    if (!reused) {
-      // Register forwarding listeners once per instance, not once per cycle.
-      watcher.on('change', (filename, mtime) => {
-        this.#events.emit('change', filename, mtime);
-      });
-      watcher.on('remove', (filename) => {
-        this.#events.emit('remove', filename);
-      });
-      watcher.on('aggregated', (changes, removals) => {
-        this.#events.emit('aggregated', changes, removals);
-      });
-    }
+    watcher.on('change', (filename, mtime) => {
+      this.#events.emit('change', filename, mtime);
+    });
+    watcher.on('remove', (filename) => {
+      this.#events.emit('remove', filename);
+    });
+    watcher.on('aggregated', (changes, removals) => {
+      this.#events.emit('aggregated', changes, removals);
+    });
 
     const fetchTimeInfo = () => {
       const fileTimeInfoEntries = new Map();
@@ -149,7 +141,7 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
       );
       return { fileTimeInfoEntries, contextTimeInfoEntries };
     };
-    this.#aggregatedHandler = (changes, removals) => {
+    watcher.once('aggregated', (changes, removals) => {
       // pause emitting events (avoids clearing aggregated changes and removals on timeout)
       this.watcher?.pause();
 
@@ -176,8 +168,7 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
         changes,
         removals,
       );
-    };
-    watcher.once('aggregated', this.#aggregatedHandler);
+    });
 
     const previous = this.#watchInputs;
     const unchanged =
@@ -189,6 +180,9 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
       files instanceof Set &&
       directories instanceof Set &&
       missing instanceof Set &&
+      files !== previous.files &&
+      directories !== previous.directories &&
+      missing !== previous.missing &&
       sameSet(files, previous.files) &&
       sameSet(directories, previous.directories) &&
       sameSet(missing, previous.missing);
@@ -215,20 +209,114 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     if (reused) {
       const { aggregatedChanges, aggregatedRemovals } = watcher;
       if (aggregatedChanges.size || aggregatedRemovals.size) {
-        // Paused events are already recorded. Forward them without recording
-        // them again. Watchpack retains no event mtime, so approximate it now.
-        const mtime = Date.now();
-        for (const file of aggregatedChanges) {
-          watcher.emit('change', file, mtime, 'change');
+        const pendingChanges = new Map<string, number>();
+        const pendingRemovals = new Set<string>();
+        const fileTimes: Watchpack.TimeInfoEntries = new Map();
+        const directoryTimes: Watchpack.TimeInfoEntries = new Map();
+        const collected = new Set<Watchpack.DirectoryWatcher>();
+        const record = (
+          item: string,
+          watchedPath: string,
+          directoryWatcher: Watchpack.DirectoryWatcher,
+          directory: boolean,
+        ) => {
+          if (aggregatedRemovals.has(item)) pendingRemovals.add(item);
+          if (!aggregatedChanges.has(item)) return;
+          if (!collected.has(directoryWatcher)) {
+            // Collecting fixes cached timestamp accuracy, as watch() does on
+            // attach. Only visit directories containing pending paths.
+            directoryWatcher.collectTimeInfoEntries(fileTimes, directoryTimes);
+            collected.add(directoryWatcher);
+          }
+          const entry = (directory ? directoryTimes : fileTimes).get(
+            watchedPath,
+          );
+          if (entry && 'safeTime' in entry && entry.safeTime >= startTime) {
+            pendingChanges.set(
+              item,
+              Math.max(pendingChanges.get(item) ?? 0, entry.safeTime),
+            );
+          }
+        };
+        if (watcher.watcherOptions.followSymlinks) {
+          // A watched item can map to several symlink targets. Match the
+          // recorded time of each target that a fresh attach would inspect.
+          for (const [watchedPath, fileWatcher] of watcher.fileWatchers) {
+            for (const item of fileWatcher.files) {
+              record(
+                item,
+                watchedPath,
+                fileWatcher.watcher.directoryWatcher,
+                false,
+              );
+            }
+          }
+          for (const [
+            watchedPath,
+            directoryWatcher,
+          ] of watcher.directoryWatchers) {
+            for (const item of directoryWatcher.directories) {
+              record(
+                item,
+                watchedPath,
+                directoryWatcher.watcher.directoryWatcher,
+                true,
+              );
+            }
+          }
+        } else {
+          for (const paths of [aggregatedChanges, aggregatedRemovals]) {
+            for (const item of paths) {
+              const fileWatcher = watcher.fileWatchers.get(item);
+              if (fileWatcher) {
+                record(item, item, fileWatcher.watcher.directoryWatcher, false);
+              }
+              const directoryWatcher = watcher.directoryWatchers.get(item);
+              if (directoryWatcher) {
+                record(
+                  item,
+                  item,
+                  directoryWatcher.watcher.directoryWatcher,
+                  true,
+                );
+              }
+            }
+          }
         }
-        for (const file of aggregatedRemovals) {
-          watcher.emit('remove', file, 'rename');
+        for (const item of aggregatedChanges) {
+          if (!pendingChanges.has(item)) aggregatedChanges.delete(item);
         }
-        clearTimeout(watcher.aggregateTimer);
-        watcher.aggregateTimer = setTimeout(
-          watcher._onTimeout,
-          watcher.aggregateTimeout,
-        );
+        for (const item of aggregatedRemovals) {
+          if (!pendingRemovals.has(item)) aggregatedRemovals.delete(item);
+        }
+        if (pendingChanges.size || pendingRemovals.size) {
+          // Fresh watchers report outdated paths on the next tick. Let the
+          // caller store its handle and plugins attach this cycle's listeners.
+          process.nextTick(() => {
+            if (this.watcher !== watcher || watcher.paused) return;
+            for (const [file, mtime] of pendingChanges) {
+              if (!watcher.aggregatedChanges.has(file)) continue;
+              watcher.emit('change', file, mtime, 'change');
+              if (this.watcher !== watcher || watcher.paused) return;
+            }
+            // Unlike a fresh attach, preserve relevant deletions during a build.
+            for (const file of pendingRemovals) {
+              if (!watcher.aggregatedRemovals.has(file)) continue;
+              watcher.emit('remove', file, 'rename');
+              if (this.watcher !== watcher || watcher.paused) return;
+            }
+            if (
+              watcher.aggregatedChanges.size ||
+              watcher.aggregatedRemovals.size
+            ) {
+              clearTimeout(watcher.aggregateTimer);
+              watcher.aggregateTimer = setTimeout(
+                watcher._onTimeout,
+                watcher.aggregateTimeout,
+              );
+            }
+          });
+        }
       }
     }
 
@@ -243,8 +331,6 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
         }
         this.#watchOptions = undefined;
         this.#watchInputs = undefined;
-        this.#changeHandler = undefined;
-        this.#aggregatedHandler = undefined;
       },
       pause: () => {
         if (this.watcher) {
@@ -297,8 +383,8 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
         const removals = this.watcher?.aggregatedRemovals ?? new Set();
         const changes = this.watcher?.aggregatedChanges ?? new Set();
         if (this.#reuse && this.watcher?.paused) {
-          // Watching consumes these events in the starting build. Later paused
-          // events belong to the next cycle, not to the returned sets.
+          // Any paused caller takes ownership of these events. Watching merges
+          // them into its starting build; later events belong to the next cycle.
           this.watcher.aggregatedChanges = new Set();
           this.watcher.aggregatedRemovals = new Set();
         }
