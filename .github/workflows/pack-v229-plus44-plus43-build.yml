@@ -9,7 +9,7 @@ on:
       mode:
         description: Validation phase
         type: choice
-        options: [full, red, probe]
+        options: [full, red, probe, review-red]
         default: full
 permissions:
   contents: read
@@ -107,6 +107,24 @@ jobs:
           test "$rc" -ne 0
           python3 bench-data/scripts/probe.py
           pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse/manual-invalidate' --retry 0 2>&1 | tee bench-data/results/probe.log
+      - name: Prove all four review regressions
+        if: inputs.mode == 'review-red'
+        run: |
+          set -euo pipefail
+          export NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs"
+          rc=0
+          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse/(same-options|reentrant-invalidate|synthetic-paused|mutable-sets)' --retry 0 2>&1 | tee bench-data/results/review-red.log || rc=${PIPESTATUS[0]}
+          test "$rc" -ne 0
+          cp rspack-test-event-report.txt bench-data/results/review-red.events
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('bench-data/results/review-red.events').read_text()
+          assert 'TEST_RUN_END' in s
+          failed=[line.split(' | ')[0] for line in s.splitlines() if ' | TEST_END | ' in line and ' | fail | ' in line]
+          assert len(set(failed)) == 4, failed
+          for name in ['same-options', 'reentrant-invalidate', 'synthetic-paused', 'mutable-sets']:
+              assert any('/'+name+':' in line for line in failed), (name, failed)
+          PY
       - name: Run compiler cases and prove both regressions
         if: inputs.mode == 'full'
         run: |
