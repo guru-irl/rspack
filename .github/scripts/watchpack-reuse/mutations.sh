@@ -19,7 +19,7 @@ def replace(old, new):
     assert s.count(old) == 1, (mutation, old, s.count(old))
     s = s.replace(old, new)
 if mutation == 'flush':
-    replace('if (reused) {', 'if (false) {')
+    replace('if (reused) {', 'if (reused && Boolean(0)) {')
 elif mutation == 'ownership':
     for field, value in [('aggregatedChanges', 'changes'), ('aggregatedRemovals', 'removals')]:
         replace(f'this.watcher.{field} = new Set();', f'this.watcher.{field} = {value};')
