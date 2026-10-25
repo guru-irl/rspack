@@ -195,10 +195,20 @@ export default [
   }),
   watchCase("manual-invalidate", "should consume paused changes on manual invalidate without replay", async ({ compiler, entry, watching, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
+    let transferred;
+    const getInfo = watching.watcher.getInfo;
+    watching.watcher.getInfo = () => {
+      transferred = getInfo();
+      return transferred;
+    };
     watcher.pause();
     fs.writeFileSync(entry, "module.exports = 5;\n");
     await until(() => watcher.aggregatedChanges.has(entry));
     watching.invalidate();
+    expect(transferred.changes.has(entry)).toBe(true);
+    const later = path.join(path.dirname(entry), "later-event.js");
+    expect(compiler.watchFileSystem.emit("change", later, Date.now())).toBe(true);
+    expect(transferred.changes.has(later)).toBe(false);
     await wait(2);
     expect(compiler.modifiedFiles.has(entry)).toBe(true);
     await quiet(2);
