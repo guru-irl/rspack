@@ -47,9 +47,12 @@ const watchFileSystem = compiler.watchFileSystem;
 const watch = watchFileSystem.watch;
 watchFileSystem.watch = function(...args) {
   const before = this.watcher;
+  const cpu = process.cpuUsage();
   const start = performance.now();
   const handle = watch.apply(this, args);
-  rearms.push({ cycle: rearms.length, milliseconds: performance.now() - start, reused: Boolean(before && this.watcher === before), files: this.watcher.fileWatchers.size, directories: this.watcher.directoryWatchers.size });
+  const milliseconds = performance.now() - start;
+  const used = process.cpuUsage(cpu);
+  rearms.push({ cycle: rearms.length, milliseconds, cpuUserMs: used.user / 1000, cpuSystemMs: used.system / 1000, reused: Boolean(before && this.watcher === before), files: this.watcher.fileWatchers.size, directories: this.watcher.directoryWatchers.size });
   return handle;
 };
 const manifests = [];

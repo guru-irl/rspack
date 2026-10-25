@@ -13,10 +13,16 @@ import os
 from pathlib import Path
 p = Path('packages/rspack/src/node/NodeWatchFileSystem.ts')
 s = p.read_text()
-old = 'if (reused) {' if os.environ['MUTATION'] == 'flush' else 'if (this.#reuse && this.watcher?.paused) {'
-# The reuse branch uses a different condition than the flush branch.
-assert s.count(old) == 1, (old, s.count(old))
-p.write_text(s.replace(old, 'if (false) {'))
+if os.environ['MUTATION'] == 'flush':
+    old = 'if (reused) {'
+    assert s.count(old) == 1, (old, s.count(old))
+    s = s.replace(old, 'if (false) {')
+else:
+    for field, value in [('aggregatedChanges', 'changes'), ('aggregatedRemovals', 'removals')]:
+        old = f'this.watcher.{field} = new Set();'
+        assert s.count(old) == 1, (old, s.count(old))
+        s = s.replace(old, f'this.watcher.{field} = {value};')
+p.write_text(s)
 PY
   pnpm --filter @rspack/core build > "bench-data/results/mutant-$mutation-build.log" 2>&1
   if [[ "$mutation" == flush ]]; then filter='watchpack-reuse/held-build'; else filter='watchpack-reuse/manual-invalidate'; fi
