@@ -9,7 +9,7 @@ on:
       mode:
         description: Validation phase
         type: choice
-        options: [full, red, probe, review-red]
+        options: [full, red, probe, review-red, directory-red]
         default: full
 permissions:
   contents: read
@@ -126,6 +126,22 @@ jobs:
           assert len(set(failed)) == 4, failed
           for name in ['same-options', 'reentrant-invalidate', 'synthetic-paused', 'mutable-sets']:
               assert any('/'+name+':' in line for line in failed), (name, failed)
+          PY
+      - name: Prove the nested directory regression
+        if: inputs.mode == 'directory-red'
+        run: |
+          set -euo pipefail
+          export NODE_OPTIONS="--require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs"
+          rc=0
+          pnpm --dir tests/rspack-test run test --project base Compiler.test.mjs -t 'watchpack-reuse/nested-directory' --retry 0 2>&1 | tee bench-data/results/directory-red.log || rc=${PIPESTATUS[0]}
+          test "$rc" -ne 0
+          cp rspack-test-event-report.txt bench-data/results/directory-red.events
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('bench-data/results/directory-red.events').read_text()
+          assert 'TEST_RUN_END' in s
+          failed=[line for line in s.splitlines() if ' | TEST_END | ' in line and ' | fail | ' in line]
+          assert len(failed) == 1 and 'nested-directory' in failed[0], failed
           PY
       - name: Run compiler cases and prove both regressions
         if: inputs.mode == 'full'
