@@ -228,13 +228,21 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
             directoryWatcher.collectTimeInfoEntries(fileTimes, directoryTimes);
             collected.add(directoryWatcher);
           }
-          const entry = (directory ? directoryTimes : fileTimes).get(
-            watchedPath,
-          );
-          if (entry && 'safeTime' in entry && entry.safeTime >= startTime) {
+          let safeTime = 0;
+          if (directory) {
+            // A fresh directory attach ignores times in nested directories.
+            safeTime = directoryWatcher.lastWatchEvent;
+            for (const entry of directoryWatcher.files.values()) {
+              safeTime = Math.max(safeTime, entry.safeTime);
+            }
+          } else {
+            const entry = fileTimes.get(watchedPath);
+            if (entry && 'safeTime' in entry) safeTime = entry.safeTime;
+          }
+          if (safeTime && safeTime >= startTime) {
             pendingChanges.set(
               item,
-              Math.max(pendingChanges.get(item) ?? 0, entry.safeTime),
+              Math.max(pendingChanges.get(item) ?? 0, safeTime),
             );
           }
         };
