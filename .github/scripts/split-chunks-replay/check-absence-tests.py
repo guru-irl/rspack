@@ -31,6 +31,11 @@ if arm in ('watch-normal', 'watch-forced'):
     assert rc == 1
 elif arm == 'case-on':
     assert rc == 0 and not failures and totals.get('passed', 0) == 4, totals
+elif arm == 'case-side-effects-red':
+    failed_tests = [name for name, state in tests.items() if state == 'fail']
+    assert rc == 1 and len(failed_tests) == 1, failed_tests
+    assert 'stable-absence-side-effects' in failed_tests[0] and 'should compile step 1' in failed_tests[0], failed_tests
+    assert 'zRan' in log and 'expected undefined to be true' in log, log
 elif arm == 'case-off':
     failed_tests = [name for name, state in tests.items() if state == 'fail']
     assert rc == 1 and len(failed_tests) == 1, failed_tests
