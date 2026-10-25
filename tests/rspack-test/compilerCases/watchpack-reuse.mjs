@@ -77,12 +77,22 @@ function watchCase(name, description, run) {
 export default [
   watchCase("same-options", "should reuse the same options and replace cycle handlers", async ({ compiler, entry, wait, quiet }) => {
     const first = compiler.watchFileSystem.watcher;
-    fs.writeFileSync(entry, "module.exports = 3;\n");
-    await wait(2);
-    expect(compiler.watchFileSystem.watcher).toBe(first);
-    expect(first.listenerCount("change")).toBe(2);
-    expect(first.listenerCount("aggregated")).toBe(2);
-    await quiet(2);
+    const watch = compiler.watchFileSystem.watch.bind(compiler.watchFileSystem);
+    compiler.watchFileSystem.watch = (...args) => {
+      const handle = watch(...args);
+      compiler.watchFileSystem.watcher.on("change", () => {});
+      compiler.watchFileSystem.watcher.on("remove", () => {});
+      return handle;
+    };
+    for (let cycle = 1; cycle <= 12; cycle++) {
+      fs.writeFileSync(entry, `module.exports = ${cycle + 2};\n`);
+      await wait(cycle + 1);
+      expect(compiler.watchFileSystem.watcher).toBe(first);
+      expect(first.listenerCount("change")).toBeLessThanOrEqual(3);
+      expect(first.listenerCount("remove")).toBeLessThanOrEqual(2);
+      expect(first.listenerCount("aggregated")).toBe(2);
+    }
+    await quiet(13);
   }),
   watchCase("unchanged-dependencies", "should skip unchanged sets and watch new imports after skipped re-arms", async ({ compiler, entry, dep, logs, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
@@ -133,6 +143,56 @@ export default [
     await wait(3);
     await quiet(3);
   }),
+  watchCase("reentrant-invalidate", "should include a paused change when an invalid tap invalidates again", async ({ compiler, entry, watching, wait, quiet }) => {
+    let release;
+    let held = false;
+    let reenter = false;
+    const modified = [];
+    compiler.hooks.watchRun.tap("WatchpackReentrantTest", () => modified.push(new Set(compiler.modifiedFiles)));
+    compiler.hooks.invalid.tap("WatchpackReentrantTest", () => {
+      if (reenter) {
+        reenter = false;
+        watching.invalidate();
+      }
+    });
+    compiler.hooks.make.tapPromise("WatchpackReentrantTest", async () => {
+      if (held) return;
+      held = true;
+      await new Promise(resolve => { release = resolve; });
+    });
+    watching.invalidate();
+    await until(() => release);
+    try {
+      fs.writeFileSync(entry, "module.exports = 20;\n");
+      await until(() => compiler.watchFileSystem.watcher.aggregatedChanges.has(entry));
+      reenter = true;
+    } finally {
+      release();
+    }
+    await wait(3);
+    await quiet(3);
+    expect(modified[1].has(entry)).toBe(true);
+  }),
+  watchCase("synthetic-paused", "should not replay a synthetic file-watcher event during a held build", async ({ compiler, entry, watching, wait, quiet }) => {
+    let release;
+    let held = false;
+    compiler.hooks.make.tapPromise("WatchpackSyntheticTest", async () => {
+      if (held) return;
+      held = true;
+      await new Promise(resolve => { release = resolve; });
+    });
+    watching.invalidate();
+    await until(() => release);
+    try {
+      const watcher = compiler.watchFileSystem.watcher;
+      watcher.fileWatchers.get(entry).watcher.emit("change", Date.now(), "change");
+      expect(watcher.aggregatedChanges.has(entry)).toBe(true);
+    } finally {
+      release();
+    }
+    await wait(2);
+    await quiet(2);
+  }),
   watchCase("manual-invalidate", "should consume paused changes on manual invalidate without replay", async ({ compiler, entry, watching, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
     watcher.pause();
@@ -172,6 +232,36 @@ export default [
     await state.wait(3);
     await state.quiet(3);
   }),
+  {
+    name: "mutable-sets",
+    description: "should diff when the caller mutates and reuses the same Set",
+    options() {
+      return { experiments: { nativeWatcher: false } };
+    },
+    build(context, compiler) {
+      const WatchFileSystem = compiler.watchFileSystem.constructor;
+      const fs = new WatchFileSystem(compiler.inputFileSystem, { reuse: true });
+      const files = new Set();
+      const directories = new Set();
+      const missing = new Set();
+      const options = { aggregateTimeout: 30 };
+      const arm = () => fs.watch(files, directories, missing, Date.now(), options, () => {}, () => {});
+      const handle = arm();
+      try {
+        const watcher = fs.watcher;
+        const watch = watcher.watch;
+        let calls = 0;
+        watcher.watch = function(...args) { calls++; return watch.apply(this, args); };
+        const file = path.join(compiler.context, "a.js");
+        files.add(file);
+        arm();
+        expect(calls).toBe(1);
+        expect(watcher.fileWatchers.has(file)).toBe(true);
+      } finally {
+        handle.close();
+      }
+    }
+  },
   {
     name: "options-identity",
     description: "should replace the instance when options identity changes and honor explicit opt-out",
