@@ -29,13 +29,20 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
   inputFileSystem: InputFileSystem;
   watcherOptions: Watchpack.WatchOptions;
   watcher?: WatchpackInstance;
-  // Long-lived emitter backing the `on`/`once` API. `watch()` replaces
-  // `this.watcher` with a fresh Watchpack each cycle, so listeners must live
-  // here (and be fed from each new watcher) to survive across cycles.
+  // Long-lived emitter backing the `on`/`once` API, so listeners survive
+  // replacement of the Watchpack instance.
   #events = new EventEmitter();
+  #reuse: boolean;
+  #watchOptions?: Watchpack.WatchOptions;
+  #changeHandler?: (fileName: string, changeTime: number) => void;
+  #aggregatedHandler?: (changes: Set<string>, removals: Set<string>) => void;
 
-  constructor(inputFileSystem: InputFileSystem) {
+  constructor(
+    inputFileSystem: InputFileSystem,
+    options: { reuse?: boolean } = {},
+  ) {
     this.inputFileSystem = inputFileSystem;
+    this.#reuse = options.reuse ?? process.env.RSPACK_WATCHPACK_REUSE === '1';
     this.watcherOptions = {
       aggregateTimeout: 0,
     };
@@ -79,24 +86,41 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     }
 
     const oldWatcher = this.watcher;
+    const reused =
+      this.#reuse && !!oldWatcher && this.#watchOptions === options;
     const Watchpack = require('watchpack');
-    this.watcher = new Watchpack(options);
+    const watcher: WatchpackInstance = reused
+      ? oldWatcher!
+      : new Watchpack(options);
+    this.watcher = watcher;
+    this.#watchOptions = options;
 
+    if (reused && oldWatcher) {
+      if (this.#changeHandler) {
+        oldWatcher.removeListener('change', this.#changeHandler);
+      }
+      if (this.#aggregatedHandler) {
+        oldWatcher.removeListener('aggregated', this.#aggregatedHandler);
+      }
+    }
+    this.#changeHandler = callbackUndelayed;
     if (callbackUndelayed) {
-      this.watcher?.once('change', callbackUndelayed);
+      // Keep the undelayed callback ahead of the forwarding listener on reuse.
+      watcher.prependOnceListener('change', callbackUndelayed);
     }
 
-    // Forward this cycle's watchpack events to the long-lived emitter so
-    // `on`/`once` listeners keep working after the watcher is replaced.
-    this.watcher?.on('change', (filename, mtime) => {
-      this.#events.emit('change', filename, mtime);
-    });
-    this.watcher?.on('remove', (filename) => {
-      this.#events.emit('remove', filename);
-    });
-    this.watcher?.on('aggregated', (changes, removals) => {
-      this.#events.emit('aggregated', changes, removals);
-    });
+    if (!reused) {
+      // Register forwarding listeners once per instance, not once per cycle.
+      watcher.on('change', (filename, mtime) => {
+        this.#events.emit('change', filename, mtime);
+      });
+      watcher.on('remove', (filename) => {
+        this.#events.emit('remove', filename);
+      });
+      watcher.on('aggregated', (changes, removals) => {
+        this.#events.emit('aggregated', changes, removals);
+      });
+    }
 
     const fetchTimeInfo = () => {
       const fileTimeInfoEntries = new Map();
@@ -107,7 +131,7 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
       );
       return { fileTimeInfoEntries, contextTimeInfoEntries };
     };
-    this.watcher?.once('aggregated', (changes, removals) => {
+    this.#aggregatedHandler = (changes, removals) => {
       // pause emitting events (avoids clearing aggregated changes and removals on timeout)
       this.watcher?.pause();
 
@@ -134,11 +158,32 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
         changes,
         removals,
       );
-    });
+    };
+    watcher.once('aggregated', this.#aggregatedHandler);
 
-    this.watcher?.watch({ files, directories, missing, startTime });
+    watcher.watch({ files, directories, missing, startTime });
 
-    if (oldWatcher) {
+    if (reused) {
+      const { aggregatedChanges, aggregatedRemovals } = watcher;
+      if (aggregatedChanges.size || aggregatedRemovals.size) {
+        // Paused events are already recorded. Forward them without recording
+        // them again. Watchpack retains no event mtime, so approximate it now.
+        const mtime = Date.now();
+        for (const file of aggregatedChanges) {
+          watcher.emit('change', file, mtime, 'change');
+        }
+        for (const file of aggregatedRemovals) {
+          watcher.emit('remove', file, 'rename');
+        }
+        clearTimeout(watcher.aggregateTimer);
+        watcher.aggregateTimer = setTimeout(
+          watcher._onTimeout,
+          watcher.aggregateTimeout,
+        );
+      }
+    }
+
+    if (oldWatcher && !reused) {
       oldWatcher.close();
     }
     return {
@@ -147,6 +192,9 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
           this.watcher.close();
           this.watcher = null as any;
         }
+        this.#watchOptions = undefined;
+        this.#changeHandler = undefined;
+        this.#aggregatedHandler = undefined;
       },
       pause: () => {
         if (this.watcher) {
@@ -198,6 +246,12 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
       getInfo: () => {
         const removals = this.watcher?.aggregatedRemovals ?? new Set();
         const changes = this.watcher?.aggregatedChanges ?? new Set();
+        if (this.#reuse && this.watcher?.paused) {
+          // Watching consumes these events in the starting build. Later paused
+          // events belong to the next cycle, not to the returned sets.
+          this.watcher.aggregatedChanges = new Set();
+          this.watcher.aggregatedRemovals = new Set();
+        }
         if (this.inputFileSystem?.purge) {
           const fs = this.inputFileSystem;
           if (removals) {
