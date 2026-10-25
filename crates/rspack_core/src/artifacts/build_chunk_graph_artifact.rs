@@ -95,7 +95,11 @@ impl BuildChunkGraphArtifact {
     let stable_absence = *CODE_SPLITTING_CACHE_STABLE_ABSENCE;
     let stable_absence_allowed = stable_absence
       && !this_compilation.options.optimization.side_effects.is_true()
-      && !this_compilation.options.optimization.used_exports.is_enable();
+      && !this_compilation
+        .options
+        .optimization
+        .used_exports
+        .is_enable();
     let rebuilt: IdentifierSet = if *CODE_SPLITTING_CACHE_DEBUG || stable_absence {
       mutations
         .iter()
