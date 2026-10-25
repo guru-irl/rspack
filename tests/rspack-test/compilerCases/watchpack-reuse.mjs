@@ -13,19 +13,21 @@ const until = async predicate => {
 const close = watching => new Promise((resolve, reject) => watching.close(error => error ? reject(error) : resolve()));
 
 function watchCase(name, description, run) {
+  let root;
+  let entry;
+  let dep;
   return {
     name,
     description,
     options() {
-      return { experiments: { nativeWatcher: false } };
-    },
-    async build(context, compiler) {
-      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rspack-watchpack-reuse-")));
-      const entry = path.join(root, "entry.js");
-      const dep = path.join(root, "dep.js");
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rspack-watchpack-reuse-")));
+      entry = path.join(root, "entry.js");
+      dep = path.join(root, "dep.js");
       fs.writeFileSync(entry, "module.exports = 1;\n");
       fs.writeFileSync(dep, "module.exports = 2;\n");
-      compiler.options.entry.main.import = [entry];
+      return { entry, experiments: { nativeWatcher: false } };
+    },
+    async build(context, compiler) {
       const WatchFileSystem = compiler.watchFileSystem.constructor;
       compiler.watchFileSystem = new WatchFileSystem(compiler.inputFileSystem, { reuse: true });
       const builds = [];
