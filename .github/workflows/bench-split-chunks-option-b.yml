@@ -1,62 +1,15 @@
-name: SplitChunks Option B measurements
+name: SplitChunks callback same-binding control
 on:
   push:
-    branches: [bench/split-chunks-type-layer-main]
-    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
+    branches: [bench/split-chunks-type-layer-main-aa]
+    paths: ['.github/workflows/bench-split-chunks-option-b.yml']
 permissions:
   contents: read
   actions: read
-concurrency:
-  group: split-chunks-type-layer-main-measurements
-  cancel-in-progress: false
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: main, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr1, ref: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: main, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr1, ref: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: main, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr1, ref: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-      - name: Build exact production release source
-        shell: bash
-        env:
-          SOURCE_REF: ${{ matrix.ref }}
-          RUST_TARGET: ${{ matrix.target }}
-        run: bash scripts/split-chunks-option-b-bench/build.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: optb-binding-${{ matrix.platform }}-${{ matrix.label }}
-          path: .bench-split-chunks-option-b/artifact/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
   measure:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-24.04 }
-          - { platform: macOS, runner: macos-15 }
-          - { platform: Windows, runner: windows-2025 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -68,15 +21,40 @@ jobs:
           cache: pnpm
       - uses: actions/download-artifact@v4
         with:
-          pattern: optb-binding-${{ matrix.platform }}-*
-          path: .bench-split-chunks-option-b/bindings/
-      - name: Measure alternating pairs with same-binary calibration
+          run-id: 40284512350
+          github-token: ${{ github.token }}
+          name: optb-binding-Linux-main
+          path: .bench-split-chunks-option-b/bindings/optb-binding-Linux-main/
+      - name: Measure callback-only same-binding control
         shell: bash
-        run: bash scripts/split-chunks-option-b-bench/measure.sh
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/.bench-split-chunks-option-b"
+          mkdir -p "$ROOT/scripts" "$ROOT/tmp" "$ROOT/fixture" "$ROOT/results"
+          cp scripts/split-chunks-option-b-bench/* "$ROOT/scripts/"
+          cp -R "$ROOT/bindings/optb-binding-Linux-main" "$ROOT/bindings/optb-binding-Linux-pr1"
+          export TMPDIR="$ROOT/tmp"
+          unset BENCH_NATIVE_FILTERS_ONLY
+          pnpm install --frozen-lockfile > "$ROOT/results/install.log" 2>&1
+          pnpm run build:js > "$ROOT/results/js-build.log" 2>&1
+          cp "$ROOT/scripts/run.mjs" "$ROOT/scripts/gen.mjs" "$ROOT/fixture/"
+          node "$ROOT/fixture/gen.mjs" --modules 60000
+          python "$ROOT/scripts/paired_stats.py"
+          python - "$ROOT" "$PWD" <<'PY'
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          path = root / 'scripts/series.py'
+          source = path.read_text()
+          arms = next(line for line in source.splitlines() if line.startswith('arms='))
+          source = source.replace(arms, "arms=('callback',)", 1)
+          sys.path.insert(0, str(root / 'scripts'))
+          exec(compile(source, str(path), 'exec'))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: optb-results-${{ matrix.platform }}
+          name: optb-callback-aa-results-Linux
           path: .bench-split-chunks-option-b/results/
           include-hidden-files: true
           if-no-files-found: error
