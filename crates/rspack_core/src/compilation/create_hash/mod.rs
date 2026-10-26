@@ -1,6 +1,8 @@
+use std::{fs::OpenOptions, io::Write, path::PathBuf, sync::LazyLock};
+
 use async_trait::async_trait;
 use rspack_hash::RspackHasher;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
 use crate::{ModuleCodeGenerationContext, compilation::pass::PassExt, logger::Logger};
@@ -8,6 +10,82 @@ use crate::{ModuleCodeGenerationContext, compilation::pass::PassExt, logger::Log
 pub struct ChunkHashResult {
   pub hash: RspackHashDigest,
   pub content_hash: ChunkContentHash,
+}
+
+static FULL_HASH_FOLD_DUMP: LazyLock<Option<PathBuf>> =
+  LazyLock::new(|| std::env::var_os("RSPACK_FULL_HASH_FOLD_DUMP").map(PathBuf::from));
+
+fn dump_full_hash_fold(compilation: &Compilation, path: &std::path::Path) {
+  let mut chunks: Vec<_> = compilation
+    .build_chunk_graph_artifact
+    .chunk_by_ukey
+    .values()
+    .collect();
+  chunks.sort_unstable_by_key(|chunk| chunk.ukey());
+  let inputs: Vec<_> = chunks
+    .iter()
+    .enumerate()
+    .map(|(rank, chunk)| {
+      let content_hashes: FxHashMap<_, _> = chunk
+        .content_hash(&compilation.chunk_hashes_artifact)
+        .into_iter()
+        .flat_map(|hashes| hashes.iter())
+        .map(|(source_type, hash)| (source_type.as_str(), hash.encoded()))
+        .collect();
+      (
+        rank,
+        chunk.id(),
+        chunk.name(),
+        chunk
+          .hash(&compilation.chunk_hashes_artifact)
+          .map(|hash| hash.encoded()),
+        content_hashes,
+      )
+    })
+    .collect();
+
+  chunks.sort_unstable_by(|a, b| match (a.id(), b.id()) {
+    (Some(a), Some(b)) => a.as_str().cmp(b.as_str()),
+    (Some(_), None) => std::cmp::Ordering::Less,
+    (None, Some(_)) => std::cmp::Ordering::Greater,
+    (None, None) => a
+      .hash(&compilation.chunk_hashes_artifact)
+      .map(|hash| hash.encoded())
+      .cmp(
+        &b.hash(&compilation.chunk_hashes_artifact)
+          .map(|hash| hash.encoded()),
+      ),
+  });
+  let mut hasher = RspackHasher::from(&compilation.options.output);
+  for chunk in chunks {
+    if let Some(hash) = chunk.hash(&compilation.chunk_hashes_artifact) {
+      hasher.update(hash);
+    }
+    if let Some(content_hashes) = chunk.content_hash(&compilation.chunk_hashes_artifact) {
+      for (source_type, content_hash) in content_hashes
+        .iter()
+        .sorted_unstable_by_key(|(source_type, _)| *source_type)
+      {
+        hasher.update(source_type);
+        hasher.update(content_hash);
+      }
+    }
+  }
+  hasher.update(&compilation.hot_index);
+  let id_order_hash = hasher.digest(&compilation.options.output.hash_digest);
+  let record = serde_json::json!({
+    "compiler": compilation.options.name,
+    "hot_index": compilation.hot_index,
+    "full_hash": compilation.hash.as_ref().map(|hash| hash.encoded()),
+    "id_order_hash": id_order_hash.encoded(),
+    "chunks": inputs,
+  });
+  if let Ok(mut line) = serde_json::to_vec(&record) {
+    line.push(b'\n');
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+      let _ = file.write_all(&line);
+    }
+  }
 }
 
 pub struct CreateHashPass;
@@ -402,6 +480,9 @@ pub async fn create_hash(
     });
   compilation_hasher.update(&compilation.hot_index);
   compilation.hash = Some(compilation_hasher.digest(&compilation.options.output.hash_digest));
+  if let Some(path) = FULL_HASH_FOLD_DUMP.as_ref() {
+    dump_full_hash_fold(compilation, path);
+  }
 
   // re-create runtime chunk hash that depend on full hash
   let start = logger.time("hashing: process full hash chunks");
