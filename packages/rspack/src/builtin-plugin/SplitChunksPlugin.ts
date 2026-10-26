@@ -13,6 +13,7 @@ import type {
   OptimizationSplitChunksOptions,
 } from '../config';
 import type { Module } from '../Module';
+import { checkModuleObjectShapes } from '../util/moduleObjectShapes';
 import { JsSplitChunkSizes } from '../util/SplitChunkSize';
 import { createBuiltinPlugin, RspackBuiltinPlugin } from './base';
 
@@ -29,6 +30,8 @@ export class SplitChunksPlugin extends RspackBuiltinPlugin {
     if (rawOptions === undefined) {
       throw new Error('rawOptions should not be undefined');
     }
+    if (this.options.experimentalCache)
+      rawOptions.moduleShapeCheck = checkModuleObjectShapes;
     return createBuiltinPlugin(this.name, rawOptions);
   }
 }

@@ -1,6 +1,6 @@
 use napi::{
   CallContext, Either, JsObject, JsString, NapiRaw,
-  bindgen_prelude::{FromNapiMutRef, Object, ToNapiValue},
+  bindgen_prelude::{FromNapiMutRef, JsObjectValue, Object, ToNapiValue},
 };
 use rspack_core::{ResourceData, ResourceParsedData, parse_resource};
 use rspack_error::Diagnosable;
@@ -30,84 +30,105 @@ impl NormalModule {
     mut self,
     env: &napi::Env,
   ) -> napi::Result<napi::bindgen_prelude::ClassInstance<'_, Self>> {
-    let (resource, request, user_request, raw_request, resource_resolve_data, loaders) = self
-      .with_ref(|_, module| {
-        let resource_resolved_data = module.resource_resolved_data();
-        let resource = env.create_string(resource_resolved_data.resource())?;
-        let request = env.create_string(module.request())?;
-        let user_request = env.create_string(module.user_request())?;
-        let raw_request = env.create_string(module.raw_request())?;
-        let resource_resolve_data = Object::from_raw(env.raw(), unsafe {
-          ToNapiValue::to_napi_value(
-            env.raw(),
-            ReadonlyResourceDataWrapper::from(resource_resolved_data.clone()),
-          )?
-        });
-        let loaders = Object::from_raw(env.raw(), unsafe {
-          ToNapiValue::to_napi_value(
-            env.raw(),
-            module
-              .loaders()
-              .iter()
-              .map(JsLoaderItem::from)
-              .collect::<Vec<_>>(),
-          )?
-        });
+    let (resource_resolve_data, loaders) = self.with_ref(|_, module| {
+      let resource_resolved_data = module.resource_resolved_data();
+      let resource_resolve_data = Object::from_raw(env.raw(), unsafe {
+        ToNapiValue::to_napi_value(
+          env.raw(),
+          ReadonlyResourceDataWrapper::from(resource_resolved_data.clone()),
+        )?
+      });
+      let loaders = Object::from_raw(env.raw(), unsafe {
+        ToNapiValue::to_napi_value(
+          env.raw(),
+          module
+            .loaders()
+            .iter()
+            .map(JsLoaderItem::from)
+            .collect::<Vec<_>>(),
+        )?
+      });
 
-        Ok((
-          resource,
-          request,
-          user_request,
-          raw_request,
-          resource_resolve_data,
-          loaders,
-        ))
-      })?;
+      Ok((resource_resolve_data, loaders))
+    })?;
 
-    MODULE_PROPERTIES_BUFFER.with(|ref_cell| {
+    let instance = MODULE_PROPERTIES_BUFFER.with(|ref_cell| {
       let mut properties = ref_cell.borrow_mut();
       properties.clear();
-
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("resource")?
-          .with_value(&resource),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("request")?
-          .with_value(&request),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("userRequest")?
-          .with_value(&user_request),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("rawRequest")?
-          .with_value(&raw_request),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("resourceResolveData")?
-          .with_value(&resource_resolve_data),
-      );
-      properties.push(
-        napi::Property::new()
-          .with_utf8_name("loaders")?
-          .with_value(&loaders),
-      );
       Self::new_inherited(self, env, &mut properties)
-    })
+    })?;
+    let object = instance.as_object(env);
+    crate::module_object_state::set(env, object, "resourceResolveData", resource_resolve_data)?;
+    crate::module_object_state::set(env, object, "loaders", loaders)?;
+    Ok(instance)
   }
 
   fn define_shared_properties(env: &napi::Env, object: Object<'_>) -> napi::Result<()> {
+    #[js_function]
+    fn request_getter(ctx: CallContext<'_>) -> napi::Result<JsString<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.module.record_untrackable_read();
+      wrapped_value.with_ref(|_, module| ctx.env.create_string(module.request()))
+    }
+
+    #[js_function]
+    fn user_request_getter(ctx: CallContext<'_>) -> napi::Result<JsString<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.module.record_untrackable_read();
+      wrapped_value.with_ref(|_, module| ctx.env.create_string(module.user_request()))
+    }
+
+    #[js_function]
+    fn raw_request_getter(ctx: CallContext<'_>) -> napi::Result<JsString<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.module.record_untrackable_read();
+      wrapped_value.with_ref(|_, module| ctx.env.create_string(module.raw_request()))
+    }
+
+    #[js_function]
+    fn resource_resolve_data_getter(ctx: CallContext<'_>) -> napi::Result<Object<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.module.record_untrackable_read();
+      crate::module_object_state::get(
+        ctx.env,
+        Object::from_raw(ctx.env.raw(), unsafe { this.raw() }),
+        "resourceResolveData",
+      )
+    }
+
+    #[js_function]
+    fn loaders_getter(ctx: CallContext<'_>) -> napi::Result<Object<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.module.record_untrackable_read();
+      crate::module_object_state::get(
+        ctx.env,
+        Object::from_raw(ctx.env.raw(), unsafe { this.raw() }),
+        "loaders",
+      )
+    }
+
+    #[js_function]
+    fn resource_getter(ctx: CallContext<'_>) -> napi::Result<JsString<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.with_ref(|_, module| {
+        ctx
+          .env
+          .create_string(module.resource_resolved_data().resource())
+      })
+    }
+
     #[js_function]
     pub fn match_resource_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>, ()>> {
       let this = ctx.this_unchecked::<JsObject>();
       let env = ctx.env.raw();
       let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
+      wrapped_value.module.record_untrackable_read();
 
       wrapped_value.with_ref(|_, module| {
         Ok(match module.match_resource() {
@@ -122,6 +143,7 @@ impl NormalModule {
       let this = ctx.this_unchecked::<JsObject>();
       let env = ctx.env.raw();
       let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
+      wrapped_value.module.record_untrackable_read();
 
       let val = ctx.get::<Either<String, ()>>(0)?;
       match val {
@@ -146,6 +168,7 @@ impl NormalModule {
       let this = ctx.this_unchecked::<JsObject>();
       let env = ctx.env.raw();
       let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
+      wrapped_value.module.record_untrackable_read();
 
       wrapped_value.with_ref(|compilation, module| {
         Ok(match module.first_error() {
@@ -160,6 +183,24 @@ impl NormalModule {
 
     define_shared_properties::<Self>(env, object, || {
       Ok(vec![
+        napi::Property::new()
+          .with_utf8_name("resource")?
+          .with_getter(resource_getter),
+        napi::Property::new()
+          .with_utf8_name("request")?
+          .with_getter(request_getter),
+        napi::Property::new()
+          .with_utf8_name("userRequest")?
+          .with_getter(user_request_getter),
+        napi::Property::new()
+          .with_utf8_name("rawRequest")?
+          .with_getter(raw_request_getter),
+        napi::Property::new()
+          .with_utf8_name("resourceResolveData")?
+          .with_getter(resource_resolve_data_getter),
+        napi::Property::new()
+          .with_utf8_name("loaders")?
+          .with_getter(loaders_getter),
         napi::Property::new()
           .with_utf8_name("matchResource")?
           .with_getter(match_resource_getter)

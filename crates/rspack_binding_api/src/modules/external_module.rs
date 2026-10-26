@@ -1,6 +1,12 @@
+use napi::{
+  CallContext, JsObject, JsString, NapiRaw,
+  bindgen_prelude::{FromNapiMutRef, Object},
+};
+
 use crate::{
   impl_module_methods,
   module::{MODULE_PROPERTIES_BUFFER, Module},
+  shared_properties::define_shared_properties,
 };
 
 #[napi]
@@ -11,21 +17,30 @@ pub struct ExternalModule {
 
 impl ExternalModule {
   pub(crate) fn into_module_instance(
-    mut self,
+    self,
     env: &napi::Env,
   ) -> napi::Result<napi::bindgen_prelude::ClassInstance<'_, Self>> {
-    let user_request = self.with_ref(|_, module| env.create_string(module.user_request()))?;
-
     MODULE_PROPERTIES_BUFFER.with(|ref_cell| {
       let mut properties = ref_cell.borrow_mut();
       properties.clear();
+      Self::new_inherited(self, env, &mut properties)
+    })
+  }
 
-      properties.push(
+  fn define_shared_properties(env: &napi::Env, object: Object<'_>) -> napi::Result<()> {
+    #[js_function]
+    fn user_request_getter(ctx: CallContext<'_>) -> napi::Result<JsString<'_>> {
+      let this = ctx.this_unchecked::<JsObject>();
+      let wrapped_value = unsafe { ExternalModule::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+      wrapped_value.module.record_untrackable_read();
+      wrapped_value.with_ref(|_, module| ctx.env.create_string(module.user_request()))
+    }
+    define_shared_properties::<Self>(env, object, || {
+      Ok(vec![
         napi::Property::new()
           .with_utf8_name("userRequest")?
-          .with_value(&user_request),
-      );
-      Self::new_inherited(self, env, &mut properties)
+          .with_getter(user_request_getter),
+      ])
     })
   }
 
@@ -45,4 +60,4 @@ impl ExternalModule {
   }
 }
 
-impl_module_methods!(ExternalModule);
+impl_module_methods!(ExternalModule, ExternalModule::define_shared_properties);

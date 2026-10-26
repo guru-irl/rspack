@@ -258,6 +258,7 @@ pub(super) enum PhaseOutcome {
   Hit,
   TrackedReadChanged,
   UntrackableRead,
+  ShapeGuard,
   DigestMiss,
   SizeSafety,
   ReuseAmbiguity,
@@ -270,6 +271,7 @@ impl PhaseOutcome {
       Self::Hit => "hit",
       Self::TrackedReadChanged => "tracked_read_changed",
       Self::UntrackableRead => "untrackable_read",
+      Self::ShapeGuard => "shape_guard",
       Self::DigestMiss => "digest_miss",
       Self::SizeSafety => "size_safety",
       Self::ReuseAmbiguity => "reuse_ambiguity",
@@ -374,6 +376,11 @@ impl SplitChunksPlugin {
       let module = module_graph
         .module_by_identifier(identifier)
         .expect("module should exist");
+      module.as_ref().as_any().type_id().hash(&mut hash);
+      module
+        .as_normal_module()
+        .map(|module| module.resource_resolved_data().resource())
+        .hash(&mut hash);
       module.module_type().as_str().hash(&mut hash);
       module.get_layer().hash(&mut hash);
       rspack_core::ChunkGraph::get_module_id(&compilation.module_ids_artifact, *identifier)

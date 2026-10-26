@@ -66,6 +66,7 @@ pub(crate) trait DerivedModule {
 fn module_context_getter(ctx: CallContext) -> napi::Result<Either<String, ()>> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  wrapped_value.record_untrackable_read();
   wrapped_value.with_ref(|_, module| {
     Ok(match module.get_context() {
       Some(ctx) => Either::A(ctx.to_string()),
@@ -91,6 +92,7 @@ fn module_layer_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>
 fn module_use_source_map_getter(ctx: CallContext) -> napi::Result<bool> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  wrapped_value.record_untrackable_read();
   wrapped_value.with_ref(|_, module| Ok(module.get_source_map_kind().source_map()))
 }
 
@@ -98,6 +100,7 @@ fn module_use_source_map_getter(ctx: CallContext) -> napi::Result<bool> {
 fn module_use_simple_source_map_getter(ctx: CallContext) -> napi::Result<bool> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  wrapped_value.record_untrackable_read();
   wrapped_value.with_ref(|_, module| Ok(module.get_source_map_kind().simple_source_map()))
 }
 
@@ -105,6 +108,7 @@ fn module_use_simple_source_map_getter(ctx: CallContext) -> napi::Result<bool> {
 fn module_factory_meta_getter(ctx: CallContext) -> napi::Result<JsFactoryMeta> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  wrapped_value.record_untrackable_read();
   wrapped_value.with_ref(|_, module| {
     Ok(match module.as_normal_module() {
       Some(normal_module) => match normal_module.factory_meta() {
@@ -126,6 +130,7 @@ fn module_factory_meta_getter(ctx: CallContext) -> napi::Result<JsFactoryMeta> {
 fn module_factory_meta_setter(ctx: CallContext) -> napi::Result<()> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  wrapped_value.record_untrackable_read();
   let module = wrapped_value.as_mut()?;
   let factory_meta = ctx.get::<JsFactoryMeta>(0)?;
   module.set_factory_meta(factory_meta.into());
@@ -144,8 +149,9 @@ fn module_build_info_getter(ctx: CallContext) -> napi::Result<Object> {
     return r.as_object(env);
   }
   let mut build_info = BuildInfo::new(reference.downgrade()).get_jsobject(env)?;
-  this.set_property(
-    env.symbol_for(symbols::MODULE_BUILD_INFO_SYMBOL)?,
+  store_build_info(
+    env,
+    Object::from_raw(env.raw(), unsafe { this.raw() }),
     build_info,
   )?;
   let r = WeakRef::new(raw_env, &mut build_info)?;
@@ -162,6 +168,7 @@ fn module_build_info_setter(ctx: CallContext) -> napi::Result<()> {
   let raw_env = env.raw();
   let mut reference: Reference<Module> =
     unsafe { Reference::from_napi_value(raw_env, this.raw())? };
+  rspack_core::record_untrackable_module_read(reference.compiler_id);
   let new_build_info = BuildInfo::new(reference.downgrade());
   let mut new_instance = new_build_info.get_jsobject(env)?;
 
@@ -183,12 +190,60 @@ fn module_build_info_setter(ctx: CallContext) -> napi::Result<()> {
     }
   }
 
-  this.set_property(
-    env.symbol_for(symbols::MODULE_BUILD_INFO_SYMBOL)?,
+  store_build_info(
+    env,
+    Object::from_raw(env.raw(), unsafe { this.raw() }),
     new_instance,
   )?;
   reference.build_info_ref = Some(WeakRef::new(raw_env, &mut new_instance)?);
   Ok(())
+}
+
+struct ModuleBuildInfoSymbol;
+
+#[js_function]
+fn module_build_info_symbol_getter(ctx: CallContext) -> napi::Result<Unknown> {
+  let this = ctx.this_unchecked::<JsObject>();
+  let module = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  module.record_untrackable_read();
+  crate::module_object_state::get(
+    ctx.env,
+    Object::from_raw(ctx.env.raw(), unsafe { this.raw() }),
+    "buildInfo",
+  )
+}
+
+#[js_function(1)]
+fn module_build_info_symbol_setter(ctx: CallContext) -> napi::Result<()> {
+  let this = ctx.this_unchecked::<JsObject>();
+  let module = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
+  module.record_untrackable_read();
+  crate::module_object_state::set(
+    ctx.env,
+    Object::from_raw(ctx.env.raw(), unsafe { this.raw() }),
+    "buildInfo",
+    ctx.get::<Unknown>(0)?,
+  )
+}
+
+fn store_build_info<T: ToNapiValue>(env: &Env, object: Object<'_>, value: T) -> napi::Result<()> {
+  crate::module_object_state::set(env, object, "buildInfo", value)?;
+  define_shared_properties::<ModuleBuildInfoSymbol>(env, object, || {
+    Ok(vec![
+      Property::new()
+        .with_name(env, env.symbol_for(symbols::MODULE_BUILD_INFO_SYMBOL)?)?
+        .with_getter(module_build_info_symbol_getter)
+        .with_setter(module_build_info_symbol_setter)
+        .with_property_attributes(
+          PropertyAttributes::Enumerable | PropertyAttributes::Configurable,
+        ),
+    ])
+  })?;
+  crate::module_object_state::allow(
+    env,
+    object,
+    env.symbol_for(symbols::MODULE_BUILD_INFO_SYMBOL)?,
+  )
 }
 
 #[js_function]
@@ -197,7 +252,11 @@ fn module_build_meta_getter(ctx: CallContext) -> napi::Result<Unknown> {
   let reference: Reference<Module> =
     unsafe { Reference::from_napi_value(ctx.env.raw(), this.raw())? };
   rspack_core::record_untrackable_module_read(reference.compiler_id);
-  this.get_property(ctx.env.symbol_for(symbols::MODULE_BUILD_META_SYMBOL)?)
+  crate::module_object_state::get(
+    ctx.env,
+    Object::from_raw(ctx.env.raw(), unsafe { this.raw() }),
+    "buildMeta",
+  )
 }
 
 #[js_function(1)]
@@ -206,8 +265,10 @@ fn module_build_meta_setter(ctx: CallContext) -> napi::Result<()> {
   let reference: Reference<Module> =
     unsafe { Reference::from_napi_value(ctx.env.raw(), this.raw())? };
   rspack_core::record_untrackable_module_read(reference.compiler_id);
-  this.set_property(
-    ctx.env.symbol_for(symbols::MODULE_BUILD_META_SYMBOL)?,
+  crate::module_object_state::set(
+    ctx.env,
+    Object::from_raw(ctx.env.raw(), unsafe { this.raw() }),
+    "buildMeta",
     ctx.get::<Unknown>(0)?,
   )
 }
@@ -254,12 +315,7 @@ pub(crate) fn define_module_properties(
           .with_setter(module_build_meta_setter),
       ])
     })?;
-    properties.push(
-      Property::new()
-        .with_name(env, env.symbol_for(symbols::MODULE_BUILD_META_SYMBOL)?)?
-        .with_value(&Object::new(env)?)
-        .with_property_attributes(PropertyAttributes::Writable),
-    );
+    crate::module_object_state::set(env, *object, "buildMeta", Object::new(env)?)?;
     let identifier = env.create_string(module.identifier().as_str())?;
     properties.push(
       Property::new()
@@ -339,6 +395,10 @@ impl Module {
     ))
   }
 
+  pub(crate) fn record_untrackable_read(&self) {
+    rspack_core::record_untrackable_module_read(self.compiler_id);
+  }
+
   pub(crate) fn with_compilation<R>(
     &self,
     f: impl FnOnce(&Compilation) -> napi::Result<R>,
@@ -398,6 +458,7 @@ impl Module {
 impl Module {
   #[napi]
   pub fn readable_identifier(&mut self) -> napi::Result<String> {
+    self.record_untrackable_read();
     self.with_ref(|compilation, module| {
       Ok(
         module
@@ -483,6 +544,7 @@ impl Module {
     enumerable = false
   )]
   pub fn blocks(&mut self) -> napi::Result<Vec<AsyncDependenciesBlockWrapper>> {
+    self.record_untrackable_read();
     self.with_ref(|compilation, module| {
       let Some(module_graph) = compilation.try_get_module_graph() else {
         return Err(napi::Error::from_reason(
@@ -505,6 +567,7 @@ impl Module {
 
   #[napi(getter, ts_return_type = "Dependency[]")]
   pub fn dependencies(&mut self) -> napi::Result<Vec<DependencyWrapper>> {
+    self.record_untrackable_read();
     self.with_ref(|compilation, module| {
       let Some(module_graph) = compilation.try_get_module_graph() else {
         return Err(napi::Error::from_reason(
@@ -545,6 +608,7 @@ impl Module {
     env: &'a Env,
     options: JsLibIdentOptions,
   ) -> napi::Result<Option<JsString<'a>>> {
+    self.record_untrackable_read();
     self.with_ref(|_, module| {
       Ok(
         match module.lib_ident(LibIdentOptions {
@@ -569,6 +633,7 @@ impl Module {
     source: JsSourceFromJs,
     object: Option<Object>,
   ) -> napi::Result<()> {
+    self.record_untrackable_read();
     let module = self.as_mut()?;
 
     let asset_info = match object {
@@ -696,6 +761,36 @@ impl ModuleObject {
   }
 }
 
+#[doc(hidden)]
+pub struct CachedModuleObjects {
+  pub compiler_id: CompilerId,
+}
+
+impl ToNapiValue for CachedModuleObjects {
+  unsafe fn to_napi_value(env: sys::napi_env, value: Self) -> Result<sys::napi_value> {
+    unsafe {
+      let env_wrapper = Env::from_raw(env);
+      let mut array = env_wrapper.create_array(0)?;
+      MODULE_INSTANCE_REFS.with_borrow_mut(|all| -> Result<()> {
+        if let Some(modules) = all.get_mut(&value.compiler_id) {
+          for (index, module) in modules.values_mut().enumerate() {
+            let raw = match module {
+              Either5::A(r) => ToNapiValue::to_napi_value(env, r),
+              Either5::B(r) => ToNapiValue::to_napi_value(env, r),
+              Either5::C(r) => ToNapiValue::to_napi_value(env, r),
+              Either5::D(r) => ToNapiValue::to_napi_value(env, r),
+              Either5::E(r) => ToNapiValue::to_napi_value(env, r),
+            }?;
+            array.set(index as u32, Object::from_raw(env, raw))?;
+          }
+        }
+        Ok(())
+      })?;
+      ToNapiValue::to_napi_value(env, array)
+    }
+  }
+}
+
 impl ToNapiValue for ModuleObject {
   unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
     unsafe {
@@ -768,13 +863,15 @@ impl ToNapiValue for ModuleObject {
                 env, instance,
               )?))
             };
-            match instance_ref {
+            let value = match instance_ref {
               Either5::A(r) => ToNapiValue::to_napi_value(env, r),
               Either5::B(r) => ToNapiValue::to_napi_value(env, r),
               Either5::C(r) => ToNapiValue::to_napi_value(env, r),
               Either5::D(r) => ToNapiValue::to_napi_value(env, r),
               Either5::E(r) => ToNapiValue::to_napi_value(env, r),
-            }
+            }?;
+            crate::module_object_state::seed(&env_wrapper, Object::from_raw(env, value))?;
+            Ok(value)
           }
         }
       })
