@@ -658,6 +658,8 @@ export const EXPECTED_RSPACK_CORE_VERSION: string
 
 export declare function formatDiagnostic(diagnostic: JsDiagnostic): ExternalObject<'Diagnostic'>
 
+export declare function getModuleObjectStateStore(): object
+
 export interface JsAddingRuntimeModule {
   name: string
   generator: () => String
@@ -1028,6 +1030,13 @@ export interface JsModuleDescriptor {
 
 export interface JsModuleForIds {
   identifier: string
+}
+
+export interface JsModuleShapeCheckResult {
+  reusable: boolean
+  checked: number
+  custom: number
+  prototypeChanged: boolean
 }
 
 export interface JsNormalModuleFactoryCreateModuleArgs {
@@ -3167,6 +3176,7 @@ export interface RawSplitChunkSizes {
 
 export interface RawSplitChunksOptions {
   experimentalCache?: boolean
+  moduleShapeCheck?: (modules: Module[]) => JsModuleShapeCheckResult
   dedupDepth?: number
   fallbackCacheGroup?: RawFallbackCacheGroupOptions
   name?: string | false | ((ctx: JsChunkOptionNameCtx) => string | undefined)

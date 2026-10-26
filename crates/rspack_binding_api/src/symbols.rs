@@ -19,5 +19,3 @@ pub(crate) const JS_HELPERS_SYMBOL: &str = "rspack.jsHelpers";
 pub(crate) const FILE_SYSTEM_DEPENDENCY_STRING_POOL_SYMBOL: &str =
   "rspack.fileSystemDependencyStringPool";
 pub(crate) const FILE_SYSTEM_DEPENDENCY_ARRAY_SYMBOL: &str = "rspack.fileSystemDependencyArray";
-
-pub(crate) const MODULE_BUILD_META_SYMBOL: &str = "rspack.module.buildMeta";

@@ -29,10 +29,22 @@ use crate::{
   compiler_scoped_tsfn::CompilerScopedTsFnHandle as ThreadsafeFunction, filename::JsFilename,
 };
 
+#[napi(object)]
+pub struct JsModuleShapeCheckResult {
+  pub reusable: bool,
+  pub checked: u32,
+  pub custom: u32,
+  pub prototype_changed: bool,
+}
+
 #[napi(object, object_to_js = false)]
 #[derive(Debug)]
 pub struct RawSplitChunksOptions<'a> {
   pub experimental_cache: Option<bool>,
+  #[napi(ts_type = "(modules: Module[]) => JsModuleShapeCheckResult")]
+  #[debug(skip)]
+  pub module_shape_check:
+    Option<ThreadsafeFunction<crate::module::CachedModuleObjects, JsModuleShapeCheckResult>>,
   pub dedup_depth: Option<u32>,
   pub fallback_cache_group: Option<RawFallbackCacheGroupOptions<'a>>,
   #[napi(ts_type = "string | false | ((ctx: JsChunkOptionNameCtx) => string | undefined)")]
@@ -321,6 +333,22 @@ impl<'a> RawSplitChunksOptions<'a> {
     NormalizedSplitChunksOptions {
       options: rspack_plugin_split_chunks::PluginOptions {
         experimental_cache: raw_opts.experimental_cache.unwrap_or(false),
+        module_shape_check: raw_opts.module_shape_check.map(|callback| {
+          rspack_plugin_split_chunks::ModuleShapeCheckFn(Arc::new(move |compiler_id| {
+            let callback = callback.clone();
+            Box::pin(async move {
+              let result = callback
+                .call_with_sync(crate::module::CachedModuleObjects { compiler_id })
+                .await?;
+              Ok(rspack_plugin_split_chunks::ModuleShapeCheckResult {
+                reusable: result.reusable,
+                checked: result.checked,
+                custom: result.custom,
+                prototype_changed: result.prototype_changed,
+              })
+            })
+          }))
+        }),
         dedup_depth: raw_opts.dedup_depth.unwrap_or(1),
         cache_groups,
         fallback_cache_group: rspack_plugin_split_chunks::FallbackCacheGroup {

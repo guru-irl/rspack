@@ -45,8 +45,31 @@ pub type SplitChunksNameBatchFn = Arc<
 >;
 
 #[derive(Debug)]
+pub struct ModuleShapeCheckResult {
+  pub reusable: bool,
+  pub checked: u32,
+  pub custom: u32,
+  pub prototype_changed: bool,
+}
+
+#[derive(Clone)]
+pub struct ModuleShapeCheckFn(
+  pub  Arc<
+    dyn Fn(rspack_core::CompilerId) -> BoxFuture<'static, Result<ModuleShapeCheckResult>>
+      + Send
+      + Sync,
+  >,
+);
+impl Debug for ModuleShapeCheckFn {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("ModuleShapeCheckFn")
+  }
+}
+
+#[derive(Debug)]
 pub struct PluginOptions {
   pub experimental_cache: bool,
+  pub module_shape_check: Option<ModuleShapeCheckFn>,
   pub dedup_depth: u32,
   pub cache_groups: Vec<CacheGroup>,
   pub fallback_cache_group: FallbackCacheGroup,
@@ -61,6 +84,7 @@ pub struct SplitChunksPlugin {
   fallback_cache_group: FallbackCacheGroup,
   hide_path_info: bool,
   cache_enabled: bool,
+  module_shape_check: Option<ModuleShapeCheckFn>,
   cache_structure: Mutex<Option<Arc<cache::CacheStructure>>>,
   last_compilation: Mutex<Option<rspack_core::CompilationId>>,
 }
@@ -75,6 +99,7 @@ impl SplitChunksPlugin {
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
       options.experimental_cache,
+      options.module_shape_check,
       Mutex::new(None),
       Mutex::new(None),
     )
@@ -102,6 +127,7 @@ impl SplitChunksPlugin {
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
       options.experimental_cache,
+      options.module_shape_check,
       Mutex::new(None),
       Mutex::new(None),
     )
@@ -133,8 +159,30 @@ impl SplitChunksPlugin {
       logger.time_end(start);
       return Ok(());
     }
-    // JavaScript callbacks for test, name, chunks, type and layer must depend only on their arguments, module identity and the chunk graph.
-    let active = compilation.options.mode.is_development();
+    // Functions may use only their module object and other supplied arguments, not mutable closure state, globals, or side tables.
+    // Take the old structure before fallible work so a failed run cannot retain it.
+    let previous = self
+      .cache_structure
+      .lock()
+      .expect("cache structure lock")
+      .take();
+    let shape_timer = logger.time("check module object shapes");
+    let shapes = if let Some(check) = &self.module_shape_check {
+      (check.0)(compilation.compiler_id()).await?
+    } else {
+      ModuleShapeCheckResult {
+        reusable: false,
+        checked: 0,
+        custom: 0,
+        prototype_changed: false,
+      }
+    };
+    logger.time_end(shape_timer);
+    logger.info(format!(
+      "module object shapes: checked={} custom={} prototype_changed={} reusable={}",
+      shapes.checked, shapes.custom, shapes.prototype_changed, shapes.reusable
+    ));
+    let active = compilation.options.mode.is_development() && shapes.reusable;
     let errors_present = compilation.get_errors().next().is_some();
     let digest_start = Instant::now();
     let digest = (active && !errors_present).then(|| self.entry_digest(compilation));
@@ -143,19 +191,17 @@ impl SplitChunksPlugin {
     } else {
       0.0
     };
-    // Take the old structure before fallible work so a failed run cannot retain it.
-    let previous = self
-      .cache_structure
-      .lock()
-      .expect("cache structure lock")
-      .take();
     let hit = digest.as_ref().is_some_and(|digest| {
       previous
         .as_ref()
         .is_some_and(|structure| structure.digest == *digest)
     });
     let reason = if !active {
-      "disabled: mode is not development"
+      if !shapes.reusable {
+        "disabled: module object shape"
+      } else {
+        "disabled: mode is not development"
+      }
     } else if errors_present {
       "errors present"
     } else if previous.is_none() {
@@ -312,6 +358,7 @@ impl SplitChunksPlugin {
     let native_matches =
       self.prepare_native_cache_group_matches(&all_modules, &stages, compilation);
     let priority_len = priority_cache_groups.len();
+    let mut earlier_callbacks_fresh = false;
     for (index, ((_, cache_groups), native_matches)) in priority_cache_groups
       .into_iter()
       .zip(native_matches)
@@ -354,9 +401,11 @@ impl SplitChunksPlugin {
       {
         logger.info(format!("structure key: phase={index} digest={digest:032x}"));
       }
+      let shape_guarded = earlier_callbacks_fresh;
       let mut cached = structure
         .zip(phase_digest)
-        .and_then(|(structure, digest)| structure.phase(index, digest));
+        .and_then(|(structure, digest)| structure.phase(index, digest))
+        .filter(|_| !shape_guarded);
       let validated_reads = cached.as_ref().map_or(0, |phase| phase.size_reads.len());
       let validation_start = Instant::now();
       let tracked_read_changed = cached
@@ -375,6 +424,8 @@ impl SplitChunksPlugin {
       }
       let mut fresh = None;
       if cached.is_none() || cache::verification_enabled() {
+        // Fresh callbacks can change module shapes after the compilation-wide check.
+        earlier_callbacks_fresh = true;
         let build_start = Instant::now();
         let reads =
           structure.map(|_| rspack_core::ModuleReadSession::new(compilation.compiler_id()));
@@ -535,7 +586,9 @@ impl SplitChunksPlugin {
             let snapshot = cache::PreparedPhase::capture(digest, &candidates, pruning, reads);
             let map = snapshot.restore(candidates, self, &module_sizes, compilation);
             structure.insert(index, snapshot);
-            outcome = if tracked_read_changed {
+            outcome = if shape_guarded {
+              cache::PhaseOutcome::ShapeGuard
+            } else if tracked_read_changed {
               cache::PhaseOutcome::TrackedReadChanged
             } else {
               cache::PhaseOutcome::DigestMiss

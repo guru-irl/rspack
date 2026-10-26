@@ -42,6 +42,7 @@ impl ConcatenatedModule {
 impl ConcatenatedModule {
   #[napi(getter, ts_return_type = "Module")]
   pub fn root_module(&mut self) -> napi::Result<ModuleObject> {
+    self.module.record_untrackable_read();
     self.with_ref(|compilation, module| {
       let root_module = compilation
         .module_by_identifier(&module.get_root())
@@ -55,6 +56,7 @@ impl ConcatenatedModule {
 
   #[napi(getter, ts_return_type = "Module[]")]
   pub fn modules(&mut self) -> napi::Result<Vec<ModuleObject>> {
+    self.module.record_untrackable_read();
     self.with_ref(|compilation, module| {
       let inner_modules = module
         .get_modules()

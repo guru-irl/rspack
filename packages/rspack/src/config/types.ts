@@ -2860,6 +2860,12 @@ export type OptimizationSplitChunksOptions = {
    * Recompute size-dependent decisions on every rebuild.
    * @default false
    */
+  /**
+   * Cache-group functions must depend only on their module object and keyed native callback arguments.
+   * Mutable closure state, globals, and side tables keyed by modules are not supported.
+   * Opaque values behind implementation symbols are private state outside this contract.
+   * Calls may be skipped, so functions must not rely on their side effects.
+   */
   experimentalCache?: boolean;
 
   /**
