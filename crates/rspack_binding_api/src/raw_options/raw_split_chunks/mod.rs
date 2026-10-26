@@ -32,6 +32,7 @@ use crate::{
 #[napi(object, object_to_js = false)]
 #[derive(Debug)]
 pub struct RawSplitChunksOptions<'a> {
+  pub experimental_replay: Option<bool>,
   pub dedup_depth: Option<u32>,
   pub fallback_cache_group: Option<RawFallbackCacheGroupOptions<'a>>,
   #[napi(ts_type = "string | false | ((ctx: JsChunkOptionNameCtx) => string | undefined)")]
@@ -319,6 +320,7 @@ impl<'a> RawSplitChunksOptions<'a> {
 
     NormalizedSplitChunksOptions {
       options: rspack_plugin_split_chunks::PluginOptions {
+        experimental_replay: raw_opts.experimental_replay.unwrap_or(false),
         dedup_depth: raw_opts.dedup_depth.unwrap_or(1),
         cache_groups,
         fallback_cache_group: rspack_plugin_split_chunks::FallbackCacheGroup {

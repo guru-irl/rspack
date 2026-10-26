@@ -17,7 +17,15 @@ const validateContext = ({ context }: Configuration) => {
 
 const validateSplitChunks = ({ optimization }: Configuration) => {
   if (optimization?.splitChunks) {
-    const { minChunks } = optimization.splitChunks;
+    const { minChunks, experimentalReplay } = optimization.splitChunks;
+    if (
+      experimentalReplay !== undefined &&
+      typeof experimentalReplay !== 'boolean'
+    ) {
+      throw new Error(
+        `${ERROR_PREFIX} "optimization.splitChunks.experimentalReplay" must be a boolean.`,
+      );
+    }
     if (minChunks !== undefined && minChunks < 1) {
       throw new Error(
         `${ERROR_PREFIX} "optimization.splitChunks.minChunks" must be greater than or equal to 1, get \`${minChunks}\`.`,

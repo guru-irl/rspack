@@ -5596,6 +5596,7 @@ dependencies = [
  "smallvec",
  "tokio",
  "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]
