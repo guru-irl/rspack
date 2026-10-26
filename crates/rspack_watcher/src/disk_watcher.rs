@@ -10,7 +10,7 @@ use rspack_paths::InternedPath;
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
 #[cfg(target_os = "linux")]
-use crate::inode_watcher::InodeWatcher as RecommendedWatcher;
+use crate::canonical_watcher::CanonicalWatcher as RecommendedWatcher;
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
 
 /// `DiskWatcher` is responsible for managing the underlying file system watcher

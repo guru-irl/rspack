@@ -38,6 +38,7 @@ export default {
 			path.join(pluginDirectory, "kept", "deep", "file.txt"),
 			"kept\n"
 		);
+		writeBeforeStart(path.join(source, "other", "file.txt"), "watched\n");
 		fs.mkdirSync(path.join(source, "ctx", "real", "sub"), { recursive: true });
 		fs.symlinkSync(
 			process.platform === "win32" ? path.join(source, "ctx", "real") : "real",
@@ -72,6 +73,7 @@ export default {
 						compilation.fileDependencies.add(
 							path.join(pluginDirectory, "kept", "deep", "file.txt")
 						);
+						compilation.fileDependencies.add(path.join(source, "other", "file.txt"));
 					});
 				}
 			]
@@ -109,10 +111,10 @@ export default {
 			change();
 			try {
 				const completedAt = await build;
-				results.push({ name, rebuilt: true, elapsed: completedAt - start });
+				results.push({ name, ok: true, elapsed: completedAt - start });
 			} catch (error) {
 				if (failure) throw failure;
-				results.push({ name, rebuilt: false, elapsed: Date.now() - start });
+				results.push({ name, ok: false, elapsed: Date.now() - start });
 				// Continue after a missed event so the case reports every missing rebuild.
 				const recovery = nextBuild();
 				watching.invalidate();
@@ -166,7 +168,7 @@ export default {
 				);
 			});
 			// Report missed nested events before testing removal behavior.
-			expect(results.filter((result) => !result.rebuilt)).toEqual([]);
+			expect(results.filter((result) => !result.ok)).toEqual([]);
 			// Dropping an outer plugin context must keep the inner context and file.
 			context.setValue("keepOuterContext", false);
 			await step("remove outer plugin context", () => watching.invalidate());
@@ -179,7 +181,7 @@ export default {
 			await wait(700);
 			results.push({
 				name: "removed context stays quiet",
-				rebuilt: builds === before
+				ok: builds === before
 			});
 			await step("retained file dependency", () => {
 				fs.writeFileSync(
@@ -208,6 +210,17 @@ export default {
 					"module.exports = 4;\n"
 				);
 			});
+			await step("move watched directory into context and recreate old path", () => {
+				fs.renameSync(path.join(source, "other"), path.join(source, "ctx", "moved"));
+				fs.mkdirSync(path.join(source, "other"));
+				fs.writeFileSync(path.join(source, "other", "file.txt"), "recreated\n");
+			});
+			await step("write in moved directory after old path recreation", () => {
+				fs.writeFileSync(
+					path.join(source, "ctx", "moved", "new.js"),
+					"module.exports = 5;\n"
+				);
+			});
 			context.setValue("results", results);
 		} finally {
 			clearTimeout(timer);
@@ -218,7 +231,7 @@ export default {
 	},
 	async check({ context, files }) {
 		expect(
-			context.getValue("results").filter((result) => !result.rebuilt)
+			context.getValue("results").filter((result) => !result.ok)
 		).toEqual([]);
 		const module = { exports: {} };
 		const bundle = Object.entries(files).find(
@@ -228,6 +241,7 @@ export default {
 		expect(module.exports).toEqual([
 			"./created/later.js",
 			"./existing/new.js",
+			"./moved/new.js",
 			"./real/c.js",
 			"./real/sub/a.js",
 			"./real/sub/b.js"
