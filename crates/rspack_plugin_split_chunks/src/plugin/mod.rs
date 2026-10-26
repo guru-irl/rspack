@@ -5,9 +5,16 @@ mod max_request;
 pub mod max_size;
 pub mod min_size;
 mod module_group;
+mod replay;
 mod residual;
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Debug, sync::Arc};
+use std::{
+  borrow::Cow,
+  cmp::Ordering,
+  fmt::Debug,
+  sync::{Arc, Mutex},
+  time::Instant,
+};
 
 use futures::future::BoxFuture;
 use itertools::Itertools;
@@ -39,6 +46,7 @@ pub type SplitChunksNameBatchFn = Arc<
 
 #[derive(Debug)]
 pub struct PluginOptions {
+  pub experimental_replay: bool,
   pub dedup_depth: u32,
   pub cache_groups: Vec<CacheGroup>,
   pub fallback_cache_group: FallbackCacheGroup,
@@ -52,6 +60,9 @@ pub struct SplitChunksPlugin {
   name_batch_getters: Option<Box<[Option<SplitChunksNameBatchFn>]>>,
   fallback_cache_group: FallbackCacheGroup,
   hide_path_info: bool,
+  replay_options: replay::ReplayOptions,
+  replay_record: Mutex<Option<Arc<replay::ReplayRecord>>>,
+  last_compilation: Mutex<Option<rspack_core::CompilationId>>,
 }
 
 impl SplitChunksPlugin {
@@ -63,6 +74,9 @@ impl SplitChunksPlugin {
       None,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
+      replay::ReplayOptions::new(options.experimental_replay),
+      Mutex::new(None),
+      Mutex::new(None),
     )
   }
 
@@ -87,10 +101,105 @@ impl SplitChunksPlugin {
       name_batch_getters,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
+      replay::ReplayOptions::new(options.experimental_replay),
+      Mutex::new(None),
+      Mutex::new(None),
     )
   }
   #[instrument(name = "Compilation:SplitChunks",target=TRACING_BENCH_TARGET, skip_all)]
   async fn inner_impl(&self, compilation: &mut Compilation) -> Result<()> {
+    let logger = compilation.get_logger(self.name());
+    if !self.replay_options.enabled {
+      let settings = self.full_impl(compilation, &mut None).await?;
+      let start = logger.time("ensure max size fit");
+      self.ensure_max_size_fit(compilation, &settings).await?;
+      logger.time_end(start);
+      return Ok(());
+    }
+    let first_invocation = {
+      let mut last = self
+        .last_compilation
+        .lock()
+        .expect("replay compilation lock");
+      let first = *last != Some(compilation.id());
+      *last = Some(compilation.id());
+      first
+    };
+    if !first_invocation {
+      let settings = self.full_impl(compilation, &mut None).await?;
+      let start = logger.time("ensure max size fit");
+      self.ensure_max_size_fit(compilation, &settings).await?;
+      logger.time_end(start);
+      return Ok(());
+    }
+    // The opt-in contract permits size drift and skips identity/graph-only callbacks.
+    // maxSize is still evaluated against current sizes after either path.
+    let replay_start = Instant::now();
+    let active = self.replay_options.force || compilation.options.mode.is_development();
+    let errors_present = compilation.get_errors().next().is_some();
+    let digest_start = Instant::now();
+    let digest = (active && !errors_present).then(|| self.entry_digest(compilation));
+    let digest_ms = if digest.is_some() {
+      digest_start.elapsed().as_secs_f64() * 1000.0
+    } else {
+      0.0
+    };
+    let previous = self
+      .replay_record
+      .lock()
+      .expect("replay record lock")
+      .clone();
+    let reason = if !active {
+      "disabled: mode is not development".to_string()
+    } else if errors_present {
+      "errors present".to_string()
+    } else if let Some(record) = previous.as_ref() {
+      if Some(record.digest) != digest {
+        "inputs changed".to_string()
+      } else if let Err(reason) = record.precheck(compilation) {
+        format!("pre-check failed: {reason}")
+      } else {
+        let settings = self.replay_events(record, compilation);
+        logger.info(format!(
+          "replay: replayed {} operations ({} chunks created) in {:.3} ms",
+          record.events.len(),
+          record.created_count,
+          replay_start.elapsed().as_secs_f64() * 1000.0
+        ));
+        let start = logger.time("ensure max size fit");
+        self.ensure_max_size_fit(compilation, &settings).await?;
+        logger.time_end(start);
+        return Ok(());
+      }
+    } else {
+      "no record".to_string()
+    };
+    logger.info(format!(
+      "replay: full run ({reason}; digest {digest_ms:.3} ms)"
+    ));
+    // Invalidate before any fallible work, so a failed run cannot leave a stale record.
+    if active {
+      *self.replay_record.lock().expect("replay record lock") = None;
+    }
+    let diagnostics = compilation.diagnostics().len();
+    let mut recorder = digest.map(replay::Recorder::new);
+    let settings = self.full_impl(compilation, &mut recorder).await?;
+    let start = logger.time("ensure max size fit");
+    self.ensure_max_size_fit(compilation, &settings).await?;
+    logger.time_end(start);
+    if compilation.diagnostics().len() == diagnostics
+      && let Some(recorder) = recorder
+    {
+      *self.replay_record.lock().expect("replay record lock") = Some(Arc::new(recorder.finish()));
+    }
+    Ok(())
+  }
+
+  async fn full_impl(
+    &self,
+    compilation: &mut Compilation,
+    recorder: &mut Option<replay::Recorder>,
+  ) -> Result<FxHashMap<ChunkUkey, MaxSizeSetting>> {
     let logger = compilation.get_logger(self.name());
     let start = logger.time("prepare module data");
 
@@ -325,6 +434,7 @@ impl SplitChunksPlugin {
           &mut module_group,
           &mut is_reuse_existing_chunk,
           &mut is_reuse_existing_chunk_with_all_modules,
+          recorder,
         );
 
         tracing::trace!(
@@ -571,40 +681,31 @@ impl SplitChunksPlugin {
         // Only mutate metadata on an existing destination after the winning group has passed all
         // checks. A group skipped after max-request pruning must not leave cache-group metadata on
         // a chunk it did not actually use.
-        let new_chunk_mut = compilation
-          .build_chunk_graph_artifact
-          .chunk_by_ukey
-          .expect_get_mut(&new_chunk);
-        if let Some(chunk_reason) = new_chunk_mut.chunk_reason_mut() {
-          chunk_reason.push_str(&format!(" (cache group: {})", cache_group.key.as_str()));
-          if let Some(chunk_name) = &module_group.chunk_name {
-            chunk_reason.push_str(&format!(" (name: {chunk_name})"));
-          }
-        }
-        if let Some(filename) = &cache_group.filename {
-          new_chunk_mut.set_filename_template(Some(filename.clone()));
-        }
-        new_chunk_mut.add_id_name_hints(cache_group.id_hint.clone());
+        self.apply_split_metadata(
+          new_chunk,
+          cache_group,
+          module_group.chunk_name.as_deref(),
+          compilation,
+          &mut max_size_setting_map,
+        );
 
-        if !cache_group.max_initial_size.is_empty() || !cache_group.max_async_size.is_empty() {
-          max_size_setting_map.insert(
+        if let Some(recorder) = recorder {
+          recorder.apply(
             new_chunk,
-            MaxSizeSetting {
-              min_size: cache_group.min_size.clone(),
-              max_async_size: cache_group.max_async_size.clone(),
-              max_initial_size: cache_group.max_initial_size.clone(),
-              automatic_name_delimiter: cache_group.automatic_name_delimiter.clone(),
-            },
+            module_group.cache_group_index,
+            module_group.chunk_name.clone(),
+            &placed_module_chunks,
+            &used_chunks,
+            !cache_group.max_initial_size.is_empty() || !cache_group.max_async_size.is_empty(),
           );
         }
-
         self.move_modules_to_new_chunk_and_remove_from_old_chunks(
           &placed_module_chunks,
           new_chunk,
           compilation,
         );
 
-        self.split_from_original_chunks(&module_group, &used_chunks, new_chunk, compilation);
+        self.split_from_original_chunks(&used_chunks, new_chunk, compilation);
 
         self.remove_all_modules_from_other_module_groups(
           &placed_module_chunks,
@@ -655,14 +756,8 @@ impl SplitChunksPlugin {
     }
     logger.time_end(start);
 
-    let start = logger.time("ensure max size fit");
-    self
-      .ensure_max_size_fit(compilation, &max_size_setting_map)
-      .await?;
-    logger.time_end(start);
-
     rayon::spawn(move || drop(combinator));
-    Ok(())
+    Ok(max_size_setting_map)
   }
 }
 

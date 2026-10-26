@@ -2069,6 +2069,7 @@ fn create_split_chunks_plugin(
   let js_zero_sizes = SplitChunkSizes::with_initial_value(&[SourceType::JavaScript], 0.0);
 
   SplitChunksPlugin::new(PluginOptions {
+    experimental_replay: false,
     dedup_depth,
     cache_groups: (0..if matches!(case, SplitChunksCase::Priorities) {
       2
