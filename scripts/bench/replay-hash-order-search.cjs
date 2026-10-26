@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const expectedSha = '7611f57dd6e7e6ab083bf78597b12305e49f0c501c060ea59a2e299e0aa7c61b';
+const expectedSha = process.env.EXPECTED_BINDING_SHA || '7611f57dd6e7e6ab083bf78597b12305e49f0c501c060ea59a2e299e0aa7c61b';
 const root = path.resolve('tests/rspack-test/js/replay-hash-order-search');
 const results = path.join(root, 'results');
 fs.mkdirSync(results, { recursive: true });
@@ -46,6 +46,7 @@ assert.equal(identity.sha256, expectedSha);
 fs.writeFileSync(path.join(results, 'binding.json'), JSON.stringify(identity, null, 2));
 console.log('BINDING', JSON.stringify(identity));
 
+const mode = process.env.REPLAY_CASE_MODE || 'search';
 const cases = [];
 for (const groupCount of [130, 4]) {
   for (const feature of ['named-reuse', 'max-size', 'reuse-existing', 'min-size-removal', 'stable-size']) {
@@ -53,11 +54,20 @@ for (const groupCount of [130, 4]) {
   }
 }
 
-function prepare(directory) {
+if (mode === 'repeat') {
+  cases.length = 0;
+  for (const [feature, groupCount, trial] of [['named-reuse', 130, 0], ['named-reuse', 4, 0], ['two-groups', 2, 0], ['two-groups', 2, 1], ['two-groups', 2, 2]]) {
+    cases.push({ name: `${feature}-${groupCount}`, feature, groupCount, trial });
+  }
+}
+
+function prepare(directory, candidate) {
   fs.mkdirSync(directory, { recursive: true });
-  const entry = 'import a from "./a.js"; import b from "./b.js"; import c from "./c.js"; import d from "./d.js"; import e from "./e.js"; console.log(a,b,c,d,e,__webpack_hash__);';
+  let entry = 'import a from "./a.js"; import b from "./b.js"; import c from "./c.js"; import d from "./d.js"; import e from "./e.js"; console.log(a,b,c,d,e,__webpack_hash__);';
+  if (candidate.feature === 'two-groups') entry = 'import a from "./a.js"; import b from "./b.js"; console.log(a,b,__webpack_hash__);';
   for (const name of ['alpha', 'beta']) fs.writeFileSync(path.join(directory, `${name}.js`), entry);
   for (const [name, size] of [['a', 60000], ['b', 80000], ['c', 40000], ['d', 80000], ['e', 10000]]) {
+    if (candidate.feature === 'two-groups' && !['a', 'b'].includes(name)) continue;
     fs.writeFileSync(path.join(directory, `${name}.js`), `export default ${JSON.stringify(name.repeat(size))};`);
   }
 }
@@ -71,6 +81,12 @@ function options(directory, candidate) {
     reuse: { test: /[\\/]d\.js$/, name: () => 'shared', minChunks: 2 },
     small: { test: /[\\/]e\.js$/, name: () => 'small', minChunks: 2 },
   };
+  if (candidate.feature === 'two-groups') {
+    cacheGroups.first = { test: /[\\/]a\.js$/, name: () => 'a', minChunks: 2 };
+    cacheGroups.second = { test: /[\\/]b\.js$/, name: () => 'b', minChunks: 2 };
+    delete cacheGroups.reuse;
+    delete cacheGroups.small;
+  }
   for (let i = 4; i < candidate.groupCount; i++) {
     cacheGroups[`padding${i}`] = {
       test: i < 11 ? module => module.resource?.endsWith(`/padding${i}.js`) : new RegExp(`padding${i}\\.js$`),
@@ -116,9 +132,9 @@ function run(compiler, candidate, arm, step, changed = []) {
         const assets = stats.compilation.getAssets().map(({ name, source }) => ({ name, bytes: source.buffer() })).sort((a, b) => a.name.localeCompare(b.name));
         const logging = stats.toJson({ all: false, logging: 'verbose' }).logging;
         const replay = Object.values(logging || {}).flatMap(log => log.entries || []).map(entry => entry.message).filter(message => message.includes('replay:'));
-        const chunks = [...stats.compilation.chunks].map(chunk => ({ id: chunk.id, name: chunk.name, hash: chunk.hash, contentHash: chunk.contentHash, modules: [...stats.compilation.chunkGraph.getChunkModulesIterable(chunk)].map(module => path.relative(compiler.context, module.resource || module.identifier())).sort() })).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-        const snapshot = { candidate: candidate.name, arm, step, hash: stats.hash, assets, replay, chunks };
-        const target = path.join(results, candidate.name, arm, `step${step}`);
+        const chunks = [...stats.compilation.chunks].map(chunk => ({ id: chunk.id, name: chunk.name, hash: chunk.hash, contentHash: chunk.contentHash, hasRuntime: chunk.hasRuntime(), runtime: [...chunk.runtime].sort(), embedsFullHash: [...chunk.files].some(name => assets.find(asset => asset.name === name)?.bytes.includes(Buffer.from(stats.hash))), groups: [...chunk.groupsIterable].map(group => ({ name: group.name, chunks: group.chunks.map(chunk => chunk.id) })), modules: [...stats.compilation.chunkGraph.getChunkModulesIterable(chunk)].map(module => path.relative(compiler.context, module.resource || module.identifier())).sort() })).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        const snapshot = { candidate: candidate.name, trial: candidate.trial || 0, compiler: compiler.options.name, arm, step, hash: stats.hash, assets, replay, chunks };
+        const target = path.join(results, candidate.name, `trial${candidate.trial || 0}`, arm, `step${step}`);
         for (const asset of assets) {
           const file = path.join(target, asset.name);
           fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -139,11 +155,11 @@ async function search() {
     const arms = {};
     for (const arm of ['off', 'on']) {
       process.env.RSPACK_SPLIT_CHUNKS_REPLAY = arm === 'on' ? '1' : '0';
-      prepare(directory);
-      const compiler = rspack(options(directory, candidate));
+      prepare(directory, candidate);
+      const compiler = rspack({ ...options(directory, candidate), name: `${candidate.name}-${candidate.trial || 0}-${arm}` });
       try {
         arms[arm] = [await run(compiler, candidate, arm, 0)];
-        const name = candidate.feature === 'min-size-removal' ? 'e' : 'b';
+        const name = candidate.feature === 'min-size-removal' ? 'e' : candidate.feature === 'two-groups' ? 'a' : 'b';
         const size = candidate.feature === 'stable-size' ? 80000 : candidate.feature === 'min-size-removal' ? 60000 : 120000;
         const file = path.join(directory, `${name}.js`);
         fs.writeFileSync(file, `export default ${JSON.stringify('z'.repeat(size))};`);
@@ -153,17 +169,45 @@ async function search() {
     assert.equal(compare(arms.off[0], arms.on[0]).equalHash, true, 'Initial build hashes must agree');
     assert.equal(compare(arms.off[0], arms.on[0]).equalAssets, true, 'Initial build assets must agree');
     assert(arms.on[1].replay.some(message => message.includes('replayed')), `Replay did not run for ${candidate.name}`);
-    const comparison = { candidate: candidate.name, step: 1, off: arms.off[1].hash, on: arms.on[1].hash, ...compare(arms.off[1], arms.on[1]), equalChunkMembership: JSON.stringify(arms.off[1].chunks.map(({ id, modules }) => ({ id, modules }))) === JSON.stringify(arms.on[1].chunks.map(({ id, modules }) => ({ id, modules }))), replay: arms.on[1].replay };
+    const comparison = { candidate: candidate.name, trial: candidate.trial || 0, step: 1, off: arms.off[1].hash, on: arms.on[1].hash, ...compare(arms.off[1], arms.on[1]), equalChunkMembership: JSON.stringify(arms.off[1].chunks.map(({ id, modules }) => ({ id, modules }))) === JSON.stringify(arms.on[1].chunks.map(({ id, modules }) => ({ id, modules }))), replay: arms.on[1].replay };
+    comparison.nonRuntimeHashDiffs = arms.off[1].chunks.filter(chunk => !chunk.hasRuntime && !chunk.embedsFullHash).flatMap(chunk => {
+      const other = arms.on[1].chunks.find(item => item.id === chunk.id);
+      return !other || chunk.hash === other.hash ? [] : [{ id: chunk.id, name: chunk.name, off: chunk.hash, on: other.hash }];
+    });
+    comparison.equalRuntimes = JSON.stringify(arms.off[1].chunks.map(({id,runtime})=>({id,runtime}))) === JSON.stringify(arms.on[1].chunks.map(({id,runtime})=>({id,runtime})));
+    if (process.env.RSPACK_FULL_HASH_FOLD_DUMP) {
+      const records = fs.readFileSync(process.env.RSPACK_FULL_HASH_FOLD_DUMP, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const select = snapshot => {
+        const matches = records.filter(record => record.compiler === snapshot.compiler && record.hot_index === 1);
+        assert.equal(matches.length, 1, 'Exactly one fold record must match each rebuild');
+        assert(matches[0].full_hash.startsWith(snapshot.hash), 'Dump and stats hashes must agree');
+        return matches[0];
+      };
+      const off = select(arms.off[1]), on = select(arms.on[1]);
+      const payload = chunk => [chunk[1], chunk[2], chunk[3], Object.entries(chunk[4]).sort(([a],[b])=>a.localeCompare(b))];
+      const multiset = record => record.chunks.map(chunk => JSON.stringify(payload(chunk))).sort();
+      comparison.fold = {
+        hotIndexOff: off.hot_index, hotIndexOn: on.hot_index,
+        offOrder: off.chunks.map(chunk=>chunk[1]), onOrder: on.chunks.map(chunk=>chunk[1]),
+        sameMultiset: JSON.stringify(multiset(off)) === JSON.stringify(multiset(on)),
+        idOrderHashOff: off.id_order_hash, idOrderHashOn: on.id_order_hash,
+        equalIdOrderHash: off.id_order_hash === on.id_order_hash,
+        changedChunks: off.chunks.flatMap(chunk => {
+          const other = on.chunks.find(item => item[1] === chunk[1]);
+          return other && JSON.stringify(payload(chunk)) === JSON.stringify(payload(other)) ? [] : [{ off: chunk, on: other }];
+        }),
+      };
+    }
     comparisons.push(comparison);
     fs.writeFileSync(path.join(results, 'comparisons.json'), JSON.stringify(comparisons, null, 2));
     console.log('COMPARISON', JSON.stringify(comparison));
     if (!comparison.equalHash) {
       fs.writeFileSync(path.join(results, 'found.json'), JSON.stringify({ candidate, comparison }, null, 2));
       console.log('FOUND_MISMATCH', candidate.name);
-      return;
+      if (mode === 'search') return;
     }
   }
-  console.log('NO_MISMATCH', comparisons.length);
+  console.log('SEARCH_COMPLETE', comparisons.length);
 }
 search().catch(error => {
   fs.writeFileSync(path.join(results, 'error.txt'), error.stack || String(error));

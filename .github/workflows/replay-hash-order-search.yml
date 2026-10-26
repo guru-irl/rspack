@@ -10,12 +10,22 @@ permissions:
   actions: read
 
 jobs:
-  search:
+  binding:
+    uses: ./.github/workflows/reusable-build-build.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      profile: ci
+      runner: '"ubuntu-22.04"'
+      ref: ${{ github.sha }}
+      binding_postfix: -fold-order
+
+  reproduce:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     env:
       TMPDIR: ${{ github.workspace }}/tests/rspack-test/js/replay-hash-order-search/tmp
       NODE_OPTIONS: --max-old-space-size=8192
+      REPLAY_CASE_MODE: repeat
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare writable directory
@@ -45,6 +55,48 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: replay-hash-order-search
+          name: replay-hash-order-reruns
+          path: tests/rspack-test/js/replay-hash-order-search/results
+          if-no-files-found: warn
+
+  diagnose:
+    needs: binding
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      TMPDIR: ${{ github.workspace }}/tests/rspack-test/js/replay-hash-order-search/tmp
+      NODE_OPTIONS: --max-old-space-size=8192
+      REPLAY_CASE_MODE: repeat
+      RSPACK_FULL_HASH_FOLD_DUMP: ${{ github.workspace }}/tests/rspack-test/js/replay-hash-order-search/results/fold.jsonl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare writable directory
+        run: mkdir -p "$TMPDIR"
+      - name: Set up Node.js and pnpm
+        uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 22
+      - name: Download the fold-dump binding
+        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: bindings-x86_64-unknown-linux-gnu-fold-order
+          github-token: ${{ github.token }}
+          path: crates/node_binding
+      - name: Pin the built binding checksum
+        run: |
+          set -euo pipefail
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node | tee fold-binding.sha256
+          echo "EXPECTED_BINDING_SHA=$(cut -d ' ' -f 1 fold-binding.sha256)" >> "$GITHUB_ENV"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build the JavaScript package
+        run: pnpm --filter @rspack/core build
+      - name: Compare replay with full passes
+        run: node scripts/bench/replay-hash-order-search.cjs
+      - name: Upload comparisons and asset bytes
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: replay-hash-order-fold-dump
           path: tests/rspack-test/js/replay-hash-order-search/results
           if-no-files-found: warn
