@@ -106,14 +106,18 @@ async function capture(stats) {
   const topologyChanged = cacheLog.some(line => line.includes('module topology change detected'));
   const record = {
     phase, wallMs, cpuMs: (cpu.user + cpu.system) / 1000,
+    statsHash: stats.hash, hasCompilationHashLiteral: false,
     emitMs: timer(entries('rspack.Compiler'), 'emitAssets'), emittedFiles,
     buildGraphMs: timer(graph, 'build chunk graph'),
     rebuildGraphMs: timer(graph, 'rebuild chunk graph', false),
     splitChunksMs: timer(entries('rspack.SplitChunksPlugin'), 'process cache groups', false),
     topologyChanged, cacheLog, modules: stats.compilation.modules.size, chunks: stats.compilation.chunks.size,
   };
+  assert.equal(typeof record.statsHash, 'string');
+  assert(record.statsHash.length > 0);
   record.assets = Object.fromEntries(stats.compilation.getAssets().map(({ name, source }) => {
     const bytes = source.buffer();
+    if (bytes.includes(Buffer.from(record.statsHash))) record.hasCompilationHashLiteral = true;
     assert(fs.readFileSync(path.join(root, 'out', name)).equals(bytes), 'Emitted bytes differ from compilation');
     return [name, { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }];
   }).sort(([a], [b]) => a.localeCompare(b)));

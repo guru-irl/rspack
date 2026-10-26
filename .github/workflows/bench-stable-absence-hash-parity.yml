@@ -1,0 +1,76 @@
+name: Stable absence compilation hash parity
+on:
+  push:
+    branches: [bench/stable-absence-hash-parity]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-24.04 }
+          - { platform: macOS, runner: macos-15 }
+          - { platform: Windows, runner: windows-2025 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - name: Wait for and download exact-source release artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/.bench-stable-absence"
+          mkdir -p "$ROOT/tmp" "$ROOT/hash-results" "$ROOT/bindings"
+          export TMPDIR="$ROOT/tmp"
+          while :; do
+            if ! gh run view 40316541665 --repo guru-irl/rspack --json headSha,jobs,status,conclusion > "$ROOT/hash-results/build-status.json"; then sleep 60; continue; fi
+            rc=0
+            python - "$ROOT/hash-results/build-status.json" "$PLATFORM" <<'PY' || rc=$?
+          import json,sys
+          j=json.load(open(sys.argv[1]));assert j['headSha']=='8d80008b154763ccce6009e57fc29e0fe0a69fb1'
+          builds=[x for x in j['jobs'] if x['name'].startswith('build ('+sys.argv[2]+',')]
+          assert len(builds)<=2
+          assert all(x['status']!='completed' or x['conclusion']=='success' for x in builds),builds
+          raise SystemExit(0 if len(builds)==2 and all(x['status']=='completed' for x in builds) else 3)
+          PY
+            if test "$rc" = 0; then break; fi
+            test "$rc" = 3
+            sleep 60
+          done
+          for label in base pr; do
+            gh run download 40316541665 --repo guru-irl/rspack -n "absence-binding-$PLATFORM-$label" -D "$ROOT/bindings/absence-binding-$PLATFORM-$label"
+          done
+      - name: Compare every compilation hash and emitted output
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/.bench-stable-absence"
+          export TMPDIR="$ROOT/tmp"
+          pnpm install --frozen-lockfile > "$ROOT/hash-results/install.log" 2>&1
+          pnpm run build:js > "$ROOT/hash-results/build-js.log" 2>&1
+          node scripts/stable-absence-bench/prepare.mjs "$ROOT/hash-fixture"
+          node scripts/stable-absence-bench/add-barrel.mjs "$ROOT/hash-fixture"
+          python scripts/stable-absence-bench/hash-parity.py "$ROOT" "$PWD" "$PLATFORM"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: absence-hash-parity-${{ matrix.platform }}
+          path: .bench-stable-absence/hash-results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
