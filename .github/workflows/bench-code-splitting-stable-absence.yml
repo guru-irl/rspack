@@ -1,13 +1,13 @@
 name: Stable absence measurements
 on:
   push:
-    branches: [bench/code-splitting-stable-absence-main]
+    branches: [bench/stable-absence-probe]
     paths: ['.github/workflows/bench-code-splitting-stable-absence.yml', 'scripts/stable-absence-bench/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: stable-absence-main-measurements
+  group: stable-absence-main-probe
   cancel-in-progress: false
 jobs:
   red:
@@ -58,86 +58,34 @@ jobs:
           (p/'red-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
           print(json.dumps(summary,indent=2))
           PY
+      - name: Check the stock fixture and the barrel variant on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$PWD/.bench-stable-absence/red"
+          export TMPDIR="$E/tmp"
+          export RSPACK_BINDING="$E/binding/rspack.linux-x64-gnu.node"
+          export EXPECTED_BINDING_SHA256=$(sha256sum "$RSPACK_BINDING" | cut -d ' ' -f1)
+          FIXTURE="$PWD/.bench-stable-absence/probe-fixture"
+          node scripts/stable-absence-bench/prepare.mjs "$FIXTURE"
+          node --expose-gc scripts/stable-absence-bench/run.mjs "$FIXTURE" packages/rspack "$E/probe-stock.json" stock > "$E/probe-stock.log" 2>&1
+          node scripts/stable-absence-bench/add-barrel.mjs "$FIXTURE"
+          node --expose-gc scripts/stable-absence-bench/run.mjs "$FIXTURE" packages/rspack "$E/probe-barrel.json" barrel > "$E/probe-barrel.log" 2>&1
+          python - "$E" <<'PY'
+          from pathlib import Path
+          import json,sys
+          p=Path(sys.argv[1]);a=json.loads((p/'probe-stock.json').read_text());b=json.loads((p/'probe-barrel.json').read_text())
+          assert not a.get('error') and not b.get('error')
+          assert len(a['records'])==len(b['records'])==3
+          assert not any(r['topologyChanged'] for r in a['records'][1:])
+          assert all(r['topologyChanged'] for r in b['records'][1:])
+          print('Stock fixture does not reach stable absence; the small barrel variant does')
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: absence-red
           path: .bench-stable-absence/red/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: base, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr, ref: dbefa29254650ce0e830b62d2755b2b002981edb }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: base, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr, ref: dbefa29254650ce0e830b62d2755b2b002981edb }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: base, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr, ref: dbefa29254650ce0e830b62d2755b2b002981edb }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-      - name: Build exact release source
-        shell: bash
-        env:
-          SOURCE_REF: ${{ matrix.ref }}
-          RUST_TARGET: ${{ matrix.target }}
-        run: bash scripts/stable-absence-bench/build.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: absence-binding-${{ matrix.platform }}-${{ matrix.label }}
-          path: .bench-stable-absence/artifact/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-  measure:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-24.04 }
-          - { platform: macOS, runner: macos-15 }
-          - { platform: Windows, runner: windows-2025 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: absence-binding-${{ matrix.platform }}-*
-          path: .bench-stable-absence/bindings/
-      - name: Measure ten alternating pairs and same-binding calibration
-        shell: bash
-        env:
-          EXPECTED_PR_SHA: dbefa29254650ce0e830b62d2755b2b002981edb
-          CHECK_STOCK: '1'
-        run: bash scripts/stable-absence-bench/measure.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: absence-results-${{ matrix.platform }}
-          path: .bench-stable-absence/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
