@@ -57,7 +57,7 @@ const mappedNative = () => {
     paths = [...new Set(fs.readFileSync('/proc/self/maps', 'utf8').split('\n').map(line => line.slice(line.indexOf('/'))).filter(file => file.endsWith('.node')))];
     assert(paths.some(file => key(file) === key(expectedPath)), 'The required native binding must be mapped');
   } else {
-    paths = process.report.getReport().sharedObjects.filter(file => fs.existsSync(file));
+    paths = process.report.getReport().sharedObjects.filter(file => path.isAbsolute(file) && file.endsWith('.node') && fs.existsSync(file));
     assert(loadedNative.some(file => key(file) === key(expectedPath)), 'The required native binding must have loaded');
   }
   const sha256 = hash(fs.readFileSync(expectedPath));
