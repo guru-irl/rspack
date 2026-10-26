@@ -7,7 +7,7 @@ module.exports = {
     minimize: false,
     concatenateModules: false,
     splitChunks: {
-      experimentalReplay: true,
+      experimentalCache: true,
       chunks: 'all',
       minSize: 1000,
       cacheGroups: {

@@ -1,11 +1,11 @@
 mod bitmap;
+mod cache;
 mod chunk;
 mod intersections;
 mod max_request;
 pub mod max_size;
 pub mod min_size;
 mod module_group;
-mod replay;
 mod residual;
 
 use std::{
@@ -46,7 +46,7 @@ pub type SplitChunksNameBatchFn = Arc<
 
 #[derive(Debug)]
 pub struct PluginOptions {
-  pub experimental_replay: bool,
+  pub experimental_cache: bool,
   pub dedup_depth: u32,
   pub cache_groups: Vec<CacheGroup>,
   pub fallback_cache_group: FallbackCacheGroup,
@@ -60,8 +60,8 @@ pub struct SplitChunksPlugin {
   name_batch_getters: Option<Box<[Option<SplitChunksNameBatchFn>]>>,
   fallback_cache_group: FallbackCacheGroup,
   hide_path_info: bool,
-  replay_options: replay::ReplayOptions,
-  replay_record: Mutex<Option<Arc<replay::ReplayRecord>>>,
+  cache_enabled: bool,
+  cache_structure: Mutex<Option<Arc<cache::CacheStructure>>>,
   last_compilation: Mutex<Option<rspack_core::CompilationId>>,
 }
 
@@ -74,7 +74,7 @@ impl SplitChunksPlugin {
       None,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
-      replay::ReplayOptions::new(options.experimental_replay),
+      options.experimental_cache,
       Mutex::new(None),
       Mutex::new(None),
     )
@@ -101,7 +101,7 @@ impl SplitChunksPlugin {
       name_batch_getters,
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
-      replay::ReplayOptions::new(options.experimental_replay),
+      options.experimental_cache,
       Mutex::new(None),
       Mutex::new(None),
     )
@@ -109,8 +109,8 @@ impl SplitChunksPlugin {
   #[instrument(name = "Compilation:SplitChunks",target=TRACING_BENCH_TARGET, skip_all)]
   async fn inner_impl(&self, compilation: &mut Compilation) -> Result<()> {
     let logger = compilation.get_logger(self.name());
-    if !self.replay_options.enabled {
-      let settings = self.full_impl(compilation, &mut None).await?;
+    if !self.cache_enabled {
+      let settings = self.full_impl(compilation, None).await?;
       let start = logger.time("ensure max size fit");
       self.ensure_max_size_fit(compilation, &settings).await?;
       logger.time_end(start);
@@ -120,23 +120,21 @@ impl SplitChunksPlugin {
       let mut last = self
         .last_compilation
         .lock()
-        .expect("replay compilation lock");
+        .expect("cache compilation lock");
       let first_compilation = last.is_none();
       let first = *last != Some(compilation.id());
       *last = Some(compilation.id());
       (first, first_compilation)
     };
     if !first_invocation {
-      let settings = self.full_impl(compilation, &mut None).await?;
+      let settings = self.full_impl(compilation, None).await?;
       let start = logger.time("ensure max size fit");
       self.ensure_max_size_fit(compilation, &settings).await?;
       logger.time_end(start);
       return Ok(());
     }
-    // The opt-in contract permits size drift and skips identity/graph-only callbacks.
-    // maxSize is still evaluated against current sizes after either path.
-    let replay_start = Instant::now();
-    let active = self.replay_options.force || compilation.options.mode.is_development();
+    // JavaScript callbacks for test, name, chunks, type and layer must depend only on their arguments, module identity and the chunk graph.
+    let active = compilation.options.mode.is_development();
     let errors_present = compilation.get_errors().next().is_some();
     let digest_start = Instant::now();
     let digest = (active && !errors_present).then(|| self.entry_digest(compilation));
@@ -145,55 +143,54 @@ impl SplitChunksPlugin {
     } else {
       0.0
     };
+    // Take the old structure before fallible work so a failed run cannot retain it.
     let previous = self
-      .replay_record
+      .cache_structure
       .lock()
-      .expect("replay record lock")
-      .clone();
+      .expect("cache structure lock")
+      .take();
+    let hit = digest.as_ref().is_some_and(|digest| {
+      previous
+        .as_ref()
+        .is_some_and(|structure| structure.digest == *digest)
+    });
     let reason = if !active {
-      "disabled: mode is not development".to_string()
+      "disabled: mode is not development"
     } else if errors_present {
-      "errors present".to_string()
-    } else if let Some(record) = previous.as_ref() {
-      if Some(record.digest) != digest {
-        "inputs changed".to_string()
-      } else if let Err(reason) = record.precheck(compilation) {
-        format!("pre-check failed: {reason}")
-      } else {
-        let settings = self.replay_events(record, compilation);
-        logger.info(format!(
-          "replay: replayed {} operations ({} chunks created) in {:.3} ms",
-          record.events.len(),
-          record.created_count,
-          replay_start.elapsed().as_secs_f64() * 1000.0
-        ));
-        let start = logger.time("ensure max size fit");
-        self.ensure_max_size_fit(compilation, &settings).await?;
-        logger.time_end(start);
-        return Ok(());
-      }
+      "errors present"
+    } else if previous.is_none() {
+      "no record"
     } else {
-      "no record".to_string()
+      "structure changed"
     };
-    if active || first_compilation {
+    let structure = digest.map(|digest| {
+      previous
+        .filter(|structure| structure.digest == digest)
+        .unwrap_or_else(|| Arc::new(cache::CacheStructure::new(digest)))
+    });
+    if hit {
+      logger.info(format!("cache: unchanged graph (digest {digest_ms:.3} ms)"));
+    } else if active || first_compilation {
       logger.info(format!(
-        "replay: full run ({reason}; digest {digest_ms:.3} ms)"
+        "cache: full run ({reason}; digest {digest_ms:.3} ms)"
       ));
     }
-    // Invalidate before any fallible work, so a failed run cannot leave a stale record.
-    if active {
-      *self.replay_record.lock().expect("replay record lock") = None;
-    }
     let diagnostics = compilation.diagnostics().len();
-    let mut recorder = digest.map(replay::Recorder::new);
-    let settings = self.full_impl(compilation, &mut recorder).await?;
+    let settings = self.full_impl(compilation, structure.as_deref()).await?;
     let start = logger.time("ensure max size fit");
     self.ensure_max_size_fit(compilation, &settings).await?;
     logger.time_end(start);
-    if compilation.diagnostics().len() == diagnostics
-      && let Some(recorder) = recorder
-    {
-      *self.replay_record.lock().expect("replay record lock") = Some(Arc::new(recorder.finish()));
+    if compilation.diagnostics().len() == diagnostics {
+      if std::env::var_os("RSPACK_SPLIT_CHUNKS_STRUCTURE_MEMORY").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+        && let Some(structure) = &structure
+      {
+        logger.info(format!(
+          "structure cache: retained={} bytes",
+          structure.logical_bytes()
+        ));
+      }
+      *self.cache_structure.lock().expect("cache structure lock") = structure;
     }
     Ok(())
   }
@@ -201,7 +198,7 @@ impl SplitChunksPlugin {
   async fn full_impl(
     &self,
     compilation: &mut Compilation,
-    recorder: &mut Option<replay::Recorder>,
+    structure: Option<&cache::CacheStructure>,
   ) -> Result<FxHashMap<ChunkUkey, MaxSizeSetting>> {
     let logger = compilation.get_logger(self.name());
     let start = logger.time("prepare module data");
@@ -216,6 +213,21 @@ impl SplitChunksPlugin {
     all_modules.sort_unstable_by_key(|module| (module.precomputed_hash(), *module));
 
     let module_sizes = get_module_sizes(all_modules.par_iter().copied(), compilation);
+    let fallback = if let Some(structure) = structure {
+      if !cache::exact_size_arithmetic(
+        &module_sizes,
+        compilation.build_chunk_graph_artifact.chunk_by_ukey.len(),
+      ) {
+        Some(cache::PhaseOutcome::SizeSafety)
+      } else if !structure.order_safe(self, &all_modules, compilation) {
+        Some(cache::PhaseOutcome::Ordering)
+      } else {
+        None
+      }
+    } else {
+      Some(cache::PhaseOutcome::Disabled)
+    };
+    let structure = if fallback.is_none() { structure } else { None };
     let mut module_chunks = Self::get_module_chunks(&all_modules, compilation);
     let module_indices = all_modules
       .iter()
@@ -325,94 +337,235 @@ impl SplitChunksPlugin {
           })
       });
       let available_module_chunks = &module_chunks;
-      // Precompute once for this priority, then reuse the prepared combinations
-      // throughout candidate preparation and selection.
-      let previous = std::mem::take(&mut combinator);
-      rayon::spawn(move || drop(previous));
-      let intersection_settings = |used_exports| {
-        if self.dedup_depth == 0 {
-          return None;
-        }
-        let intersection_cache_groups = cache_groups
-          .iter()
-          .filter(|indexed_cache_group| {
-            let cache_group = indexed_cache_group.cache_group;
-            let has_name_batch_getter = self.name_batch_getters.as_deref().is_some_and(|getters| {
-              getters
-                .get(indexed_cache_group.cache_group_index as usize)
-                .is_some_and(Option::is_some)
-            });
-            cache_group.used_exports == used_exports
-              && module_group::cache_group_uses_intersections(cache_group, has_name_batch_getter)
-          })
-          .collect::<Vec<_>>();
-        let min_chunks = intersection_cache_groups
-          .iter()
-          .map(|indexed_cache_group| (indexed_cache_group.cache_group.min_chunks as usize).max(1))
-          .min();
-        min_chunks.map(|min_chunks| {
-          (
-            min_chunks,
-            intersection_cache_groups
-              .into_iter()
-              .map(|group| group.cache_group)
-              .collect(),
-          )
-        })
-      };
-      let non_used_exports_intersection_settings = intersection_settings(false);
-      let used_exports_intersection_settings = intersection_settings(true);
-      let non_used_exports_min_chunks = cache_groups
-        .iter()
-        .filter(|cache_group| !cache_group.cache_group.used_exports)
-        .map(|cache_group| cache_group.cache_group.min_chunks as usize)
-        .min();
-
-      if let Some(min_chunks) = non_used_exports_min_chunks {
-        combinator.prepare_group_by_chunks(
-          &all_modules,
-          available_module_chunks,
-          &chunk_index_map,
-          min_chunks,
-          module_group::IntersectionPreparation {
-            dedup_depth: self.dedup_depth,
-            settings: non_used_exports_intersection_settings,
-            module_sizes: &module_sizes,
-            compilation,
-          },
-        );
-      }
-
-      if cache_groups
-        .iter()
-        .any(|cache_group| cache_group.cache_group.used_exports)
-      {
-        combinator.prepare_group_by_used_exports(
-          &all_modules,
-          &compilation.exports_info_artifact,
-          &compilation.build_chunk_graph_artifact.chunk_by_ukey,
-          available_module_chunks,
-          &chunk_index_map,
-          module_group::IntersectionPreparation {
-            dedup_depth: self.dedup_depth,
-            settings: used_exports_intersection_settings,
-            module_sizes: &module_sizes,
-            compilation,
-          },
-        );
-      }
-
-      let mut module_group_map = self
-        .prepare_module_group_map(
-          &combinator,
-          &all_modules,
-          cache_groups,
-          native_matches,
+      let key_start = Instant::now();
+      let phase_digest = structure.map(|structure| {
+        self.phase_digest(
+          structure.digest,
+          index,
           compilation,
+          &all_modules,
           available_module_chunks,
           &chunk_index_map,
         )
-        .await?;
+      });
+      let phase_key_ms = key_start.elapsed().as_secs_f64() * 1000.0;
+      if cache::verification_enabled()
+        && let Some(digest) = phase_digest
+      {
+        logger.info(format!("structure key: phase={index} digest={digest:032x}"));
+      }
+      let mut cached = structure
+        .zip(phase_digest)
+        .and_then(|(structure, digest)| structure.phase(index, digest));
+      let validated_reads = cached.as_ref().map_or(0, |phase| phase.size_reads.len());
+      let validation_start = Instant::now();
+      let tracked_read_changed = cached
+        .as_ref()
+        .is_some_and(|phase| !phase.validate_size_reads(compilation));
+      let validation_ms = if validated_reads == 0 {
+        0.0
+      } else {
+        validation_start.elapsed().as_secs_f64() * 1000.0
+      };
+      if tracked_read_changed {
+        structure
+          .expect("cached phase should have an owner")
+          .invalidate(index);
+        cached = None;
+      }
+      let mut fresh = None;
+      if cached.is_none() || cache::verification_enabled() {
+        let build_start = Instant::now();
+        let reads =
+          structure.map(|_| rspack_core::ModuleReadSession::new(compilation.compiler_id()));
+        // Precompute once for this priority, then reuse the prepared combinations
+        // throughout candidate preparation and selection.
+        let previous = std::mem::take(&mut combinator);
+        rayon::spawn(move || drop(previous));
+        let intersection_settings = |used_exports| {
+          if self.dedup_depth == 0 {
+            return None;
+          }
+          let intersection_cache_groups = cache_groups
+            .iter()
+            .filter(|indexed_cache_group| {
+              let cache_group = indexed_cache_group.cache_group;
+              let has_name_batch_getter =
+                self.name_batch_getters.as_deref().is_some_and(|getters| {
+                  getters
+                    .get(indexed_cache_group.cache_group_index as usize)
+                    .is_some_and(Option::is_some)
+                });
+              cache_group.used_exports == used_exports
+                && module_group::cache_group_uses_intersections(cache_group, has_name_batch_getter)
+            })
+            .collect::<Vec<_>>();
+          let min_chunks = intersection_cache_groups
+            .iter()
+            .map(|indexed_cache_group| (indexed_cache_group.cache_group.min_chunks as usize).max(1))
+            .min();
+          min_chunks.map(|min_chunks| {
+            (
+              min_chunks,
+              intersection_cache_groups
+                .into_iter()
+                .map(|group| group.cache_group)
+                .collect(),
+            )
+          })
+        };
+        let non_used_exports_intersection_settings = intersection_settings(false);
+        let used_exports_intersection_settings = intersection_settings(true);
+        let non_used_exports_min_chunks = cache_groups
+          .iter()
+          .filter(|cache_group| !cache_group.cache_group.used_exports)
+          .map(|cache_group| cache_group.cache_group.min_chunks as usize)
+          .min();
+
+        if let Some(min_chunks) = non_used_exports_min_chunks {
+          combinator.prepare_group_by_chunks(
+            &all_modules,
+            available_module_chunks,
+            &chunk_index_map,
+            min_chunks,
+            module_group::IntersectionPreparation {
+              dedup_depth: self.dedup_depth,
+              settings: non_used_exports_intersection_settings,
+              module_sizes: &module_sizes,
+              compilation,
+              unpruned: structure.is_some(),
+            },
+          );
+        }
+
+        if cache_groups
+          .iter()
+          .any(|cache_group| cache_group.cache_group.used_exports)
+        {
+          combinator.prepare_group_by_used_exports(
+            &all_modules,
+            &compilation.exports_info_artifact,
+            &compilation.build_chunk_graph_artifact.chunk_by_ukey,
+            available_module_chunks,
+            &chunk_index_map,
+            module_group::IntersectionPreparation {
+              dedup_depth: self.dedup_depth,
+              settings: used_exports_intersection_settings,
+              module_sizes: &module_sizes,
+              compilation,
+              unpruned: structure.is_some(),
+            },
+          );
+        }
+
+        let pruning = if structure.is_some() {
+          combinator.snapshot_pruning(
+            &all_modules,
+            &cache_groups,
+            self.name_batch_getters.as_deref(),
+            &module_sizes,
+            compilation,
+          )
+        } else {
+          [None, None]
+        };
+        let candidates = self
+          .prepare_module_group_candidates(
+            &combinator,
+            &all_modules,
+            cache_groups,
+            native_matches,
+            compilation,
+            available_module_chunks,
+            &chunk_index_map,
+          )
+          .await?;
+        let build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
+        let reads = reads.map_or_else(
+          rspack_core::ModuleReadSet::default,
+          rspack_core::ModuleReadSession::finish,
+        );
+        fresh = Some((candidates, pruning, build_ms, reads));
+      }
+      if fresh
+        .as_ref()
+        .is_some_and(|(_, _, _, reads)| reads.untrackable)
+      {
+        if let Some(structure) = structure {
+          structure.invalidate(index);
+        }
+        cached = None;
+      }
+      let (recorded_reads, recorded_calls) = fresh.as_ref().map_or_else(
+        || {
+          cached.as_ref().map_or((0, 0), |phase| {
+            (phase.size_reads.len(), phase.size_read_calls)
+          })
+        },
+        |(_, _, _, reads)| (reads.sizes.len(), reads.size_calls),
+      );
+      let mut outcome = cache::PhaseOutcome::Hit;
+      let mut clone_ms = 0.0;
+      let build_ms = fresh.as_ref().map_or(0.0, |(_, _, build_ms, _)| *build_ms);
+      let mut module_group_map = if let Some(cached) = cached {
+        if let Some((candidates, pruning, build_ms, _)) = &mut fresh {
+          cached.assert_matches(index, candidates, pruning, &module_sizes);
+          logger.info(format!("structure verification: phase={index} matched key={phase_key_ms:.3} build={build_ms:.3} ms"));
+        }
+        let clone_start = Instant::now();
+        let candidates = cached.clone_candidates();
+        clone_ms = clone_start.elapsed().as_secs_f64() * 1000.0;
+        cached.restore(candidates, self, &module_sizes, compilation)
+      } else {
+        let (candidates, pruning, _, reads) = fresh.expect("fresh candidates should exist");
+        if let Some((structure, digest)) = structure.zip(phase_digest) {
+          if reads.untrackable {
+            outcome = cache::PhaseOutcome::UntrackableRead;
+            cache::PreparedPhase::into_current_map(
+              candidates,
+              &pruning,
+              self,
+              &module_sizes,
+              compilation,
+            )
+          } else if candidates
+            .iter()
+            .all(|candidate| candidate.group.deterministic_chunk_choice(compilation))
+          {
+            let snapshot = cache::PreparedPhase::capture(digest, &candidates, pruning, reads);
+            let map = snapshot.restore(candidates, self, &module_sizes, compilation);
+            structure.insert(index, snapshot);
+            outcome = if tracked_read_changed {
+              cache::PhaseOutcome::TrackedReadChanged
+            } else {
+              cache::PhaseOutcome::DigestMiss
+            };
+            map
+          } else {
+            outcome = cache::PhaseOutcome::ReuseAmbiguity;
+            cache::PreparedPhase::into_current_map(
+              candidates,
+              &pruning,
+              self,
+              &module_sizes,
+              compilation,
+            )
+          }
+        } else {
+          outcome = fallback.expect("disabled structure should have a reason");
+          cache::PreparedPhase::into_current_map(
+            candidates,
+            &pruning,
+            self,
+            &module_sizes,
+            compilation,
+          )
+        }
+      };
+      if !matches!(outcome, cache::PhaseOutcome::Disabled) {
+        logger.info(format!("structure reads: phase={index} recorded={recorded_reads} calls={recorded_calls} validated={validated_reads} validate={validation_ms:.6} ms"));
+        logger.info(format!("structure cache: phase={index} outcome={} key={phase_key_ms:.3} build={build_ms:.3} clone={clone_ms:.3} ms", outcome.label()));
+      }
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
       module_group_map
@@ -437,7 +590,6 @@ impl SplitChunksPlugin {
           &mut module_group,
           &mut is_reuse_existing_chunk,
           &mut is_reuse_existing_chunk_with_all_modules,
-          recorder,
         );
 
         tracing::trace!(
@@ -692,15 +844,6 @@ impl SplitChunksPlugin {
           &mut max_size_setting_map,
         );
 
-        if let Some(recorder) = recorder {
-          recorder.apply(
-            new_chunk,
-            module_group.cache_group_index,
-            module_group.chunk_name.clone(),
-            &placed_module_chunks,
-            &used_chunks,
-          );
-        }
         self.move_modules_to_new_chunk_and_remove_from_old_chunks(
           &placed_module_chunks,
           new_chunk,

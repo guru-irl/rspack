@@ -114,7 +114,8 @@ impl fmt::Display for ModuleGroupKey {
 ///  A `ModuleGroup` would be transform into multiple `Chunk`s if the `name` dynamic computed
 ///
 /// The original name of `ModuleGroup` is `ChunkInfoItem` borrowed from Webpack
-#[derive(Debug)]
+/// Cloning separates cached selected placements from mutable working groups.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ModuleGroupChunks {
   /// Anonymous groups are keyed by their exact chunk combination. `None` means the selected chunks
   /// are still identical to `ModuleGroup::chunks`; a snapshot is created only if that union is
@@ -163,6 +164,73 @@ pub(crate) struct ModuleGroup {
   total_size: f64,
 }
 
+pub(crate) struct ModuleGroupSnapshot {
+  modules: IdentifierSet,
+  module_chunks: ModuleGroupChunks,
+  cache_group_index: u32,
+  cache_group_reuse_existing_chunk: bool,
+  chunk_name: Option<String>,
+  chunks: FxHashSet<ChunkUkey>,
+  module_order: Vec<ModuleIdentifier>,
+}
+
+impl ModuleGroupSnapshot {
+  pub(crate) fn restore(&self) -> ModuleGroup {
+    ModuleGroup {
+      modules: self.modules.clone(),
+      candidate_flags: ModuleGroup::SELECTABLE,
+      module_chunks: self.module_chunks.clone(),
+      cache_group_index: self.cache_group_index,
+      cache_group_reuse_existing_chunk: self.cache_group_reuse_existing_chunk,
+      chunk_name: self.chunk_name.clone(),
+      chunks: self.chunks.clone(),
+      chunk_mask: chunk_mask(self.chunks.iter()),
+      modules_for_compare: ModulesForCompare::Unsorted(self.module_order.clone()),
+      pending_initial_sizes: !self.modules.is_empty(),
+      has_modules_without_source_types: false,
+      removed: Vec::new(),
+      sizes: Default::default(),
+      total_size: 0.0,
+    }
+  }
+
+  pub(crate) fn same_structure(&self, other: &ModuleGroup) -> bool {
+    self.modules == other.modules
+      && self.module_chunks == other.module_chunks
+      && self.cache_group_index == other.cache_group_index
+      && self.cache_group_reuse_existing_chunk == other.cache_group_reuse_existing_chunk
+      && self.chunk_name == other.chunk_name
+      && self.chunks == other.chunks
+  }
+
+  pub(crate) fn logical_bytes(&self) -> usize {
+    use std::mem::size_of;
+    let table = |capacity: usize, item: usize| {
+      if capacity == 0 {
+        0
+      } else {
+        let buckets = capacity.saturating_mul(8).div_ceil(7).next_power_of_two();
+        buckets * item + buckets + 16
+      }
+    };
+    let chunks = |set: &FxHashSet<ChunkUkey>| table(set.capacity(), size_of::<ChunkUkey>());
+    let memberships = match &self.module_chunks {
+      ModuleGroupChunks::Shared(value) => value.as_ref().map_or(0, chunks),
+      ModuleGroupChunks::ByModule(values) => {
+        table(
+          values.capacity(),
+          size_of::<(ModuleIdentifier, FxHashSet<ChunkUkey>)>(),
+        ) + values.values().map(chunks).sum::<usize>()
+      }
+    };
+    table(self.modules.capacity(), size_of::<ModuleIdentifier>())
+      + memberships
+      + chunks(&self.chunks)
+      + self.module_order.capacity() * size_of::<ModuleIdentifier>()
+      + self.chunk_name.as_ref().map_or(0, String::capacity)
+  }
+}
+
 // Most consecutive module sizes have the same source type. Keep that running
 // total in a local value instead of hashing the type for every module. Flush on
 // type changes so insertion order and each floating-point operation stay intact.
@@ -195,6 +263,35 @@ impl SizeAccumulator<'_> {
 }
 
 impl ModuleGroup {
+  pub(crate) fn deterministic_chunk_choice(&self, compilation: &rspack_core::Compilation) -> bool {
+    if self.chunk_name.is_some() || !self.cache_group_reuse_existing_chunk || self.chunks.len() < 2
+    {
+      return true;
+    }
+    let mut names = FxHashSet::default();
+    self.chunks.iter().all(|chunk| {
+      names.insert(
+        compilation
+          .build_chunk_graph_artifact
+          .chunk_by_ukey
+          .expect_get(chunk)
+          .name(),
+      )
+    })
+  }
+
+  pub(crate) fn snapshot(&self) -> ModuleGroupSnapshot {
+    ModuleGroupSnapshot {
+      modules: self.modules.clone(),
+      module_chunks: self.module_chunks.clone(),
+      cache_group_index: self.cache_group_index,
+      cache_group_reuse_existing_chunk: self.cache_group_reuse_existing_chunk,
+      chunk_name: self.chunk_name.clone(),
+      chunks: self.chunks.clone(),
+      module_order: self.modules.iter().copied().collect(),
+    }
+  }
+
   const SELECTABLE: u8 = 1 << 0;
   const PLACEMENT_CHANGED: u8 = 1 << 1;
 

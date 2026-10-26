@@ -110,11 +110,86 @@ struct CandidateRelations {
   originals: Vec<ChunksKey>,
 }
 
+pub(crate) struct PreparedCandidate {
+  pub key: ModuleGroupKey,
+  pub group: ModuleGroup,
+  pub intersection: Option<(bool, usize)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct IntersectionPruning {
+  groups: Vec<u32>,
+  minimum: u64,
+  rows: Vec<Vec<ModuleIdentifier>>,
+  support: Vec<Vec<usize>>,
+}
+
+impl IntersectionPruning {
+  pub(super) fn allowed(
+    &self,
+    cache_groups: &[CacheGroup],
+    module_sizes: &ModuleSizes,
+    compilation: &Compilation,
+  ) -> Vec<bool> {
+    let preparation = IntersectionPreparation {
+      dedup_depth: 0,
+      settings: Some((
+        1,
+        self
+          .groups
+          .iter()
+          .map(|index| &cache_groups[*index as usize])
+          .collect(),
+      )),
+      module_sizes,
+      compilation,
+      unpruned: false,
+    };
+    let bounds = self
+      .rows
+      .iter()
+      .map(|modules| {
+        modules.iter().fold(0u64, |total, module| {
+          total.saturating_add(preparation.module_size_bound(module))
+        })
+      })
+      .collect::<Vec<_>>();
+    self
+      .support
+      .iter()
+      .map(|rows| {
+        rows
+          .iter()
+          .fold(0u64, |total, row| total.saturating_add(bounds[*row]))
+          >= self.minimum
+      })
+      .collect()
+  }
+
+  pub(super) fn logical_bytes(&self) -> usize {
+    use std::mem::size_of;
+    self.groups.capacity() * size_of::<u32>()
+      + self.rows.capacity() * size_of::<Vec<ModuleIdentifier>>()
+      + self
+        .rows
+        .iter()
+        .map(|row| row.capacity() * size_of::<ModuleIdentifier>())
+        .sum::<usize>()
+      + self.support.capacity() * size_of::<Vec<usize>>()
+      + self
+        .support
+        .iter()
+        .map(|row| row.capacity() * size_of::<usize>())
+        .sum::<usize>()
+  }
+}
+
 pub(super) struct IntersectionPreparation<'a> {
   pub dedup_depth: u32,
   pub settings: Option<(usize, Vec<&'a CacheGroup>)>,
   pub module_sizes: &'a ModuleSizes,
   pub compilation: &'a Compilation,
+  pub unpruned: bool,
 }
 
 impl IntersectionPreparation<'_> {
@@ -127,6 +202,9 @@ impl IntersectionPreparation<'_> {
   }
 
   fn min_size_bound(&self) -> u64 {
+    if self.unpruned {
+      return 0;
+    }
     // Filtering can map different intersections to the same selected chunk
     // set. Their modules may pass minSize only after those candidates merge.
     // A bound on one unfiltered intersection cannot reject that final group.
@@ -146,6 +224,9 @@ impl IntersectionPreparation<'_> {
   }
 
   fn module_size_bound(&self, module: &ModuleIdentifier) -> u64 {
+    if self.unpruned {
+      return u64::MAX;
+    }
     let Some((_, groups)) = &self.settings else {
       return u64::MAX;
     };
@@ -436,7 +517,7 @@ impl Combinator {
     matches: &[AtomicBool],
     all_modules: &[ModuleIdentifier],
     chunks_by_index: &[ChunkUkey],
-  ) -> Vec<(ModuleGroupKey, ModuleGroup)> {
+  ) -> Vec<PreparedCandidate> {
     let cache_group = indexed.cache_group;
     let candidates = self
       .candidates(cache_group.used_exports)
@@ -467,7 +548,8 @@ impl Combinator {
     candidates
       .intersections
       .par_iter()
-      .filter_map(|Intersection { chunks, support }| {
+      .enumerate()
+      .filter_map(|(intersection, Intersection { chunks, support })| {
         if chunks.len() < cache_group.min_chunks as usize {
           return None;
         }
@@ -501,12 +583,87 @@ impl Combinator {
           cache_group_index: indexed.cache_group_index,
           chunks_key: hasher.finish(),
         };
-        Some((key, group))
+        Some(PreparedCandidate {
+          key,
+          group,
+          intersection: Some((cache_group.used_exports, intersection)),
+        })
       })
       .collect()
   }
 
   // Querying a prepared set does not enumerate, hash its chunks or allocate a result Vec.
+
+  pub(super) fn snapshot_pruning(
+    &self,
+    all_modules: &[ModuleIdentifier],
+    cache_groups: &[IndexedCacheGroup<'_>],
+    name_batch_getters: Option<&[Option<SplitChunksNameBatchFn>]>,
+    module_sizes: &ModuleSizes,
+    compilation: &Compilation,
+  ) -> [Option<IntersectionPruning>; 2] {
+    [false, true].map(|used_exports| {
+      let candidates = self.candidates(used_exports)?;
+      let groups = cache_groups
+        .iter()
+        .filter(|indexed| {
+          let group = indexed.cache_group;
+          let has_batch = name_batch_getters
+            .and_then(|getters| getters.get(indexed.cache_group_index as usize))
+            .is_some_and(Option::is_some);
+          group.used_exports == used_exports && cache_group_uses_intersections(group, has_batch)
+        })
+        .collect::<Vec<_>>();
+      let preparation = IntersectionPreparation {
+        dedup_depth: 0,
+        settings: Some((
+          1,
+          groups.iter().map(|indexed| indexed.cache_group).collect(),
+        )),
+        module_sizes,
+        compilation,
+        unpruned: false,
+      };
+      let minimum = preparation.min_size_bound();
+      if minimum == 0 {
+        return None;
+      }
+      let row_indices: FxHashMap<_, _> = candidates
+        .originals
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (*key, index))
+        .collect();
+      let mut rows = vec![vec![]; candidates.originals.len()];
+      for (index, module) in all_modules.iter().enumerate() {
+        if used_exports {
+          for key in &self.grouped_by_exports[index] {
+            if let Some(row) = row_indices.get(key) {
+              rows[*row].push(*module);
+            }
+          }
+        } else if let Some(key) = self.non_used_exports_chunks_keys[index]
+          && let Some(row) = row_indices.get(&key)
+        {
+          rows[*row].push(*module);
+        }
+      }
+      Some(IntersectionPruning {
+        groups: groups
+          .iter()
+          .map(|indexed| indexed.cache_group_index)
+          .collect(),
+        minimum,
+        rows,
+        support: candidates
+          .intersections
+          .iter()
+          .map(|intersection| intersection.support.clone())
+          .collect(),
+      })
+    })
+  }
+
   fn get_non_used_exports_combs(&self, module_index: usize) -> &PreparedCombinations {
     let key = self.non_used_exports_chunks_keys[module_index].expect("prepared module chunk key");
     self.combinations.get(&key).expect("prepared combinations")
@@ -1009,7 +1166,7 @@ impl SplitChunksPlugin {
 
   #[allow(clippy::too_many_arguments)]
   #[instrument(name = "Compilation:SplitChunks:prepare_module_group_map",target=TRACING_BENCH_TARGET, skip_all)]
-  pub(crate) async fn prepare_module_group_map(
+  pub(crate) async fn prepare_module_group_candidates(
     &self,
     combinator: &Combinator,
     all_modules: &[ModuleIdentifier],
@@ -1018,7 +1175,7 @@ impl SplitChunksPlugin {
     compilation: &Compilation,
     module_chunks: &[SsoHashSet<ChunkUkey>],
     chunk_index_map: &FxHashMap<ChunkUkey, u32>,
-  ) -> Result<ModuleGroupMap> {
+  ) -> Result<Vec<PreparedCandidate>> {
     let module_graph = compilation.get_module_graph();
     let module_group_map: FxDashMap<ModuleGroupKey, ModuleGroup> = FxDashMap::default();
     // Only function filters use this preparation-scoped memo. Native-only
@@ -1369,7 +1526,15 @@ impl SplitChunksPlugin {
 
     let module_group_count = module_group_map.len();
     let mut result = Vec::with_capacity(module_group_count);
-    result.extend(module_group_map);
+    result.extend(
+      module_group_map
+        .into_iter()
+        .map(|(key, group)| PreparedCandidate {
+          key,
+          group,
+          intersection: None,
+        }),
+    );
     if direct_matches.iter().any(Option::is_some) {
       let chunks_by_index = chunks_by_index(chunk_index_map);
       for (indexed, matches) in cache_groups.iter().zip(&direct_matches) {
@@ -1383,12 +1548,8 @@ impl SplitChunksPlugin {
         }
       }
     }
-    let module_group_count = result.len();
-    result.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut ordered_result =
-      ModuleGroupMap::with_capacity_and_hasher(module_group_count, Default::default());
-    ordered_result.extend(result);
-    Ok(ordered_result)
+    result.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(result)
   }
 
   // #[tracing::instrument(skip_all)]
