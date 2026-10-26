@@ -1,0 +1,66 @@
+name: Watchpack reuse cross-platform memory
+
+on:
+  push:
+    branches: ['bench/watchpack-reuse-main-xplat']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-arm64
+            target: aarch64-apple-darwin
+            platform: darwin
+            arch: arm64
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            platform: win32
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      MAIN_SHA: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8
+      FEATURE_SHA: 960f68e563de14972c3cc4c08aef4f8d4767ec54
+      EXPECTED_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+      BINDING_ARTIFACT: bindings-${{ matrix.target }}
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Create scratch directories
+        run: |
+          mkdir -p bench-data/tmp bench-data/results
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          echo "TEMP=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          echo "TMP=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Download the native binding built on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/40283359653/artifacts" > bench-data/artifacts.json
+          gh run download 40283359653 --repo "$GITHUB_REPOSITORY" -n "$BINDING_ARTIFACT" -D bench-data/native
+      - name: Build both JavaScript arms and run three alternating pairs
+        run: node .github/scripts/watchpack-reuse-main-xplat/run.cjs
+      - name: Preserve measurements and provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: watchpack-reuse-${{ matrix.target }}
+          path: |
+            bench-data/results/
+            bench-data/artifacts.json
+          compression-level: 1
