@@ -22,7 +22,7 @@ if (process.platform === 'linux') {
 } else {
   loaded = process.report.getReport().sharedObjects.filter(file => file.endsWith('.node'));
 }
-assert(loaded.map(realpath).includes(binding), 'Expected binding was not loaded');
+assert(loaded.map(file => realpath(file)).includes(binding), 'Expected binding was not loaded');
 assert(loaded.every(file => sha(realpath(file)) === bindingSha256), 'Unexpected native binding');
 assert.equal(typeof global.gc, 'function', 'Use --expose-gc');
 const leaf = path.join(root, variant === 'barrel' ? 'barrel/constants.js' : 'src/g0/m0.js');
