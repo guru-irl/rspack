@@ -1,0 +1,116 @@
+name: SplitChunks replay memory
+
+on:
+  push:
+    branches:
+      - bench/split-chunks-replay-main-xplat
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  memory:
+    name: Memory ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: x64
+            binding: rspack.linux-x64-gnu.node
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+            binding: rspack.darwin-arm64.node
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
+            binding: rspack.win32-x64-msvc.node
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_HEAD: 7eaf36f9d0cfa238417a8f1cea5353119cd343eb
+      SOURCE_RUN: '40306650235'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - name: Checkout benchmark
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare scratch
+        run: |
+          mkdir -p bench-data/tmp bench-data/results
+          printf 'TMPDIR=%s/bench-data/tmp\nTMP=%s/bench-data/tmp\nTEMP=%s/bench-data/tmp\n' "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/pnpm/setup
+        with:
+          node-version: 22.18.0
+
+      - name: Verify source provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" --jq '{id,head_sha,workflow_id}' > bench-data/source-run.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const { execFileSync } = require('node:child_process');
+          const git = args => execFileSync('git', args, { encoding: 'utf8' }).trim();
+          const run = JSON.parse(fs.readFileSync('bench-data/source-run.json', 'utf8'));
+          assert.equal(run.head_sha, process.env.SOURCE_HEAD);
+          const changed = git(['diff', '--name-only', process.env.SOURCE_HEAD, 'HEAD']).split('\n').filter(Boolean);
+          assert(changed.every(file => file.startsWith('.github/scripts/split-chunks-replay-main/') || file === '.github/workflows/split-chunks-replay-main-memory.yml'));
+          const blob = git(['hash-object', '.github/scripts/split-chunks-replay-main/prepare.mjs']);
+          assert.equal(blob, '3d698dd2eb43b3dd7ad77fbe58c7692f1d685c4f');
+          fs.writeFileSync('bench-data/provenance.json', JSON.stringify({ sourceHead: run.head_sha, sourceRun: run.id, benchmarkHead: git(['rev-parse', 'HEAD']), fixtureCommit: 'a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc', fixtureBlob: blob, changed }, null, 2));
+          NODE
+
+      - name: Download source binding
+        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: bindings-${{ matrix.target }}
+          path: crates/node_binding/
+          run-id: ${{ env.SOURCE_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build JavaScript
+        run: pnpm run build:js > bench-data/js-build.log 2>&1
+
+      - name: Prepare public fixture
+        run: |
+          npm install --prefix bench-data/parser --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund acorn@8.19.0 escodegen@2.1.0 > bench-data/parser-install.log 2>&1
+          node .github/scripts/split-chunks-replay-main/prepare.mjs bench-data/fixture > bench-data/fixture.json
+          node .github/scripts/split-chunks-replay-main/run.cjs --self-test
+
+      - name: Run three memory pairs
+        env:
+          RSPACK_BINDING: ${{ github.workspace }}/crates/node_binding/${{ matrix.binding }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node .github/scripts/split-chunks-replay-main/run.cjs
+
+      - name: Upload memory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: split-chunks-replay-memory-${{ matrix.target }}
+          path: |
+            bench-data/results/
+            bench-data/provenance.json
+            bench-data/fixture.json
+            bench-data/parser-install.log
+            bench-data/js-build.log
+          if-no-files-found: error
+          retention-days: 7
