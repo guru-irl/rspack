@@ -13,13 +13,18 @@ import { createRequire } from 'node:module';
 import util from 'node:util';
 import type Watchpack from 'watchpack';
 
+import type { Logger } from '../logging/Logger';
 import type {
   InputFileSystem,
   TimeInfoEntries,
   Watcher,
   WatchFileSystem,
 } from '../util/fs';
-import { isInternalCallback } from '../util/watchTimeInfo';
+import {
+  type ConsumableWatcher,
+  consumeWatcherInfo,
+  isInternalCallback,
+} from '../util/watchTimeInfo';
 
 const require = createRequire(import.meta.url);
 
@@ -32,17 +37,35 @@ type WatchpackInstance = InstanceType<typeof Watchpack>;
 const isExistenceOnlyEntry = (entry: unknown): boolean =>
   typeof entry === 'object' && entry !== null && !('safeTime' in entry);
 
+const sameSet = (current: Set<string>, previous: Set<string>): boolean => {
+  if (current.size !== previous.size) return false;
+  for (const item of current) {
+    if (!previous.has(item)) return false;
+  }
+  return true;
+};
+
 export default class NodeWatchFileSystem implements WatchFileSystem {
   inputFileSystem: InputFileSystem;
   watcherOptions: Watchpack.WatchOptions;
   watcher?: WatchpackInstance;
-  // Long-lived emitter backing the `on`/`once` API. `watch()` replaces
-  // `this.watcher` with a fresh Watchpack each cycle, so listeners must live
-  // here (and be fed from each new watcher) to survive across cycles.
+  // Long-lived emitter backing the `on`/`once` API, so listeners survive
+  // replacement of the Watchpack instance.
   #events = new EventEmitter();
+  #logger?: Logger;
+  #watchOptions?: Watchpack.WatchOptions;
+  #watchInputs?: {
+    files: Set<string>;
+    directories: Set<string>;
+    missing: Set<string>;
+  };
 
-  constructor(inputFileSystem: InputFileSystem) {
+  constructor(
+    inputFileSystem: InputFileSystem,
+    options: { logger?: Logger } = {},
+  ) {
     this.inputFileSystem = inputFileSystem;
+    this.#logger = options.logger;
     this.watcherOptions = {
       aggregateTimeout: 0,
     };
@@ -86,22 +109,32 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
     }
 
     const oldWatcher = this.watcher;
+    const reused = !!oldWatcher && this.#watchOptions === options;
     const Watchpack = require('watchpack');
-    this.watcher = new Watchpack(options);
+    const watcher: WatchpackInstance = reused
+      ? oldWatcher!
+      : new Watchpack(options);
+    this.watcher = watcher;
+    this.#watchOptions = options;
 
+    if (reused && oldWatcher) {
+      // Plugins attach listeners after watch(). Drop the previous cycle's
+      // listeners just as replacing the instance would.
+      watcher.removeAllListeners('change');
+      watcher.removeAllListeners('remove');
+      watcher.removeAllListeners('aggregated');
+    }
     if (callbackUndelayed) {
-      this.watcher?.once('change', callbackUndelayed);
+      watcher.once('change', callbackUndelayed);
     }
 
-    // Forward this cycle's watchpack events to the long-lived emitter so
-    // `on`/`once` listeners keep working after the watcher is replaced.
-    this.watcher?.on('change', (filename, mtime) => {
+    watcher.on('change', (filename, mtime) => {
       this.#events.emit('change', filename, mtime);
     });
-    this.watcher?.on('remove', (filename) => {
+    watcher.on('remove', (filename) => {
       this.#events.emit('remove', filename);
     });
-    this.watcher?.on('aggregated', (changes, removals) => {
+    watcher.on('aggregated', (changes, removals) => {
       this.#events.emit('aggregated', changes, removals);
     });
 
@@ -114,7 +147,7 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
       );
       return { fileTimeInfoEntries, contextTimeInfoEntries };
     };
-    this.watcher?.once('aggregated', (changes, removals) => {
+    watcher.once('aggregated', (changes, removals) => {
       // pause emitting events (avoids clearing aggregated changes and removals on timeout)
       this.watcher?.pause();
 
@@ -143,17 +176,196 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
       );
     });
 
-    this.watcher?.watch({ files, directories, missing, startTime });
+    const previous = this.#watchInputs;
+    const unchanged =
+      reused &&
+      // Symlink targets can change even when the input path sets do not.
+      !watcher.watcherOptions.followSymlinks &&
+      previous &&
+      files instanceof Set &&
+      directories instanceof Set &&
+      missing instanceof Set &&
+      files !== previous.files &&
+      directories !== previous.directories &&
+      missing !== previous.missing &&
+      sameSet(files, previous.files) &&
+      sameSet(directories, previous.directories) &&
+      sameSet(missing, previous.missing);
+    if (unchanged) {
+      watcher.paused = false;
+      watcher.startTime = startTime;
+      // Watchpack's filtered _missing set still has the same members.
+      this.#logger?.debug('reuse: skipped (sets unchanged)');
+    } else {
+      watcher.watch({ files, directories, missing, startTime });
+      this.#logger?.debug(reused ? 'reuse: diffed' : 'reuse: new instance');
+    }
+    this.#watchInputs =
+      files instanceof Set &&
+      directories instanceof Set &&
+      missing instanceof Set
+        ? { files, directories, missing }
+        : undefined;
 
-    if (oldWatcher) {
+    if (reused) {
+      const { aggregatedChanges, aggregatedRemovals } = watcher;
+      if (aggregatedChanges.size || aggregatedRemovals.size) {
+        const pendingChanges = new Map<string, number>();
+        const pendingRemovals = new Set<string>();
+        const fileTimes: Watchpack.TimeInfoEntries = new Map();
+        const directoryTimes: Watchpack.TimeInfoEntries = new Map();
+        const collected = new Set<Watchpack.DirectoryWatcher>();
+        const record = (
+          item: string,
+          watchedPath: string,
+          directoryWatcher: Watchpack.DirectoryWatcher,
+          directory: boolean,
+        ) => {
+          if (aggregatedRemovals.has(item)) pendingRemovals.add(item);
+          if (!aggregatedChanges.has(item)) return;
+          if (!collected.has(directoryWatcher)) {
+            // Collecting fixes cached timestamp accuracy, as watch() does on
+            // attach. Only visit directories containing pending paths.
+            directoryWatcher.collectTimeInfoEntries(fileTimes, directoryTimes);
+            collected.add(directoryWatcher);
+          }
+          let safeTime = 0;
+          if (directory) {
+            // A fresh directory attach ignores times in nested directories.
+            safeTime = directoryWatcher.lastWatchEvent;
+            for (const entry of directoryWatcher.files.values()) {
+              safeTime = Math.max(safeTime, entry.safeTime);
+            }
+          } else {
+            const entry = fileTimes.get(watchedPath);
+            if (entry && 'safeTime' in entry) safeTime = entry.safeTime;
+          }
+          if (safeTime && safeTime >= startTime) {
+            pendingChanges.set(
+              item,
+              Math.max(pendingChanges.get(item) ?? 0, safeTime),
+            );
+          }
+        };
+        if (watcher.watcherOptions.followSymlinks) {
+          // A watched item can map to several symlink targets. Match the
+          // recorded time of each target that a fresh attach would inspect.
+          for (const [watchedPath, fileWatcher] of watcher.fileWatchers) {
+            for (const item of fileWatcher.files) {
+              record(
+                item,
+                watchedPath,
+                fileWatcher.watcher.directoryWatcher,
+                false,
+              );
+            }
+          }
+          for (const [
+            watchedPath,
+            directoryWatcher,
+          ] of watcher.directoryWatchers) {
+            for (const item of directoryWatcher.directories) {
+              record(
+                item,
+                watchedPath,
+                directoryWatcher.watcher.directoryWatcher,
+                true,
+              );
+            }
+          }
+        } else {
+          for (const paths of [aggregatedChanges, aggregatedRemovals]) {
+            for (const item of paths) {
+              const fileWatcher = watcher.fileWatchers.get(item);
+              if (fileWatcher) {
+                record(item, item, fileWatcher.watcher.directoryWatcher, false);
+              }
+              const directoryWatcher = watcher.directoryWatchers.get(item);
+              if (directoryWatcher) {
+                record(
+                  item,
+                  item,
+                  directoryWatcher.watcher.directoryWatcher,
+                  true,
+                );
+              }
+            }
+          }
+        }
+        for (const item of aggregatedChanges) {
+          if (!pendingChanges.has(item)) aggregatedChanges.delete(item);
+        }
+        for (const item of aggregatedRemovals) {
+          if (!pendingRemovals.has(item)) aggregatedRemovals.delete(item);
+        }
+        if (pendingChanges.size || pendingRemovals.size) {
+          // Fresh watchers report outdated paths on the next tick. Let the
+          // caller store its handle and plugins attach this cycle's listeners.
+          process.nextTick(() => {
+            if (this.watcher !== watcher || watcher.paused) return;
+            for (const [file, mtime] of pendingChanges) {
+              if (!watcher.aggregatedChanges.has(file)) continue;
+              watcher.emit('change', file, mtime, 'change');
+              if (this.watcher !== watcher || watcher.paused) return;
+            }
+            // Unlike a fresh attach, preserve relevant deletions during a build.
+            for (const file of pendingRemovals) {
+              if (!watcher.aggregatedRemovals.has(file)) continue;
+              watcher.emit('remove', file, 'rename');
+              if (this.watcher !== watcher || watcher.paused) return;
+            }
+            if (
+              watcher.aggregatedChanges.size ||
+              watcher.aggregatedRemovals.size
+            ) {
+              clearTimeout(watcher.aggregateTimer);
+              watcher.aggregateTimer = setTimeout(
+                watcher._onTimeout,
+                watcher.aggregateTimeout,
+              );
+            }
+          });
+        }
+      }
+    }
+
+    if (oldWatcher && !reused) {
       oldWatcher.close();
     }
-    return {
+    const getInfo = (consume: boolean) => {
+      const removals = this.watcher?.aggregatedRemovals ?? new Set();
+      const changes = this.watcher?.aggregatedChanges ?? new Set();
+      if (consume && this.watcher?.paused) {
+        // Watching owns these events in its starting build. Later events
+        // belong to the next cycle, not to the returned Sets.
+        this.watcher.aggregatedChanges = new Set();
+        this.watcher.aggregatedRemovals = new Set();
+      }
+      if (this.inputFileSystem?.purge) {
+        const fs = this.inputFileSystem;
+        for (const item of removals) {
+          fs.purge?.(item);
+        }
+        for (const item of changes) {
+          fs.purge?.(item);
+        }
+      }
+      const { fileTimeInfoEntries, contextTimeInfoEntries } = fetchTimeInfo();
+      return {
+        changes,
+        removals,
+        fileTimeInfoEntries,
+        contextTimeInfoEntries,
+      };
+    };
+    const handle: ConsumableWatcher = {
       close: () => {
         if (this.watcher) {
           this.watcher.close();
           this.watcher = null as any;
         }
+        this.#watchOptions = undefined;
+        this.#watchInputs = undefined;
       },
       pause: () => {
         if (this.watcher) {
@@ -202,31 +414,10 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
         "Watcher.getContextTimeInfoEntries is deprecated in favor of Watcher.getInfo since that's more performant.",
         'DEP_WEBPACK_WATCHER_CONTEXT_TIME_INFO_ENTRIES',
       ),
-      getInfo: () => {
-        const removals = this.watcher?.aggregatedRemovals ?? new Set();
-        const changes = this.watcher?.aggregatedChanges ?? new Set();
-        if (this.inputFileSystem?.purge) {
-          const fs = this.inputFileSystem;
-          if (removals) {
-            for (const item of removals) {
-              fs.purge?.(item);
-            }
-          }
-          if (changes) {
-            for (const item of changes) {
-              fs.purge?.(item);
-            }
-          }
-        }
-        const { fileTimeInfoEntries, contextTimeInfoEntries } = fetchTimeInfo();
-        return {
-          changes,
-          removals,
-          fileTimeInfoEntries,
-          contextTimeInfoEntries,
-        };
-      },
+      getInfo: () => getInfo(false),
+      [consumeWatcherInfo]: () => getInfo(true),
     };
+    return handle;
   }
 
   // watchpack's times API, forwarded from the current cycle's watcher.

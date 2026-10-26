@@ -55,7 +55,9 @@ export default class NodeEnvironmentPlugin {
     if (compiler.options.experiments.nativeWatcher) {
       compiler.watchFileSystem = new NativeWatchFileSystem(inputFileSystem);
     } else {
-      compiler.watchFileSystem = new NodeWatchFileSystem(inputFileSystem);
+      compiler.watchFileSystem = new NodeWatchFileSystem(inputFileSystem, {
+        logger: compiler.getInfrastructureLogger('rspack.NodeWatchFileSystem'),
+      });
     }
     compiler.hooks.beforeRun.tap('NodeEnvironmentPlugin', (compiler) => {
       if (compiler.inputFileSystem === inputFileSystem) {
