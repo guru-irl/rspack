@@ -4,11 +4,12 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const Module = require('node:module');
+const realpath = process.platform === 'win32' ? fs.realpathSync.native : fs.realpathSync;
 const loadedNative = [];
 const loadNative = Module._extensions['.node'];
 Module._extensions['.node'] = function(module, filename) {
   loadNative(module, filename);
-  loadedNative.push(fs.realpathSync(filename));
+  loadedNative.push(realpath(filename));
 };
 const { rspack } = require(path.resolve(process.env.CORE_ENTRY));
 const root = path.resolve(process.env.FIXTURE_ROOT || 'bench-data/fixture');
@@ -50,8 +51,8 @@ const compiler = rspack({
   },
 });
 const mappedNative = () => {
-  const expectedPath = fs.realpathSync(process.env.EXPECTED_BINDING_PATH);
-  const key = file => process.platform === 'win32' ? fs.realpathSync(file).toLowerCase() : fs.realpathSync(file);
+  const expectedPath = realpath(process.env.EXPECTED_BINDING_PATH);
+  const key = file => process.platform === 'win32' ? realpath(file).toLowerCase() : realpath(file);
   let paths;
   if (process.platform === 'linux') {
     paths = [...new Set(fs.readFileSync('/proc/self/maps', 'utf8').split('\n').map(line => line.slice(line.indexOf('/'))).filter(file => file.endsWith('.node')))];
@@ -59,6 +60,17 @@ const mappedNative = () => {
   } else {
     paths = process.report.getReport().sharedObjects.filter(file => path.isAbsolute(file) && file.endsWith('.node') && fs.existsSync(file));
     assert(loadedNative.some(file => key(file) === key(expectedPath)), 'The required native binding must have loaded');
+  }
+  if (process.platform === 'win32') {
+    const probe = [...new Set([process.env.EXPECTED_BINDING_PATH, expectedPath, ...loadedNative, ...paths])].map(file => {
+      const result = { file };
+      for (const [name, resolve] of [['javascript', fs.realpathSync], ['native', fs.realpathSync.native]]) {
+        try { result[name] = resolve(file); }
+        catch (error) { result[name] = { code: error.code, message: error.message }; }
+      }
+      return result;
+    });
+    fs.writeFileSync(path.join(results, 'native-probe.json'), JSON.stringify(probe, null, 2));
   }
   const sha256 = hash(fs.readFileSync(expectedPath));
   assert.equal(sha256, process.env.EXPECTED_BINDING_SHA);
