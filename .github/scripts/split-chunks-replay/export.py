@@ -55,13 +55,13 @@ This pack adds opt-in SplitChunks replay to v2.2.9-hot. With the option off and 
 
 Set `optimization.splitChunks.experimentalReplay: true` in development mode. The default is false. Alternatively, set `RSPACK_SPLIT_CHUNKS_REPLAY=1` to enable every SplitChunks instance in development mode. `strict` also includes module sizes in the entry digest. `force` enables replay in other modes too and is for tests only. The variable is read when the plugin is constructed.
 
-When replay is enabled, the SplitChunks logger reports one decision per compilation, `replay: replayed N operations (M chunks created) in t ms` or `replay: full run (reason; digest d ms)`. Replay timing includes the digest, pre-check, event application and max-size settings reconstruction. It excludes the following max-size splitting phase, which has its own timer. Full-run lines report digest overhead even on a miss. With replay off, the plugin computes no digest, records no events and emits no replay log line. An enabled option outside development mode logs the disabled mode reason. The operation count includes Create events.
+Once per compilation, the SplitChunks logger reports `replay: replayed N operations (M chunks created) in t ms` or `replay: full run (reason; digest d ms)`. Replay timing includes the digest, pre-check, event application and max-size settings reconstruction. It excludes the following max-size splitting phase, which has its own timer. Full-run lines report digest overhead even on a miss. Disabled runs compute no digest and record no events.
 
 ## Opt-in contract
 
 The `test`, `name` and `chunks` callback results must depend only on module identity, such as resource, request, type and layer, and on the chunk graph, such as module chunks, chunk names and runtime. Callbacks must not depend on source contents, invocation counts, mutable external state or sizes. Layer selectors must depend only on module layer. Replay skips cache-group preparation callbacks. The following max-size pass still calls function-valued fallback chunk filters, even if no maximum size is configured, as it does on a full run.
 
-Sizes are excluded unless `strict` is selected. Group selection order, minSize, minSizeReduction and enforceSizeThreshold decisions therefore use the last full run's sizes until the next topology change. This intentional size drift can change which chunks get created, not only their sizes. maxSize splitting always uses current sizes. Strict mode includes current sizes and falls back when they change.
+Sizes are excluded unless `strict` is selected. Therefore minSize, minSizeReduction and enforceSizeThreshold decisions use the last full run's sizes until the next topology change. This is intentional size drift. maxSize splitting always uses current sizes. Strict mode includes current sizes and falls back when they change.
 
 The record is process-local and belongs to a plugin instance. Missing records, changed inputs, failed pre-checks and entry errors cause a full run. A full run that emits a diagnostic does not publish a record. Replay allocates fresh chunk keys and emits the same chunk mutations through the plugin's helpers.
 
@@ -73,7 +73,7 @@ All five fixture steps have byte-identical emitted file names and contents with 
 | --- | --- | --- | --- |
 {chr(10).join(lines)}
 
-Normal watch totals: `{json.dumps(summary['normal']['totals'], sort_keys=True)}`. Forced watch totals: `{json.dumps(summary['forced']['totals'], sort_keys=True)}`. There are no forced-only failed test or suite IDs. SplitChunks config cases, normal statsOutputCases and the replay watch cases passed. Shared watch failures, if any, remain failures and appear in the verification evidence.
+Normal watch totals: `{json.dumps(summary['normal']['totals'], sort_keys=True)}`. Forced watch totals: `{json.dumps(summary['forced']['totals'], sort_keys=True)}`. There are no forced-only failed test or suite IDs. SplitChunks config cases and the replay watch cases passed. Shared watch failures, if any, remain failures and appear in the verification evidence.
 
 These are phase timings from a correctness check, not a speedup or memory claim. This pack has Linux GNU artifacts only. The official 2.2.9 wrapper is included because its runtime files match the source. Install the core, wrapper and GNU binding tarballs together. The bare native file is also included for explicit binding selection.
 

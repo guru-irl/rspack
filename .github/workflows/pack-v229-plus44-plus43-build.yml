@@ -1,0 +1,283 @@
+name: Full hash fold dump pack
+on:
+  push:
+    branches: [bench/cs-fold-dump-build]
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact fold dump implementation commit
+        type: string
+        required: true
+      red_counterexample:
+        description: Prove the analysed side-effect counterexample fails before the fix
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  SOURCE_SHA: 3f9478246e3e1440b0e3201526b00df19ed9da0b
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  pnpm_config_pm_on_fail: ignore
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: true
+  PUPPETEER_SKIP_DOWNLOAD: true
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: debug-harness
+          persist-credentials: false
+      - name: Record source and official settings
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack bench-data/scripts
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = '${{ env.SOURCE_SHA }}'
+          for file in .github/workflows/reusable-release-npm.yml .github/workflows/reusable-build.yml .github/workflows/reusable-build-build.yml rust-toolchain.toml crates/node_binding/scripts/build.mjs Cargo.toml .cargo/config.toml; do
+            mkdir -p "bench-data/results/settings/$(dirname "$file")"
+            cp "$file" "bench-data/results/settings/$file"
+            git diff --exit-code b6703e272dbc52294d745073c7f00c3a838989c2 HEAD -- "$file"
+          done
+          git diff --exit-code b6703e272dbc52294d745073c7f00c3a838989c2 HEAD -- crates/node_binding/binding.js crates/node_binding/webcontainer-fallback.cjs crates/node_binding/package.json
+          cp debug-harness/.github/scripts/split-chunks-replay/* bench-data/scripts/
+          test ! -d target
+          if [[ '${{ inputs.red_counterexample }}' == true ]]; then
+            cp -R debug-harness/tests/rspack-test/watchCases/code-splitting-cache/stable-absence-side-effects tests/rspack-test/watchCases/code-splitting-cache/
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Pin pnpm and install dependencies
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@11.26.0
+          node -e 'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.packageManager="pnpm@11.26.0";p.engines.pnpm="11.26.0";fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n");'
+          test "$(node --version)" = v22.23.3
+          test "$(pnpm --version)" = 11.26.0
+          pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: full-hash-fold-dump-release
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare official release build
+        run: |
+          set -euo pipefail
+          command -v clang-14 || { sudo apt-get update; sudo apt-get install -y clang-14; }
+          mkdir -p bench-data/bin
+          ln -s "$(command -v clang-14)" bench-data/bin/clang
+          ln -s "$(command -v clang++-14)" bench-data/bin/clang++
+          echo "$GITHUB_WORKSPACE/bench-data/bin" >> "$GITHUB_PATH"
+          rustup component add rust-src --toolchain nightly-2026-04-16
+          rustup target add x86_64-unknown-linux-gnu --toolchain nightly-2026-04-16
+          test "$(rustup show active-toolchain | cut -d' ' -f1)" = nightly-2026-04-16-x86_64-unknown-linux-gnu
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/bench-data/codegen-target" cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { date -u; node --version; pnpm --version; rustc -Vv; clang-14 --version; ldd --version; df -h .; } > bench-data/results/environment.txt
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${ALLOCATIVE:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}"
+      - name: Build official release binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          USE_NAPI_CROSS: 1
+          TARGET_CC: clang
+        run: |
+          set -euo pipefail
+          test ! -d target
+          pnpm run build:binding:release 2>&1 | tee bench-data/results/native-build.log
+          grep -E 'Compiling (rspack_napi|rspack_binding_api) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -eq 2
+          grep -F -- '--no-default-features --no-dts-cache --features plugin,info-level' bench-data/results/native-build.log
+          grep -F -- '-Zbuild-std=panic_abort,std' bench-data/results/native-build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
+          cp crates/node_binding/napi-binding.d.ts bench-data/results/generated-napi-binding.d.ts
+          git diff -- crates/node_binding/napi-binding.d.ts > bench-data/results/generated-types.diff
+      - name: Rebuild core and test artifacts
+        run: |
+          set -euo pipefail
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          pnpm --dir tests/rspack-test run test:configs 2>&1 | tee bench-data/results/test-configs.log
+          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack"
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Package and verify payloads
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official bench-data/native-package bench-data/unpacked bench-data/wrapper
+          (cd bench-data/official; npm pack @rspack/binding@2.2.9; npm pack @rspack/binding-linux-x64-gnu@2.2.9)
+          echo '04e1989833d4077e64a1a8569a68119a7633c2bb4be7e5759dab4e6f0d70e116  bench-data/official/rspack-binding-2.2.9.tgz' | sha256sum -c -
+          echo '11e6a686ef2756332fe6d29acc4f8c2c8c2bf2c59ea593e2381d9a52b0121d89  bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz' | sha256sum -c -
+          tar -xzf bench-data/official/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/native-package
+          readelf --version-info bench-data/native-package/package/rspack.linux-x64-gnu.node > bench-data/results/official-readelf.txt
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/native-package/package/
+          (cd bench-data/native-package/package; npm pack --pack-destination ../../pack)
+          cp bench-data/official/rspack-binding-2.2.9.tgz bench-data/pack/
+          tar -xzf bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz -C bench-data/unpacked
+          cmp bench-data/pack/rspack.linux-x64-gnu.node bench-data/unpacked/package/rspack.linux-x64-gnu.node
+          tar -xzf bench-data/pack/rspack-binding-2.2.9.tgz -C bench-data/wrapper
+          for file in binding.js webcontainer-fallback.cjs; do cmp "crates/node_binding/$file" "bench-data/wrapper/package/$file"; done
+          readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node > bench-data/results/built-readelf.txt
+          official=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/official-readelf.txt | sort -Vu | tail -1)
+          built=$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' bench-data/results/built-readelf.txt | sort -Vu | tail -1)
+          printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
+          test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+      - name: Reuse the unchanged SW core archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 40183417082 --repo guru-irl/rspack --name watchpack-reuse-delivery --dir bench-data/sw
+          echo 'bbe897e6cd0ae6a5d670ad0629fcd62166a59aa25954d796539030b2775e7c83  bench-data/sw/rspack-core-2.2.9.tgz' | sha256sum -c -
+          cp bench-data/sw/rspack-core-2.2.9.tgz bench-data/pack/
+          cmp bench-data/sw/rspack-binding-2.2.9.tgz bench-data/pack/rspack-binding-2.2.9.tgz
+          cmp crates/node_binding/binding.js debug-harness/crates/node_binding/binding.js
+      - name: Select the exact native file in test workers
+        run: |
+          set -euo pipefail
+          for p in node_modules/.pnpm/@rspack+core@*/node_modules/@rspack/core; do
+            tar -xzf bench-data/pack/rspack-core-2.2.9.tgz -C "$p" --strip-components=1
+          done
+          for p in node_modules/.pnpm/@rspack+binding@*/node_modules/@rspack/binding; do
+            tar -xzf bench-data/pack/rspack-binding-2.2.9.tgz -C "$p" --strip-components=1
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/rspack-test/rstack.config.mts')
+          text=p.read_text()
+          assert text.count('execArgv: [')==1
+          preload=str(Path('bench-data/scripts/identity.cjs').resolve())
+          p.write_text(text.replace('execArgv: [', 'execArgv: [\n        "--require='+preload+'",'))
+          PY
+          native="$GITHUB_WORKSPACE/bench-data/pack/rspack.linux-x64-gnu.node"
+          echo "RSPACK_BINDING=$native" >> "$GITHUB_ENV"
+          echo "EXPECTED_NATIVE_SHA=$(sha256sum "$native" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "NATIVE_IDENTITY_LOG=$GITHUB_WORKSPACE/bench-data/results/test-native-identities.jsonl" >> "$GITHUB_ENV"
+          echo "NODE_OPTIONS=--stack-trace-limit=100 --require=$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" >> "$GITHUB_ENV"
+      - name: Prove the reviewed side-effect counterexample fails before the fix
+        if: inputs.red_counterexample
+        run: |
+          set -euo pipefail
+          export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1 RSPACK_CODE_SPLITTING_CACHE_DEBUG=1
+          unset RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+          rc=0
+          pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs -t code-splitting-cache/stable-absence-side-effects 2>&1 | tee bench-data/results/case-side-effects-red.log || rc=${PIPESTATUS[0]}
+          echo "$rc" > bench-data/results/case-side-effects-red.exit
+          cp rspack-test-event-report.txt bench-data/results/case-side-effects-red.events
+          python3 bench-data/scripts/check-absence-tests.py case-side-effects-red
+          printf 'Expected red verified. Stopping before delivery.\n'
+          exit 1
+      - name: Run normal watch cases with diagnostics unset
+        run: |
+          set -euo pipefail
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG RSPACK_SPLIT_CHUNKS_REPLAY RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+          rc=0
+          pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs Incremental-watch.test.mjs NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee bench-data/results/watch-normal.log || rc=${PIPESTATUS[0]}
+          echo "$rc" > bench-data/results/watch-normal.exit
+          cp rspack-test-event-report.txt bench-data/results/watch-normal.events
+          python3 bench-data/scripts/check-absence-tests.py watch-normal
+      - name: Run watch cases with stable absence and forced replay
+        run: |
+          set -euo pipefail
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+          export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1 RSPACK_SPLIT_CHUNKS_REPLAY=force
+          rc=0
+          pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs Incremental-watch.test.mjs NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee bench-data/results/watch-forced.log || rc=${PIPESTATUS[0]}
+          echo "$rc" > bench-data/results/watch-forced.exit
+          cp rspack-test-event-report.txt bench-data/results/watch-forced.events
+          python3 bench-data/scripts/check-absence-tests.py watch-forced
+      - name: Prove focused case on and negative control off
+        run: |
+          set -euo pipefail
+          export RSPACK_CODE_SPLITTING_CACHE_DEBUG=1 RSPACK_SPLIT_CHUNKS_REPLAY=force
+          for arm in on off; do
+            if [[ "$arm" == on ]]; then
+              export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1
+              unset RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+            else
+              unset RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE
+              export RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL=1
+            fi
+            rc=0
+            pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs -t code-splitting-cache/stable-absence 2>&1 | tee "bench-data/results/case-$arm.log" || rc=${PIPESTATUS[0]}
+            echo "$rc" > "bench-data/results/case-$arm.exit"
+            cp rspack-test-event-report.txt "bench-data/results/case-$arm.events"
+            python3 bench-data/scripts/check-absence-tests.py "case-$arm"
+          done
+      - name: Prepare the pinned public fixture and pack runtime
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/parser bench-data/runtime
+          git show a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc:scripts/program-native/prepare.mjs > bench-data/scripts/prepare.mjs
+          npm install --prefix bench-data/parser --ignore-scripts --no-audit --no-fund acorn escodegen
+          node bench-data/scripts/prepare.mjs bench-data/fixture | tee bench-data/results/fixture.json
+          python3 bench-data/scripts/compare.py --self-test
+          printf '{"private":true}\n' > bench-data/runtime/package.json
+          npm install --prefix bench-data/runtime --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/bench-data/pack/rspack-core-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-2.2.9.tgz" "$GITHUB_WORKSPACE/bench-data/pack/rspack-binding-linux-x64-gnu-2.2.9.tgz"
+      - name: Verify the full hash fold dump and negative control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          unset NODE_OPTIONS RSPACK_FULL_HASH_FOLD_DUMP
+          gh run download 40197756324 --repo guru-irl/rspack --name cs-stable-absence-delivery --dir bench-data/csabsent
+          echo 'a19dee5b7d04c67f1bb912be6b43843035ef555f244031eb5a38fa2acf90d097  bench-data/csabsent/rspack.linux-x64-gnu.node' | sha256sum -c -
+          FOLD_SMOKE_BASELINE=1 RSPACK_BINDING="$GITHUB_WORKSPACE/bench-data/csabsent/rspack.linux-x64-gnu.node" EXPECTED_NATIVE_SHA=a19dee5b7d04c67f1bb912be6b43843035ef555f244031eb5a38fa2acf90d097 node bench-data/scripts/fold-dump-smoke.cjs 2>&1 | tee bench-data/results/fold-smoke-negative.log
+          node bench-data/scripts/fold-dump-smoke.cjs 2>&1 | tee bench-data/results/fold-smoke.log
+      - name: Compare stable absence on and unset after every watch step
+        run: |
+          set -euo pipefail
+          export RSPACK_SPLIT_CHUNKS_REPLAY=1 RSPACK_CODE_SPLITTING_CACHE_DEBUG=1
+          unset RSPACK_STABLE_ABSENCE_NEGATIVE_CONTROL
+          for arm in ON OFF; do
+            if [[ "$arm" == ON ]]; then export RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE=1; else unset RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE; fi
+            result="$GITHUB_WORKSPACE/bench-data/results/parity/$arm"
+            mkdir -p "$result"
+            CORE_ENTRY="$GITHUB_WORKSPACE/bench-data/runtime/node_modules/@rspack/core/dist/index.js" RESULT_DIR="$result" MAPS_FILE="$result/native.maps" NATIVE_IDENTITY_LOG="$result/native.jsonl" timeout --kill-after=10s 15m node --require "$GITHUB_WORKSPACE/bench-data/scripts/identity.cjs" bench-data/scripts/debug-watch.cjs 2>&1 | tee "$result/watch.log"
+          done
+          unset RSPACK_CODE_SPLITTING_CACHE_DEBUG
+          for step in cold content topology content-after-topology; do
+            python3 bench-data/scripts/compare.py "bench-data/results/parity/OFF/$step" "bench-data/results/parity/ON/$step"
+          done
+          printf 'All four emitted filename-and-byte comparisons passed.\n' > bench-data/results/parity.txt
+          mkdir -p bench-data/delivery
+          cp bench-data/pack/* bench-data/delivery/
+          cp bench-data/scripts/ABSENCE-README.md bench-data/delivery/README.md
+          printf '\nSource: `%s`\n\nNative SHA-256: `%s`\n\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n' '${{ env.SOURCE_SHA }}' "$EXPECTED_NATIVE_SHA" >> bench-data/delivery/README.md
+          (cd bench-data/delivery; sha256sum README.md *.tgz *.node > SHA256SUMS; sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cs-fold-dump-delivery
+          path: bench-data/delivery/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cs-fold-dump-evidence
+          path: |
+            bench-data/results/
+            bench-data/scripts/
+          if-no-files-found: error
+          compression-level: 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cs-fold-dump-packages
+          path: bench-data/pack/
+          if-no-files-found: warn
+          compression-level: 0
