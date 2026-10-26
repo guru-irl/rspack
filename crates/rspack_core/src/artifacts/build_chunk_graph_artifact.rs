@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, sync::OnceLock};
 
 use futures::Future;
 use rspack_collections::{IdentifierMap, IdentifierSet};
@@ -91,7 +91,10 @@ impl BuildChunkGraphArtifact {
       return false;
     }
 
-    let reuse_unreached = can_reuse_unreached_modules(this_compilation);
+    static STABLE_ABSENCE: OnceLock<bool> = OnceLock::new();
+    let reuse_unreached = *STABLE_ABSENCE.get_or_init(|| {
+      std::env::var("RSPACK_CODE_SPLITTING_CACHE_STABLE_ABSENCE").as_deref() != Ok("0")
+    }) && can_reuse_unreached_modules(this_compilation);
     let rebuilt: IdentifierSet = if reuse_unreached {
       mutations
         .iter()
