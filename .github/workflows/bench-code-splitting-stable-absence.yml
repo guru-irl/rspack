@@ -58,6 +58,29 @@ jobs:
           (p/'red-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
           print(json.dumps(summary,indent=2))
           PY
+      - name: Check the stock fixture and the barrel variant on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$PWD/.bench-stable-absence/red"
+          export TMPDIR="$E/tmp"
+          export RSPACK_BINDING="$E/binding/rspack.linux-x64-gnu.node"
+          export EXPECTED_BINDING_SHA256=$(sha256sum "$RSPACK_BINDING" | cut -d ' ' -f1)
+          FIXTURE="$PWD/.bench-stable-absence/probe-fixture"
+          node scripts/stable-absence-bench/prepare.mjs "$FIXTURE"
+          node --expose-gc scripts/stable-absence-bench/run.mjs "$FIXTURE" packages/rspack "$E/probe-stock.json" stock > "$E/probe-stock.log" 2>&1
+          node scripts/stable-absence-bench/add-barrel.mjs "$FIXTURE"
+          node --expose-gc scripts/stable-absence-bench/run.mjs "$FIXTURE" packages/rspack "$E/probe-barrel.json" barrel > "$E/probe-barrel.log" 2>&1
+          python - "$E" <<'PY'
+          from pathlib import Path
+          import json,sys
+          p=Path(sys.argv[1]);a=json.loads((p/'probe-stock.json').read_text());b=json.loads((p/'probe-barrel.json').read_text())
+          assert not a.get('error') and not b.get('error')
+          assert len(a['records'])==len(b['records'])==3
+          assert not any(r['topologyChanged'] for r in a['records'][1:])
+          assert all(r['topologyChanged'] for r in b['records'][1:])
+          print('Stock fixture does not reach stable absence; the small barrel variant does')
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -68,6 +91,7 @@ jobs:
           retention-days: 14
 
   build:
+    needs: red
     strategy:
       fail-fast: false
       matrix:
