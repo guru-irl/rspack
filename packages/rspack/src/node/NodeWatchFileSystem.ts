@@ -237,8 +237,12 @@ export default class NodeWatchFileSystem implements WatchFileSystem {
               safeTime = Math.max(safeTime, entry.safeTime);
             }
           } else {
-            const entry = fileTimes.get(watchedPath);
-            if (entry && 'safeTime' in entry) safeTime = entry.safeTime;
+            const entry = directoryWatcher.files.get(watchedPath);
+            safeTime = entry
+              ? entry.safeTime
+              : (startTime > 1 &&
+                  directoryWatcher.directorySafeTimes.get(watchedPath)) ||
+                0;
           }
           if (safeTime && safeTime >= startTime) {
             pendingChanges.set(

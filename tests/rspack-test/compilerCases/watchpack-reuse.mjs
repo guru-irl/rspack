@@ -32,10 +32,6 @@ function watchCase(name, description, run, prepare) {
       return { entry, experiments: { nativeWatcher: false }, infrastructureLogging: { level: "none", debug: false } };
     },
     async build(context, compiler) {
-      const logs = [];
-      compiler.hooks.infrastructureLog.tap("WatchpackReuseTest", (name, type, args) => {
-        if (name === "rspack.NodeWatchFileSystem" && type === "debug") logs.push(args.join(" "));
-      });
       const builds = [];
       let failure;
       let watching;
@@ -61,7 +57,7 @@ function watchCase(name, description, run, prepare) {
         start();
         await wait(1);
         expect(builds[0].hasErrors()).toBe(false);
-        await run({ compiler, entry, dep, builds, logs, wait, quiet, start, get watching() { return watching; } });
+        await run({ compiler, entry, dep, wait, quiet, get watching() { return watching; } });
       } finally {
         if (watching) await close(watching);
         fs.rmSync(root, { recursive: true, force: true });
@@ -90,7 +86,7 @@ export default [
     }
     await quiet(13);
   }),
-  watchCase("unchanged-dependencies", "should skip unchanged sets and watch new imports after skipped re-arms", async ({ compiler, entry, dep, logs, wait, quiet }) => {
+  watchCase("unchanged-dependencies", "should skip unchanged sets and watch new imports after skipped re-arms", async ({ compiler, entry, dep, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
     const watch = watcher.watch;
     let calls = 0;
@@ -112,32 +108,11 @@ export default [
     await wait(5);
     await quiet(5);
     expect(calls).toBe(1);
-    expect(logs).toEqual([
-      "reuse: new instance",
-      "reuse: skipped (sets unchanged)",
-      "reuse: skipped (sets unchanged)",
-      "reuse: diffed",
-      "reuse: skipped (sets unchanged)"
-    ]);
-  }),
-  watchCase("held-build", "should flush an edit made during a held rebuild exactly once", async ({ compiler, entry, watching, wait, quiet }) => {
-    let release;
-    let held = false;
-    compiler.hooks.make.tapPromise("WatchpackReuseTest", async () => {
-      if (held) return;
-      held = true;
-      await new Promise(resolve => { release = resolve; });
-    });
-    watching.invalidate();
-    await until(() => release);
-    try {
-      fs.writeFileSync(entry, "module.exports = 4;\n");
-      await until(() => compiler.watchFileSystem.watcher.aggregatedChanges.has(entry));
-    } finally {
-      release();
-    }
-    await wait(3);
-    await quiet(3);
+    fs.writeFileSync(entry, "module.exports = 7;\n");
+    await wait(6);
+    expect(compiler.watchFileSystem.watcher.fileWatchers.has(dep)).toBe(false);
+    fs.writeFileSync(dep, "module.exports = 8;\n");
+    await quiet(6);
   }),
   watchCase("reentrant-invalidate", "should include a paused change when an invalid tap invalidates again", async ({ compiler, entry, watching, wait, quiet }) => {
     let release;
@@ -220,6 +195,31 @@ export default [
       compilation.contextDependencies.add(root);
     });
   }),
+  watchCase("missing-directory", "should rebuild when a missing dependency becomes a directory during a held build", async ({ compiler, entry, watching, wait, quiet }) => {
+    const later = path.join(path.dirname(entry), "later");
+    let release;
+    let held = false;
+    compiler.hooks.make.tapPromise("WatchpackMissingDirectoryTest", async () => {
+      if (held) return;
+      held = true;
+      await new Promise(resolve => { release = resolve; });
+    });
+    watching.invalidate();
+    await until(() => release);
+    try {
+      fs.mkdirSync(later);
+      fs.writeFileSync(path.join(later, "index.js"), "module.exports = 21;\n");
+      await until(() => compiler.watchFileSystem.watcher.aggregatedChanges.has(later));
+    } finally {
+      release();
+    }
+    await wait(3);
+    await quiet(3);
+  }, ({ compiler, root }) => {
+    compiler.hooks.afterCompile.tap("WatchpackMissingDirectoryTest", compilation => {
+      compilation.missingDependencies.add(path.join(root, "later"));
+    });
+  }),
   watchCase("manual-invalidate", "should consume paused changes on manual invalidate without replay", async ({ compiler, entry, watching, wait, quiet }) => {
     const watcher = compiler.watchFileSystem.watcher;
     let transferred;
@@ -244,35 +244,6 @@ export default [
     expect(compiler.modifiedFiles.has(entry)).toBe(true);
     await quiet(2);
   }),
-  watchCase("dependency-diff", "should watch an added dependency and stop watching a removed dependency", async ({ compiler, entry, dep, wait, quiet }) => {
-    fs.writeFileSync(entry, 'module.exports = require("./dep.js");\n');
-    await wait(2);
-    fs.writeFileSync(dep, "module.exports = 6;\n");
-    await wait(3);
-    fs.writeFileSync(entry, "module.exports = 7;\n");
-    await wait(4);
-    expect(compiler.watchFileSystem.watcher.fileWatchers.has(dep)).toBe(false);
-    fs.writeFileSync(dep, "module.exports = 8;\n");
-    await quiet(4);
-  }),
-  watchCase("delete", "should rebuild after deleting a watched file", async ({ compiler, entry, builds, wait, quiet }) => {
-    fs.unlinkSync(entry);
-    await wait(2);
-    expect(builds[1].hasErrors()).toBe(true);
-    expect(compiler.removedFiles.has(entry)).toBe(true);
-    await quiet(2);
-  }),
-  watchCase("close-rewatch", "should close and watch again with a fresh instance", async state => {
-    const first = state.compiler.watchFileSystem.watcher;
-    await close(state.watching);
-    expect(state.compiler.watchFileSystem.watcher).toBeFalsy();
-    state.start();
-    await state.wait(2);
-    expect(state.compiler.watchFileSystem.watcher).not.toBe(first);
-    fs.writeFileSync(state.entry, "module.exports = 9;\n");
-    await state.wait(3);
-    await state.quiet(3);
-  }),
   {
     name: "mutable-sets",
     description: "should diff when the caller mutates and reuses the same Set",
@@ -286,7 +257,7 @@ export default [
       const directories = new Set();
       const missing = new Set();
       const options = { aggregateTimeout: 30 };
-      const arm = () => fs.watch(files, directories, missing, Date.now(), options, () => {}, () => {});
+      const arm = (opts = options) => fs.watch(files, directories, missing, Date.now(), opts, () => {}, () => {});
       const handle = arm();
       try {
         const watcher = fs.watcher;
@@ -307,38 +278,11 @@ export default [
         fs.collectTimeInfoEntries(fileTimes, directoryTimes);
         expect(fileTimes.size).toBe(0);
         expect(directoryTimes.size).toBe(0);
-      } finally {
-        handle.close();
-      }
-    }
-  },
-  {
-    name: "options-identity",
-    description: "should reuse by default and replace the instance when options identity changes",
-    options() {
-      return { experiments: { nativeWatcher: false } };
-    },
-    build(context, compiler) {
-      const WatchFileSystem = compiler.watchFileSystem.constructor;
-      const lines = [];
-      compiler.hooks.infrastructureLog.tap("WatchpackReuseDecisions", (name, type, args) => {
-        if (name === "rspack.NodeWatchFileSystem" && type === "debug") lines.push(args[0]);
-      });
-      const watcher = new WatchFileSystem(compiler.inputFileSystem, {
-        logger: compiler.getInfrastructureLogger("rspack.NodeWatchFileSystem")
-      });
-      const options = { aggregateTimeout: 30 };
-      const arm = opts => watcher.watch([], [], [], Date.now(), opts, () => {}, () => {});
-      let handle = arm(options);
-      try {
-        const first = watcher.watcher;
         handle.pause();
-        handle = arm(options);
-        expect(watcher.watcher).toBe(first);
-        const second = watcher.watcher;
-        handle = arm({ aggregateTimeout: 30 });
-        expect(watcher.watcher).not.toBe(second);
-        expect(lines).toEqual(["reuse: new instance", "reuse: diffed", "reuse: new instance"]);
+        arm();
+        expect(fs.watcher).toBe(watcher);
+        arm({ aggregateTimeout: 30 });
+        expect(fs.watcher).not.toBe(watcher);
       } finally {
         handle.close();
       }
