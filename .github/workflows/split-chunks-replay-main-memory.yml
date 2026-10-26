@@ -83,6 +83,19 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
 
+      - name: Pin source binding checksum
+        env:
+          RSPACK_BINDING: ${{ github.workspace }}/crates/node_binding/${{ matrix.binding }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { hash } = require('./.github/scripts/split-chunks-replay-main/native-identity.cjs');
+          const sha256 = hash(process.env.RSPACK_BINDING);
+          fs.appendFileSync(process.env.GITHUB_ENV, `SOURCE_NATIVE_SHA=${sha256}\n`);
+          fs.writeFileSync('bench-data/native-provenance.json', JSON.stringify({ sourceHead: process.env.SOURCE_HEAD, sourceRun: process.env.SOURCE_RUN, file: path.basename(process.env.RSPACK_BINDING), sha256 }, null, 2));
+          NODE
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -109,6 +122,7 @@ jobs:
           path: |
             bench-data/results/
             bench-data/provenance.json
+            bench-data/native-provenance.json
             bench-data/fixture.json
             bench-data/parser-install.log
             bench-data/js-build.log

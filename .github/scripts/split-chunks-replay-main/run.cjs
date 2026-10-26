@@ -25,6 +25,12 @@ const resultRoot = path.join(root, 'bench-data/results');
 const fixture = path.join(root, 'bench-data/fixture');
 const native = fs.realpathSync(process.env.RSPACK_BINDING);
 const sha256 = hash(native);
+assert(process.env.SOURCE_NATIVE_SHA, 'Source binding checksum is required');
+assert.equal(
+  sha256,
+  process.env.SOURCE_NATIVE_SHA,
+  'The source artifact must remain unchanged',
+);
 const originalFile = path.join(fixture, 'src/g0/m0.js');
 const originalSha = hash(originalFile);
 const capability = memory();
