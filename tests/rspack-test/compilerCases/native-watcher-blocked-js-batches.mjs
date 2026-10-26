@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { Worker } from 'node:worker_threads';
 
 const CASE_NAME = 'native-watcher-blocked-js-batches';
 const AGGREGATE_TIMEOUT = 100;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const block = (ms) =>
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const require = createRequire(import.meta.url);
 
 /** @type {import("@rspack/test-tools").TCompilerCaseConfig} */
@@ -56,7 +57,6 @@ export default {
 		let values;
 		const bundle = path.join(compiler.options.output.path, 'bundle.cjs');
 		let watching;
-		let worker;
 		let recording = false;
 		const modified = new Set();
 		compiler.hooks.watchRun.tap(CASE_NAME, () => {
@@ -98,46 +98,14 @@ export default {
 					throw new Error('Initial watch did not settle');
 			} while (builds !== before);
 			recording = true;
-			const shared = new Int32Array(new SharedArrayBuffer(8));
-			worker = new Worker(
-				`
-				const fs = require("node:fs");
-				const path = require("node:path");
-				const { workerData } = require("node:worker_threads");
-				const shared = new Int32Array(workerData.shared);
-				const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-				Atomics.store(shared, 0, 1);
-				Atomics.notify(shared, 0);
-				Atomics.wait(shared, 1, 0);
-				sleep(100);
-				for (const name of ["a", "b", "c"]) {
-					fs.writeFileSync(path.join(workerData.source, name + ".js"),
-						"module.exports = " + JSON.stringify(name + "-new") + ";");
-					sleep(workerData.gap);
-				}
-			`,
-				{
-					eval: true,
-					workerData: {
-						source: context.getValue('source'),
-						shared: shared.buffer,
-						gap: AGGREGATE_TIMEOUT * 4,
-					},
-				},
-			);
-			worker.on('error', (error) => {
-				failure = error;
-			});
-			const writerDeadline = Date.now() + 10_000;
-			while (!Atomics.load(shared, 0)) {
-				if (failure) throw failure;
-				if (Date.now() > writerDeadline)
-					throw new Error('Writer did not start');
-				await wait(25);
+			for (const name of ['a', 'b', 'c']) {
+				fs.writeFileSync(
+					path.join(context.getValue('source'), `${name}.js`),
+					`module.exports = "${name}-new";`,
+				);
+				block(AGGREGATE_TIMEOUT * 4);
 			}
-			Atomics.store(shared, 1, 1);
-			Atomics.notify(shared, 1);
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+			block(AGGREGATE_TIMEOUT * 8);
 
 			const expectedFiles = ['a', 'b', 'c'].map((name) =>
 				path.join(context.getValue('source'), `${name}.js`),
@@ -160,7 +128,6 @@ export default {
 			);
 			context.setValue('values', values);
 		} finally {
-			await worker?.terminate();
 			await new Promise((resolve, reject) =>
 				watching.close((error) => (error ? reject(error) : resolve())),
 			);

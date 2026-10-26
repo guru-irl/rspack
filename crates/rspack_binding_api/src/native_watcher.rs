@@ -378,6 +378,7 @@ struct PendingEvents {
   removed_files: FxHashSet<String>,
   errors: VecDeque<napi::Error>,
   in_flight: bool,
+  closed: bool,
 }
 
 #[derive(Clone)]
@@ -410,17 +411,16 @@ impl JsEventHandler {
           // Take the latest sets on the JS thread, not when the call is queued.
           pending.in_flight = false;
           if let Some(error) = pending.errors.pop_front() {
-            // An error uses its own callback and must not consume file changes.
+            // Errors use separate callbacks ahead of earlier changes; current callers never mix them.
             handler.schedule(&mut pending);
             return Err(error);
           }
+          let changed_files = std::mem::take(&mut pending.changed_files);
+          let removed_files = std::mem::take(&mut pending.removed_files);
+          drop(pending);
           Ok(NativeWatchResult {
-            changed_files: std::mem::take(&mut pending.changed_files)
-              .into_iter()
-              .collect(),
-            removed_files: std::mem::take(&mut pending.removed_files)
-              .into_iter()
-              .collect(),
+            changed_files: changed_files.into_iter().collect(),
+            removed_files: removed_files.into_iter().collect(),
           })
         },
       )?;
@@ -432,7 +432,8 @@ impl JsEventHandler {
   }
 
   fn schedule(&self, pending: &mut PendingEvents) {
-    if pending.in_flight
+    if pending.closed
+      || pending.in_flight
       || (pending.changed_files.is_empty()
         && pending.removed_files.is_empty()
         && pending.errors.is_empty())
@@ -445,8 +446,17 @@ impl JsEventHandler {
       Ok(self.clone()),
       napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
     );
+    // The JS thread clears in_flight only after Node has popped the previous call.
+    debug_assert_ne!(status, Status::QueueFull);
     if status != Status::Ok {
       pending.in_flight = false;
+      if status == Status::Closing {
+        // Failed calls can leak their queued value, so never retry a closed callback.
+        *pending = PendingEvents {
+          closed: true,
+          ..Default::default()
+        };
+      }
       tracing::debug!("Native watcher delivery failed: {status:?}");
     }
   }
@@ -459,6 +469,9 @@ impl rspack_watcher::EventAggregateHandler for JsEventHandler {
     deleted_files: rspack_util::fx_hash::FxHashSet<String>,
   ) {
     let mut pending = self.pending.lock().expect("pending events poisoned");
+    if pending.closed {
+      return;
+    }
     for path in changed_files {
       pending.removed_files.remove(&path);
       pending.changed_files.insert(path);
@@ -472,6 +485,9 @@ impl rspack_watcher::EventAggregateHandler for JsEventHandler {
 
   fn on_error(&self, error: rspack_error::Error) {
     let mut pending = self.pending.lock().expect("pending events poisoned");
+    if pending.closed {
+      return;
+    }
     pending
       .errors
       .push_back(napi::Error::from_reason(format!("Watcher error: {error}")));
