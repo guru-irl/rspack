@@ -2,6 +2,8 @@ mod analyzer;
 mod disk_watcher;
 mod executor;
 mod ignored;
+#[cfg(target_os = "linux")]
+mod inode_watcher;
 mod paths;
 mod scanner;
 mod trigger;
