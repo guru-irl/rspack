@@ -24,7 +24,7 @@ function command(program, args, log, env = {}) {
     const child = spawnSync(program, args, {
       cwd: root,
       env: { ...process.env, ...env },
-      shell: process.platform === 'win32' && program === 'pnpm',
+      shell: process.platform === 'win32' && (program === 'pnpm' || program === 'npm'),
       stdio: ['ignore', fd, fd],
       timeout: 25 * 60 * 1000,
     });
@@ -104,7 +104,7 @@ try {
   for (const [file, bytes] of originals) fs.writeFileSync(path.join(root, file), bytes);
 }
 fs.mkdirSync(path.join(work, 'parser'), { recursive: true });
-command('pnpm', ['--dir', 'bench-data/parser', 'add', '--ignore-workspace', '--ignore-scripts', '--save-exact', 'acorn@8.15.0', 'escodegen@2.1.0'], 'parser-install.log');
+command('npm', ['install', '--prefix', 'bench-data/parser', '--no-package-lock', '--ignore-scripts', '--registry=https://registry.npmjs.org', 'acorn@8.15.0', 'escodegen@2.1.0'], 'parser-install.log');
 command(process.execPath, [path.join(scripts, 'prepare.mjs'), path.join(work, 'fixture')], 'fixture.log');
 for (const pair of [1, 2, 3]) {
   for (const arm of ['MAIN', 'PR']) {
@@ -115,6 +115,7 @@ for (const pair of [1, 2, 3]) {
       RESULT_DIR: result,
       FIXTURE_ROOT: path.join(work, 'fixture'),
       TIMING_ARM: arm,
+      RSPACK_BINDING: native,
       EXPECTED_BINDING_PATH: native,
       EXPECTED_BINDING_SHA: nativeSha256,
     });

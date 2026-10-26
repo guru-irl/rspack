@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15-arm64
+          - runner: macos-latest
             target: aarch64-apple-darwin
             platform: darwin
             arch: arm64
@@ -29,7 +29,7 @@ jobs:
         shell: bash
     env:
       MAIN_SHA: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8
-      FEATURE_SHA: 960f68e563de14972c3cc4c08aef4f8d4767ec54
+      FEATURE_SHA: b1ff060c349b73af3aaa2334cb2545982b836ece
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       EXPECTED_ARCH: ${{ matrix.arch }}
       BINDING_ARTIFACT: bindings-${{ matrix.target }}
