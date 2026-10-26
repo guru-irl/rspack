@@ -26,7 +26,7 @@ function compareIds(a, b) {
 	return x < y ? -1 : x > y ? 1 : 0;
 }
 async function child() {
-	const { rspack } = require(path.resolve("bench-data/runtime/node_modules/@rspack/core"));
+	const { rspack } = require(path.resolve("bench-data/runtime/node_modules/@rspack/core/dist/index.js"));
 	const dir = path.join(root, mode);
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(path.join(dir, "index.js"), 'console.log(__webpack_hash__); import("./z.js"); import("./a.js");\n');
