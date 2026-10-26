@@ -1,0 +1,159 @@
+name: Native watcher release pair
+on:
+  push:
+    branches: [bench/native-watcher-packs-build]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  pnpm_config_pm_on_fail: ignore
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: true
+  PUPPETEER_SKIP_DOWNLOAD: true
+jobs:
+  build:
+    name: Build ${{ matrix.arm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: control
+            source: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8
+          - arm: native
+            source: 8697f640bb9e896ec8238f9fdae69c3a38b3b4a4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Record exact source
+        run: |
+          set -euo pipefail
+          mkdir -p pack-data/tmp pack-data/results pack-data/payload
+          echo "TMPDIR=$GITHUB_WORKSPACE/pack-data/tmp" >> "$GITHUB_ENV"
+          git rev-parse HEAD | tee pack-data/results/source.sha
+          test "$(git rev-parse HEAD)" = '${{ matrix.source }}'
+          git diff --exit-code
+          for file in rust-toolchain.toml Cargo.toml .cargo/config.toml crates/node_binding/scripts/build.mjs; do
+            mkdir -p "pack-data/results/settings/$(dirname "$file")"
+            cp "$file" "pack-data/results/settings/$file"
+          done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Install source dependencies
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@11.28.8
+          test "$(node --version)" = v22.23.3
+          test "$(pnpm --version)" = 11.28.8
+          pnpm install --frozen-lockfile 2>&1 | tee pack-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: native-watcher-release-pair
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare release build
+        run: |
+          set -euo pipefail
+          command -v clang-14 || { sudo apt-get update; sudo apt-get install -y clang-14; }
+          mkdir -p pack-data/bin
+          ln -s "$(command -v clang-14)" pack-data/bin/clang
+          ln -s "$(command -v clang++-14)" pack-data/bin/clang++
+          echo "$GITHUB_WORKSPACE/pack-data/bin" >> "$GITHUB_PATH"
+          rustup component add rust-src --toolchain nightly-2026-04-16
+          rustup target add x86_64-unknown-linux-gnu --toolchain nightly-2026-04-16
+          test "$(rustup show active-toolchain | cut -d' ' -f1)" = nightly-2026-04-16-x86_64-unknown-linux-gnu
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/pack-data/codegen-target" cargo codegen 2>&1 | tee pack-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { printf '%s\n' "$ImageOS" "$ImageVersion"; node --version; pnpm --version; rustc -Vv; clang-14 --version; ldd --version; } > pack-data/results/toolchain.txt
+          df -h . | tee pack-data/results/disk-before.txt
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${ALLOCATIVE:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}"
+      - name: Build official release binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          USE_NAPI_CROSS: 1
+          TARGET_CC: clang
+        run: |
+          set -euo pipefail
+          test ! -d target
+          pnpm run build:binding:release 2>&1 | tee pack-data/results/native-build.log
+          grep -E 'Compiling (rspack_napi|rspack_binding_api) ' pack-data/results/native-build.log | tee pack-data/results/recompiled-crates.txt
+          test "$(wc -l < pack-data/results/recompiled-crates.txt)" -eq 2
+          grep -F -- '--no-default-features --no-dts-cache --features plugin,info-level' pack-data/results/native-build.log
+          grep -F -- '-Zbuild-std=panic_abort,std' pack-data/results/native-build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node pack-data/payload/
+          cp crates/node_binding/napi-binding.d.ts pack-data/results/generated-napi-binding.d.ts
+          git diff -- crates/node_binding/napi-binding.d.ts > pack-data/results/generated-types.diff
+      - name: Test native watcher
+        if: matrix.arm == 'native'
+        run: |
+          set -euo pipefail
+          cargo test -p rspack_watcher 2>&1 | tee pack-data/results/watcher-tests.log
+      - name: Build and pack matching JavaScript
+        run: |
+          set -euo pipefail
+          pnpm --filter @rspack/core run build 2>&1 | tee pack-data/results/js-build.log
+          cp pack-data/payload/rspack.linux-x64-gnu.node npm/linux-x64-gnu/
+          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/pack-data/payload"
+          pnpm --dir crates/node_binding pack --pack-destination "$GITHUB_WORKSPACE/pack-data/payload"
+          pnpm --dir npm/linux-x64-gnu pack --pack-destination "$GITHUB_WORKSPACE/pack-data/payload"
+          git diff --exit-code -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml
+      - name: Verify packed files and clean installation
+        run: |
+          set -euo pipefail
+          mkdir -p pack-data/unpacked-core pack-data/unpacked-native pack-data/clean
+          tar -xzf pack-data/payload/rspack-core-2.3.0-beta.1.tgz -C pack-data/unpacked-core
+          tar -xzf pack-data/payload/rspack-binding-linux-x64-gnu-2.3.0-beta.1.tgz -C pack-data/unpacked-native
+          diff -rq packages/rspack/dist pack-data/unpacked-core/package/dist
+          cmp pack-data/payload/rspack.linux-x64-gnu.node pack-data/unpacked-native/package/rspack.linux-x64-gnu.node
+          (cd pack-data/clean; printf '{"private":true,"type":"module"}\n' > package.json; npm install --ignore-scripts --omit=dev --omit=optional --legacy-peer-deps --package-lock=false ../payload/*.tgz) 2>&1 | tee pack-data/results/clean-install.log
+          EXPECTED_NODE_SHA=$(sha256sum pack-data/payload/rspack.linux-x64-gnu.node | cut -d' ' -f1) node --input-type=module - <<'JS' 2>&1 | tee pack-data/results/clean-identity.log
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import {createRequire} from 'node:module';
+          const require = createRequire(`${process.cwd()}/pack-data/clean/package.json`);
+          const core = require('@rspack/core');
+          const binding = require('@rspack/binding');
+          const real = fs.realpathSync(require.resolve('@rspack/binding-linux-x64-gnu'));
+          const maps = [...new Set(fs.readFileSync('/proc/self/maps','utf8').split('\n').filter(l=>/rspack.*\.node/.test(l)).map(l=>l.slice(l.indexOf('/'))))];
+          const sha = crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex');
+          console.log(JSON.stringify({core:core.rspackVersion,expected:binding.EXPECTED_RSPACK_CORE_VERSION,real,maps,sha}));
+          if(core.rspackVersion !== '2.3.0-beta.1' || binding.EXPECTED_RSPACK_CORE_VERSION !== core.rspackVersion) throw Error('Version mismatch');
+          if(maps.length!==1 || maps[0]!==real || sha!==process.env.EXPECTED_NODE_SHA) throw Error('Native identity mismatch');
+          JS
+          (cd pack-data/payload; sha256sum *.tgz *.node > SHA256SUMS; sha256sum -c SHA256SUMS)
+          df -h . | tee pack-data/results/disk-after.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-watcher-${{ matrix.arm }}-payload
+          path: pack-data/payload/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-watcher-${{ matrix.arm }}-evidence
+          path: pack-data/results/
+          if-no-files-found: error
+  verify-pair:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-watcher-*-evidence
+          path: pair-evidence
+      - name: Require matching toolchains
+        run: |
+          set -euo pipefail
+          cmp pair-evidence/native-watcher-control-evidence/toolchain.txt pair-evidence/native-watcher-native-evidence/toolchain.txt
+          cat pair-evidence/native-watcher-control-evidence/toolchain.txt
+          echo 'PAIR TOOLCHAINS MATCH'
