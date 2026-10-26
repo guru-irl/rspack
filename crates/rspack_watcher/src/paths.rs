@@ -436,7 +436,7 @@ impl PathManager {
     self.context_watcher.get_or_init(|| watcher);
   }
 
-  fn watch_context_directory(&self, path: &InternedPath) {
+  fn watch_context_directory(&self, path: &InternedPath) -> rspack_error::Result<()> {
     if let Some(watcher) = self.context_watcher.get().and_then(Weak::upgrade) {
       let mut watcher = watcher.lock().expect("disk watcher lock poisoned");
       // A scan can outlive the context that started it.
@@ -445,10 +445,10 @@ impl PathManager {
         && let Err(error) = watcher.watch_context_directory(path)
         && path.is_dir()
       {
-        tracing::error!(target: "rspack_watcher::disk_watcher", "{error}");
-        eprintln!("Error in file watcher: {error}");
+        return Err(error);
       }
     }
+    Ok(())
   }
 
   fn remove_context_watch(&self, path: &InternedPath, removed: bool) {
@@ -632,6 +632,8 @@ impl PathManager {
     changed_since: Option<u64>,
   ) -> Vec<InternedPath> {
     let mut changed = Vec::new();
+    let mut watch_errors = 0;
+    let mut first_watch_error = None;
     // Each directory carries the real paths of the directories above it: with
     // `followSymlinks`, a link back into its own ancestry is a loop, while two
     // links to one directory are two aliases, each scanned.
@@ -651,7 +653,10 @@ impl PathManager {
       }
       // Install the non-recursive watch before enumerating, including empty
       // directories. Children pass the ignored filter before reaching this walk.
-      self.watch_context_directory(&dir);
+      if let Err(error) = self.watch_context_directory(&dir) {
+        watch_errors += 1;
+        first_watch_error.get_or_insert(error);
+      }
       let Ok(entries) = std::fs::read_dir(&dir) else {
         continue;
       };
@@ -695,6 +700,12 @@ impl PathManager {
           }
         }
       }
+    }
+    if let Some(error) = first_watch_error {
+      tracing::error!(target: "rspack_watcher::disk_watcher", watch_errors, "{error}");
+      eprintln!(
+        "Error in file watcher: failed to watch {watch_errors} context directories; first error: {error}"
+      );
     }
     changed
   }

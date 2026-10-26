@@ -1,12 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use notify::{
-  Event, EventKind, RecommendedWatcher, Watcher,
+  Event, EventKind,
   event::{ModifyKind, RenameMode},
 };
+#[cfg(not(target_os = "linux"))]
+use notify::{RecommendedWatcher, Watcher};
 use rspack_paths::InternedPath;
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
+#[cfg(target_os = "linux")]
+use crate::inode_watcher::InodeWatcher as RecommendedWatcher;
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
 
 /// `DiskWatcher` is responsible for managing the underlying file system watcher
@@ -85,12 +89,17 @@ impl DiskWatcher {
     }
     // notify shares one watch per path. A non-recursive add must never downgrade
     // a recursive requirement, and unwatching a recursive parent removes its children.
+    let has_recursive = modes
+      .values()
+      .any(|mode| *mode == notify::RecursiveMode::Recursive);
     let new_patterns: HashSet<WatchPattern> = modes
       .iter()
       .filter_map(|(path, mode)| {
-        if path.ancestors().skip(1).any(|parent| {
-          modes.get(&InternedPath::from(parent)) == Some(&notify::RecursiveMode::Recursive)
-        }) {
+        if has_recursive
+          && path.ancestors().skip(1).any(|parent| {
+            modes.get(&InternedPath::from(parent)) == Some(&notify::RecursiveMode::Recursive)
+          })
+        {
           None
         } else {
           Some(WatchPattern {

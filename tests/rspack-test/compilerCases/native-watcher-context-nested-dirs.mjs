@@ -3,7 +3,7 @@ import path from "node:path";
 import vm from "node:vm";
 
 const CASE_NAME = "native-watcher-context-nested-dirs";
-const DEADLINE = 15_000;
+const DEADLINE = 4_000;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function writeBeforeStart(file, content) {
@@ -34,6 +34,17 @@ export default {
 			path.join(pluginDirectory, "nested", "seed.txt"),
 			"before\n"
 		);
+		writeBeforeStart(
+			path.join(pluginDirectory, "kept", "deep", "file.txt"),
+			"kept\n"
+		);
+		fs.mkdirSync(path.join(source, "ctx", "real", "sub"), { recursive: true });
+		fs.symlinkSync(
+			process.platform === "win32" ? path.join(source, "ctx", "real") : "real",
+			path.join(source, "ctx", "link"),
+			"junction"
+		);
+		context.setValue("keepOuterContext", true);
 		context.setValue("source", source);
 		context.setValue("output", path.join(root, "dist"));
 		return {
@@ -41,6 +52,7 @@ export default {
 			mode: "development",
 			devtool: false,
 			target: "node",
+			resolve: { symlinks: false },
 			entry: "./index.js",
 			output: {
 				path: path.join(root, "dist"),
@@ -51,7 +63,15 @@ export default {
 			plugins: [
 				(compiler) => {
 					compiler.hooks.thisCompilation.tap(CASE_NAME, (compilation) => {
-						compilation.contextDependencies.add(pluginDirectory);
+						if (context.getValue("keepOuterContext")) {
+							compilation.contextDependencies.add(pluginDirectory);
+						}
+						compilation.contextDependencies.add(
+							path.join(pluginDirectory, "kept")
+						);
+						compilation.fileDependencies.add(
+							path.join(pluginDirectory, "kept", "deep", "file.txt")
+						);
 					});
 				}
 			]
@@ -100,19 +120,22 @@ export default {
 			}
 		};
 		const firstBuild = nextBuild();
-		watching = compiler.watch({ aggregateTimeout: 100 }, (error, stats) => {
-			builds++;
-			if (error || stats.hasErrors()) {
-				clearTimeout(timer);
-				failure = error || new Error(stats.toString());
-				pending?.reject(failure);
-				pending = undefined;
-			} else if (pending && doneAt >= pending.since) {
-				clearTimeout(timer);
-				pending.resolve(doneAt);
-				pending = undefined;
+		watching = compiler.watch(
+			{ aggregateTimeout: 50, followSymlinks: true },
+			(error, stats) => {
+				builds++;
+				if (error || stats.hasErrors()) {
+					clearTimeout(timer);
+					failure = error || new Error(stats.toString());
+					pending?.reject(failure);
+					pending = undefined;
+				} else if (pending && doneAt >= pending.since) {
+					clearTimeout(timer);
+					pending.resolve(doneAt);
+					pending = undefined;
+				}
 			}
-		});
+		);
 		try {
 			await firstBuild;
 			await step("existing context subdirectory", () => {
@@ -142,6 +165,49 @@ export default {
 					"after\n"
 				);
 			});
+			// Report missed nested events before testing removal behavior.
+			expect(results.filter((result) => !result.rebuilt)).toEqual([]);
+			// Dropping an outer plugin context must keep the inner context and file.
+			context.setValue("keepOuterContext", false);
+			await step("remove outer plugin context", () => watching.invalidate());
+			await wait(500);
+			const before = builds;
+			fs.writeFileSync(
+				path.join(source, "plugin", "nested", "unused.txt"),
+				"unused\n"
+			);
+			await wait(700);
+			results.push({
+				name: "removed context stays quiet",
+				rebuilt: builds === before
+			});
+			await step("retained file dependency", () => {
+				fs.writeFileSync(
+					path.join(source, "plugin", "kept", "deep", "file.txt"),
+					"changed\n"
+				);
+			});
+			await step("write real nested file before alias removal", () => {
+				fs.writeFileSync(
+					path.join(source, "ctx", "real", "sub", "a.js"),
+					"module.exports = 3;\n"
+				);
+			});
+			await step("remove symlink alias", () =>
+				fs.unlinkSync(path.join(source, "ctx", "link"))
+			);
+			await step("real directory after alias removal", () => {
+				fs.writeFileSync(
+					path.join(source, "ctx", "real", "sub", "b.js"),
+					"module.exports = 3;\n"
+				);
+			});
+			await step("real root after alias removal", () => {
+				fs.writeFileSync(
+					path.join(source, "ctx", "real", "c.js"),
+					"module.exports = 4;\n"
+				);
+			});
 			context.setValue("results", results);
 		} finally {
 			clearTimeout(timer);
@@ -159,6 +225,12 @@ export default {
 			([file]) => path.basename(file) === "bundle.js"
 		)?.[1];
 		vm.runInNewContext(bundle, { module });
-		expect(module.exports).toEqual(["./created/later.js", "./existing/new.js"]);
+		expect(module.exports).toEqual([
+			"./created/later.js",
+			"./existing/new.js",
+			"./real/c.js",
+			"./real/sub/a.js",
+			"./real/sub/b.js"
+		]);
 	}
 };
