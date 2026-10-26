@@ -229,7 +229,7 @@ fn sum_for_types(size: &SplitChunkSizes, ty: &FxHashSet<SourceType>) -> f64 {
     .sum()
 }
 
-fn get_key(module: &dyn Module, delimiter: &str, compilation: &Compilation) -> String {
+pub(super) fn get_key(module: &dyn Module, delimiter: &str, compilation: &Compilation) -> String {
   let ident = make_paths_relative(
     compilation.options.context.as_str(),
     module.identifier().as_str(),

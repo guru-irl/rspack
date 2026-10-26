@@ -29,6 +29,7 @@ impl JsModuleGraph {
     f: impl FnOnce(&Compilation, &ModuleGraph) -> napi::Result<R>,
   ) -> napi::Result<R> {
     with_compilation(self.compilation_id, |compilation| {
+      rspack_core::record_untrackable_module_read(compilation.compiler_id());
       if compilation.build_module_graph_artifact.is_stolen() {
         return Err(napi::Error::from_reason(
           "ModuleGraph is not available during module graph building phase".to_string(),
@@ -196,6 +197,7 @@ impl JsModuleGraph {
     let compilation_id = self.compilation_id;
     let vec = &mut self.connection_vec_buffer;
     with_compilation(compilation_id, |compilation| {
+      rspack_core::record_untrackable_module_read(compilation.compiler_id());
       if compilation.build_module_graph_artifact.is_stolen() {
         return Err(napi::Error::from_reason(
           "ModuleGraph is not available during module graph building phase".to_string(),
@@ -225,6 +227,7 @@ impl JsModuleGraph {
     let compilation_id = self.compilation_id;
     let vec = &mut self.connection_vec_buffer;
     with_compilation(compilation_id, |compilation| {
+      rspack_core::record_untrackable_module_read(compilation.compiler_id());
       if compilation.build_module_graph_artifact.is_stolen() {
         return Err(napi::Error::from_reason(
           "ModuleGraph is not available during module graph building phase".to_string(),
@@ -254,6 +257,7 @@ impl JsModuleGraph {
     let compilation_id = self.compilation_id;
     let vec = &mut self.connection_vec_buffer;
     with_compilation(compilation_id, |compilation| {
+      rspack_core::record_untrackable_module_read(compilation.compiler_id());
       if compilation.build_module_graph_artifact.is_stolen() {
         return Err(napi::Error::from_reason(
           "ModuleGraph is not available during module graph building phase".to_string(),

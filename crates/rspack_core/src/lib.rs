@@ -48,6 +48,8 @@ mod normal_module;
 mod raw_module;
 pub use raw_module::*;
 pub mod module;
+mod module_read_tracking;
+pub use module_read_tracking::*;
 pub mod parser_and_generator;
 pub use concatenated_module::*;
 pub use module::*;

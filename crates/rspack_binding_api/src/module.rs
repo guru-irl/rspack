@@ -139,6 +139,7 @@ fn module_build_info_getter(ctx: CallContext) -> napi::Result<Object> {
   let raw_env = env.raw();
   let mut reference: Reference<Module> =
     unsafe { Reference::from_napi_value(raw_env, this.raw())? };
+  rspack_core::record_untrackable_module_read(reference.compiler_id);
   if let Some(r) = &reference.build_info_ref {
     return r.as_object(env);
   }
@@ -190,6 +191,27 @@ fn module_build_info_setter(ctx: CallContext) -> napi::Result<()> {
   Ok(())
 }
 
+#[js_function]
+fn module_build_meta_getter(ctx: CallContext) -> napi::Result<Unknown> {
+  let this = ctx.this_unchecked::<JsObject>();
+  let reference: Reference<Module> =
+    unsafe { Reference::from_napi_value(ctx.env.raw(), this.raw())? };
+  rspack_core::record_untrackable_module_read(reference.compiler_id);
+  this.get_property(ctx.env.symbol_for(symbols::MODULE_BUILD_META_SYMBOL)?)
+}
+
+#[js_function(1)]
+fn module_build_meta_setter(ctx: CallContext) -> napi::Result<()> {
+  let mut this = ctx.this_unchecked::<JsObject>();
+  let reference: Reference<Module> =
+    unsafe { Reference::from_napi_value(ctx.env.raw(), this.raw())? };
+  rspack_core::record_untrackable_module_read(reference.compiler_id);
+  this.set_property(
+    ctx.env.symbol_for(symbols::MODULE_BUILD_META_SYMBOL)?,
+    ctx.get::<Unknown>(0)?,
+  )
+}
+
 pub(crate) fn define_module_properties(
   env: &Env,
   instance: &mut impl DerivedModule,
@@ -226,12 +248,17 @@ pub(crate) fn define_module_properties(
           .with_utf8_name("buildInfo")?
           .with_getter(module_build_info_getter)
           .with_setter(module_build_info_setter),
+        Property::new()
+          .with_utf8_name("buildMeta")?
+          .with_getter(module_build_meta_getter)
+          .with_setter(module_build_meta_setter),
       ])
     })?;
     properties.push(
       Property::new()
-        .with_utf8_name("buildMeta")?
-        .with_value(&Object::new(env)?),
+        .with_name(env, env.symbol_for(symbols::MODULE_BUILD_META_SYMBOL)?)?
+        .with_value(&Object::new(env)?)
+        .with_property_attributes(PropertyAttributes::Writable),
     );
     let identifier = env.create_string(module.identifier().as_str())?;
     properties.push(
@@ -386,6 +413,7 @@ impl Module {
     enumerable = false
   )]
   pub fn original_source<'a>(&mut self, env: &'a Env) -> napi::Result<Either<Unknown<'a>, ()>> {
+    rspack_core::record_untrackable_module_read(self.compiler_id);
     let compiler_reference = COMPILER_REFERENCES.with(|ref_cell| {
       let references = ref_cell.borrow();
       references.get(&self.compiler_id).cloned()
@@ -500,7 +528,14 @@ impl Module {
   pub fn size(&mut self, ty: Option<String>) -> napi::Result<f64> {
     self.with_ref(|compilation, module| {
       let ty = ty.map(|s| SourceType::from(s.as_str()));
-      Ok(module.size(ty.as_ref(), Some(compilation)))
+      let value = module.size(ty.as_ref(), Some(compilation));
+      rspack_core::record_module_size_read(
+        compilation.compiler_id(),
+        module.identifier(),
+        ty,
+        value,
+      );
+      Ok(value)
     })
   }
 

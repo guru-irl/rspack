@@ -5,9 +5,10 @@ use rspack_core::{
   module_chunk_condition,
 };
 use rspack_error::Result;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{SplitChunksPlugin, common::ModuleChunkMap, module_group::ModuleGroup};
+use super::MaxSizeSetting;
+use crate::{CacheGroup, SplitChunksPlugin, common::ModuleChunkMap, module_group::ModuleGroup};
 
 fn put_split_chunk_reason(
   chunk_reason: &mut Option<String>,
@@ -27,6 +28,41 @@ fn put_split_chunk_reason(
 }
 
 impl SplitChunksPlugin {
+  pub(super) fn apply_split_metadata(
+    &self,
+    dest: ChunkUkey,
+    cache_group: &CacheGroup,
+    chunk_name: Option<&str>,
+    compilation: &mut Compilation,
+    settings: &mut FxHashMap<ChunkUkey, MaxSizeSetting>,
+  ) {
+    let chunk = compilation
+      .build_chunk_graph_artifact
+      .chunk_by_ukey
+      .expect_get_mut(&dest);
+    if let Some(reason) = chunk.chunk_reason_mut() {
+      reason.push_str(&format!(" (cache group: {})", cache_group.key));
+      if let Some(name) = chunk_name {
+        reason.push_str(&format!(" (name: {name})"));
+      }
+    }
+    if let Some(filename) = &cache_group.filename {
+      chunk.set_filename_template(Some(filename.clone()));
+    }
+    chunk.add_id_name_hints(cache_group.id_hint.clone());
+    if !cache_group.max_initial_size.is_empty() || !cache_group.max_async_size.is_empty() {
+      settings.insert(
+        dest,
+        MaxSizeSetting {
+          min_size: cache_group.min_size.clone(),
+          max_async_size: cache_group.max_async_size.clone(),
+          max_initial_size: cache_group.max_initial_size.clone(),
+          automatic_name_delimiter: cache_group.automatic_name_delimiter.clone(),
+        },
+      );
+    }
+  }
+
   pub(crate) fn get_module_chunks(
     all_modules: &[ModuleIdentifier],
     compilation: &Compilation,
@@ -125,7 +161,6 @@ impl SplitChunksPlugin {
     module_group: &mut ModuleGroup,
     is_reuse_existing_chunk: &mut bool,
     is_reuse_existing_chunk_with_all_modules: &mut bool,
-    recorder: &mut Option<super::replay::Recorder>,
   ) -> ChunkUkey {
     if let Some(chunk_name) = &module_group.chunk_name {
       if let Some(chunk) = compilation
@@ -136,11 +171,7 @@ impl SplitChunksPlugin {
         *is_reuse_existing_chunk = true;
         *chunk
       } else {
-        let chunk = Self::create_split_chunk(Some(chunk_name.clone()), compilation);
-        if let Some(recorder) = recorder {
-          recorder.create(chunk, Some(chunk_name.clone()));
-        }
-        chunk
+        Self::create_split_chunk(Some(chunk_name.clone()), compilation)
       }
     } else if module_group.cache_group_reuse_existing_chunk
       && let Some(reusable_chunk) = self.find_the_best_reusable_chunk(compilation, module_group)
@@ -149,11 +180,7 @@ impl SplitChunksPlugin {
       *is_reuse_existing_chunk_with_all_modules = true;
       reusable_chunk
     } else {
-      let chunk = Self::create_split_chunk(None, compilation);
-      if let Some(recorder) = recorder {
-        recorder.create(chunk, None);
-      }
-      chunk
+      Self::create_split_chunk(None, compilation)
     }
   }
 

@@ -3166,7 +3166,7 @@ export interface RawSplitChunkSizes {
 }
 
 export interface RawSplitChunksOptions {
-  experimentalReplay?: boolean
+  experimentalCache?: boolean
   dedupDepth?: number
   fallbackCacheGroup?: RawFallbackCacheGroupOptions
   name?: string | false | ((ctx: JsChunkOptionNameCtx) => string | undefined)

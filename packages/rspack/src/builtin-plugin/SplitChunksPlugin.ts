@@ -42,13 +42,13 @@ export function toRawSplitChunksOptions(
     return;
   }
 
-  const { dedupDepth, experimentalReplay } = sc;
+  const { dedupDepth, experimentalCache } = sc;
   if (
-    experimentalReplay !== undefined &&
-    typeof experimentalReplay !== 'boolean'
+    experimentalCache !== undefined &&
+    typeof experimentalCache !== 'boolean'
   ) {
     throw new Error(
-      'Invalid Rspack configuration: "optimization.splitChunks.experimentalReplay" must be a boolean.',
+      'Invalid Rspack configuration: "optimization.splitChunks.experimentalCache" must be a boolean.',
     );
   }
   if (
