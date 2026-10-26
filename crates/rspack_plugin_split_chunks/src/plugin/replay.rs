@@ -30,7 +30,7 @@ impl ReplayOptions {
 struct DigestHasher(Xxh64, Xxh64);
 impl Default for DigestHasher {
   fn default() -> Self {
-    Self(Xxh64::new(0), Xxh64::new(0x9e3779b97f4a7c15))
+    Self(Xxh64::new(0), Xxh64::new(0x9e37_79b9_7f4a_7c15))
   }
 }
 impl Hasher for DigestHasher {
@@ -111,7 +111,6 @@ pub(super) enum Event {
     chunk_name: Option<String>,
     placed: Placement,
     used_chunks: Vec<ChunkRef>,
-    max_size: bool,
   },
 }
 
@@ -154,7 +153,6 @@ impl Recorder {
     chunk_name: Option<String>,
     placed: &ModuleChunkMap,
     used: &FxHashSet<ChunkUkey>,
-    max_size: bool,
   ) {
     let refs =
       |chunks: &FxHashSet<ChunkUkey>| chunks.iter().map(|chunk| self.chunk_ref(*chunk)).collect();
@@ -176,7 +174,6 @@ impl Recorder {
       chunk_name,
       placed,
       used_chunks: refs(used),
-      max_size,
     });
   }
   pub fn finish(self) -> ReplayRecord {
@@ -308,7 +305,6 @@ impl SplitChunksPlugin {
           chunk_name,
           placed,
           used_chunks,
-          max_size,
         } => {
           let dest = dest.resolve(&created);
           self.apply_split_metadata(
@@ -317,11 +313,6 @@ impl SplitChunksPlugin {
             chunk_name.as_deref(),
             compilation,
             &mut settings,
-          );
-          let group = &self.cache_groups[*cache_group_index as usize];
-          debug_assert_eq!(
-            *max_size,
-            !group.max_initial_size.is_empty() || !group.max_async_size.is_empty()
           );
           let placed = placed.resolve(&created);
           let used = used_chunks

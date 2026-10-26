@@ -42,7 +42,15 @@ export function toRawSplitChunksOptions(
     return;
   }
 
-  const { dedupDepth } = sc;
+  const { dedupDepth, experimentalReplay } = sc;
+  if (
+    experimentalReplay !== undefined &&
+    typeof experimentalReplay !== 'boolean'
+  ) {
+    throw new Error(
+      'Invalid Rspack configuration: "optimization.splitChunks.experimentalReplay" must be a boolean.',
+    );
+  }
   if (
     dedupDepth !== undefined &&
     (!Number.isInteger(dedupDepth) || dedupDepth < 0 || dedupDepth > 0xffffffff)

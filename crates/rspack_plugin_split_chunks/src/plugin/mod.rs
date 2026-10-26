@@ -116,14 +116,15 @@ impl SplitChunksPlugin {
       logger.time_end(start);
       return Ok(());
     }
-    let first_invocation = {
+    let (first_invocation, first_compilation) = {
       let mut last = self
         .last_compilation
         .lock()
         .expect("replay compilation lock");
+      let first_compilation = last.is_none();
       let first = *last != Some(compilation.id());
       *last = Some(compilation.id());
-      first
+      (first, first_compilation)
     };
     if !first_invocation {
       let settings = self.full_impl(compilation, &mut None).await?;
@@ -174,9 +175,11 @@ impl SplitChunksPlugin {
     } else {
       "no record".to_string()
     };
-    logger.info(format!(
-      "replay: full run ({reason}; digest {digest_ms:.3} ms)"
-    ));
+    if active || first_compilation {
+      logger.info(format!(
+        "replay: full run ({reason}; digest {digest_ms:.3} ms)"
+      ));
+    }
     // Invalidate before any fallible work, so a failed run cannot leave a stale record.
     if active {
       *self.replay_record.lock().expect("replay record lock") = None;
@@ -696,7 +699,6 @@ impl SplitChunksPlugin {
             module_group.chunk_name.clone(),
             &placed_module_chunks,
             &used_chunks,
-            !cache_group.max_initial_size.is_empty() || !cache_group.max_async_size.is_empty(),
           );
         }
         self.move_modules_to_new_chunk_and_remove_from_old_chunks(
