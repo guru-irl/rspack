@@ -80,14 +80,13 @@ impl Scanner {
         .collect::<Vec<_>>();
       let missing = accessor.missing().0.clone();
       let dirs_tx = tx.clone();
+      let dirs_path_manager = Arc::clone(&self.path_manager);
       tokio::spawn(async move {
-        _ = send_events(
-          // A directory is there only through a link that resolves, like
-          // watchpack's `readdir`.
-          absent_paths(&directories, &missing, |path| path.exists()),
-          FsEventKind::Remove,
-          &dirs_tx,
-        );
+        // A directory is there only through a link that resolves, like
+        // watchpack's `readdir`.
+        let mut removed = absent_paths(&directories, &missing, |path| path.exists());
+        removed.retain(|path| !dirs_path_manager.is_known_absent(path));
+        _ = send_events(removed, FsEventKind::Remove, &dirs_tx);
         let changed = directories
           .into_iter()
           .filter(|p| changed_since(p, start_time))
