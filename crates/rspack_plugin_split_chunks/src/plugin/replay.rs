@@ -184,7 +184,7 @@ impl Recorder {
 impl ReplayRecord {
   // Validate the whole event stream before allocating keys or touching the graph.
   // A sparse virtual graph checks sources created or changed by earlier events too.
-  pub fn precheck(&self, compilation: &Compilation) -> Result<(), String> {
+  pub fn precheck(&self, compilation: &Compilation) -> Result<(), &'static str> {
     let graph = &compilation.build_chunk_graph_artifact;
     let mut created = 0;
     let mut names = FxHashSet::default();
@@ -199,7 +199,7 @@ impl ReplayRecord {
           if let Some(name) = name
             && (graph.named_chunks.contains_key(name) || !names.insert(name))
           {
-            return Err("created chunk name already exists".into());
+            return Err("created chunk name already exists");
           }
           created += 1;
         }
@@ -210,14 +210,19 @@ impl ReplayRecord {
           ..
         } => {
           if !valid_ref(*dest) || used_chunks.iter().any(|chunk| !valid_ref(*chunk)) {
-            return Err("chunk missing".into());
+            return Err("chunk missing");
           }
           let mut failed = false;
+          // Placements contain each module once, so its virtual edges can advance
+          // after validating that module without affecting another module's checks.
           placed.for_each(|module, chunks| {
+            if failed {
+              return;
+            }
             for chunk in chunks {
               if !valid_ref(*chunk) {
                 failed = true;
-                continue;
+                return;
               }
               let present = edges
                 .get(&(module, *chunk))
@@ -228,13 +233,9 @@ impl ReplayRecord {
                 });
               if !present {
                 failed = true;
+                return;
               }
             }
-          });
-          if failed {
-            return Err("placed source edge missing".into());
-          }
-          placed.for_each(|module, chunks| {
             let mut moved = false;
             for chunk in chunks {
               if chunk != dest {
@@ -246,6 +247,9 @@ impl ReplayRecord {
               edges.insert((module, *dest), true);
             }
           });
+          if failed {
+            return Err("placed source edge missing");
+          }
         }
       }
     }
