@@ -1,7 +1,8 @@
 use std::{
   boxed::Box,
+  collections::VecDeque,
   path::{Path, PathBuf},
-  sync::Arc,
+  sync::{Arc, Mutex},
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -371,30 +372,83 @@ fn to_tuple_path_iterator(
   )
 }
 
+#[derive(Default)]
+struct PendingEvents {
+  changed_files: FxHashSet<String>,
+  removed_files: FxHashSet<String>,
+  errors: VecDeque<napi::Error>,
+  in_flight: bool,
+}
+
+#[derive(Clone)]
 struct JsEventHandler {
-  inner: napi::threadsafe_function::ThreadsafeFunction<
-    NativeWatchResult,
-    napi::Unknown<'static>,
-    NativeWatchResult,
-    Status,
-    true,
-    true,
-    1,
+  inner: Arc<
+    napi::threadsafe_function::ThreadsafeFunction<
+      JsEventHandler,
+      napi::Unknown<'static>,
+      NativeWatchResult,
+      Status,
+      true,
+      true,
+      1,
+    >,
   >,
+  pending: Arc<Mutex<PendingEvents>>,
 }
 
 impl JsEventHandler {
   fn new(callback: Function<'static>) -> napi::Result<Self> {
     let callback = callback
-      .build_threadsafe_function::<NativeWatchResult>()
+      .build_threadsafe_function::<JsEventHandler>()
       .callee_handled::<true>()
       .max_queue_size::<1>()
       .weak::<true>()
       .build_callback(
-        move |ctx: napi::threadsafe_function::ThreadSafeCallContext<_>| Ok(ctx.value),
+        |ctx: napi::threadsafe_function::ThreadSafeCallContext<JsEventHandler>| {
+          let handler = ctx.value;
+          let mut pending = handler.pending.lock().expect("pending events poisoned");
+          // Take the latest sets on the JS thread, not when the call is queued.
+          pending.in_flight = false;
+          if let Some(error) = pending.errors.pop_front() {
+            // An error uses its own callback and must not consume file changes.
+            handler.schedule(&mut pending);
+            return Err(error);
+          }
+          Ok(NativeWatchResult {
+            changed_files: std::mem::take(&mut pending.changed_files)
+              .into_iter()
+              .collect(),
+            removed_files: std::mem::take(&mut pending.removed_files)
+              .into_iter()
+              .collect(),
+          })
+        },
       )?;
 
-    Ok(Self { inner: callback })
+    Ok(Self {
+      inner: Arc::new(callback),
+      pending: Default::default(),
+    })
+  }
+
+  fn schedule(&self, pending: &mut PendingEvents) {
+    if pending.in_flight
+      || (pending.changed_files.is_empty()
+        && pending.removed_files.is_empty()
+        && pending.errors.is_empty())
+    {
+      return;
+    }
+    pending.in_flight = true;
+    // The queued value keeps this generation's state and callback alive.
+    let status = self.inner.call(
+      Ok(self.clone()),
+      napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+    );
+    if status != Status::Ok {
+      pending.in_flight = false;
+      tracing::debug!("Native watcher delivery failed: {status:?}");
+    }
   }
 }
 
@@ -404,25 +458,24 @@ impl rspack_watcher::EventAggregateHandler for JsEventHandler {
     changed_files: rspack_util::fx_hash::FxHashSet<String>,
     deleted_files: rspack_util::fx_hash::FxHashSet<String>,
   ) {
-    let changed_files_vec: Vec<String> = changed_files.into_iter().collect();
-    let deleted_files_vec: Vec<String> = deleted_files.into_iter().collect();
-    let result = NativeWatchResult {
-      changed_files: changed_files_vec,
-      removed_files: deleted_files_vec,
-    };
-    self.inner.call(
-      Ok(result),
-      napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
-    );
+    let mut pending = self.pending.lock().expect("pending events poisoned");
+    for path in changed_files {
+      pending.removed_files.remove(&path);
+      pending.changed_files.insert(path);
+    }
+    for path in deleted_files {
+      pending.changed_files.remove(&path);
+      pending.removed_files.insert(path);
+    }
+    self.schedule(&mut pending);
   }
 
   fn on_error(&self, error: rspack_error::Error) {
-    // Handle error, maybe log it or notify the user
-    let error_message = format!("Watcher error: {error}");
-    self.inner.call(
-      Err(napi::Error::from_reason(error_message)),
-      napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
-    );
+    let mut pending = self.pending.lock().expect("pending events poisoned");
+    pending
+      .errors
+      .push_back(napi::Error::from_reason(format!("Watcher error: {error}")));
+    self.schedule(&mut pending);
   }
 }
 
