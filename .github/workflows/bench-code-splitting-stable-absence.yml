@@ -1,0 +1,67 @@
+name: Stable absence measurements
+on:
+  push:
+    branches: [bench/code-splitting-stable-absence-main]
+    paths: ['.github/workflows/bench-code-splitting-stable-absence.yml', 'scripts/stable-absence-bench/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: stable-absence-main-measurements
+  cancel-in-progress: false
+jobs:
+  red:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - name: Prove the watch case fails on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI: true
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: |
+          set -euo pipefail
+          E="$PWD/.bench-stable-absence/red"
+          mkdir -p "$E/binding" "$E/tmp"
+          export TMPDIR="$E/tmp"
+          test "$(gh run view 40283359653 --repo guru-irl/rspack --json headSha --jq .headSha)" = cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8
+          gh api repos/guru-irl/rspack/actions/runs/40283359653/artifacts > "$E/artifacts.json"
+          NAME=$(python -c 'import json,sys; a=[x["name"] for x in json.load(open(sys.argv[1]))["artifacts"] if "x86_64-unknown-linux-gnu" in x["name"] and not x["expired"]]; assert len(a)==1,a; print(a[0])' "$E/artifacts.json")
+          gh run download 40283359653 --repo guru-irl/rspack -n "$NAME" -D "$E/binding"
+          export RSPACK_BINDING="$E/binding/rspack.linux-x64-gnu.node"
+          sha256sum "$RSPACK_BINDING" > "$E/binding.sha256"
+          pnpm install --frozen-lockfile > "$E/install.log" 2>&1
+          pnpm run build:js > "$E/build-js.log" 2>&1
+          rc=0
+          pnpm --dir tests/rspack-test run test --project base Watch.part1.test.mjs -t code-splitting-cache/stable-absence --retry 0 > "$E/red.log" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$E/red.exit"
+          cp rspack-test-event-report.txt "$E/red.events"
+          python - "$E" <<'PY'
+          from pathlib import Path
+          import sys,json
+          p=Path(sys.argv[1]);s=(p/'red.log').read_text();e=(p/'red.events').read_text()
+          assert int((p/'red.exit').read_text()) != 0
+          assert 'module topology change detected' in s
+          assert 'TEST_RUN_END' in e
+          failed=[l for l in e.splitlines() if ' | TEST_END | ' in l and ' | fail | ' in l]
+          assert failed
+          assert all('stable-absence' in l and 'side-effects' not in l for l in failed),failed
+          summary={'failures':failed,'expected_log_present':True}
+          (p/'red-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print(json.dumps(summary,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: absence-red
+          path: .bench-stable-absence/red/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
