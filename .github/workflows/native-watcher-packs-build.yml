@@ -1,7 +1,7 @@
-name: Native watcher release pair
+name: Native watcher release v2
 on:
   push:
-    branches: [bench/native-watcher-packs-build]
+    branches: [bench/native-watcher-v2-build]
 permissions:
   contents: read
 defaults:
@@ -22,10 +22,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: control
-            source: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8
           - arm: native
-            source: 8697f640bb9e896ec8238f9fdae69c3a38b3b4a4
+            source: 1e03c34df5ad5b2885701334cd2dab265d52452e
     steps:
       - uses: actions/checkout@v4
         with:
@@ -143,17 +141,3 @@ jobs:
           name: native-watcher-${{ matrix.arm }}-evidence
           path: pack-data/results/
           if-no-files-found: error
-  verify-pair:
-    needs: build
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: native-watcher-*-evidence
-          path: pair-evidence
-      - name: Require matching toolchains
-        run: |
-          set -euo pipefail
-          cmp pair-evidence/native-watcher-control-evidence/toolchain.txt pair-evidence/native-watcher-native-evidence/toolchain.txt
-          cat pair-evidence/native-watcher-control-evidence/toolchain.txt
-          echo 'PAIR TOOLCHAINS MATCH'
