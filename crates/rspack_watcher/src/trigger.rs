@@ -304,8 +304,9 @@ impl EventProcessor {
       if may_contain_records {
         self.path_manager.remove_file_times_under(path);
       }
-      if kind == FsEventKind::Remove && is_watched_path {
-        self.path_manager.set_reported_file_removal(path);
+      if kind == FsEventKind::Remove && (is_watched_path || accessor.directories().0.contains(path))
+      {
+        self.path_manager.set_reported_removal(path);
       }
     }
 
@@ -352,6 +353,12 @@ impl EventProcessor {
         if may_contain_records {
           self.path_manager.remove_file_times_under(associated);
         }
+      }
+      if associated != path
+        && *associated_kind == FsEventKind::Remove
+        && accessor.directories().0.contains(associated)
+      {
+        self.path_manager.set_reported_removal(associated);
       }
     }
 
