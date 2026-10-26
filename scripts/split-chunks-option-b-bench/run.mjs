@@ -28,6 +28,19 @@ const entry = options.rspack
   : require.resolve('@rspack/core');
 const core = await import(pathToFileURL(entry).href);
 const { rspack } = core;
+
+const bindingPath = fs.realpathSync(process.env.RSPACK_BINDING);
+const bindingSha256 = crypto.createHash('sha256').update(fs.readFileSync(bindingPath)).digest('hex');
+if (bindingSha256 !== process.env.EXPECTED_BINDING_SHA256) throw new Error('Binding SHA-256 mismatch');
+if (process.platform === 'linux') {
+  const mapped = new Set(fs.readFileSync('/proc/self/maps', 'utf8').split('\n').map(line => line.trim().split(/\s+/).slice(5).join(' ')).filter(file => file.endsWith('.node')));
+  if (!mapped.has(bindingPath)) throw new Error('Expected binding is not mapped');
+  for (const file of mapped) {
+    if (crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== bindingSha256) throw new Error('Unexpected mapped binding');
+  }
+}
+console.log('BINDING_SHA256', bindingSha256);
+
 if (typeof rspack !== 'function') throw new Error('Selected package does not export rspack');
 const src = path.join(root, 'src');
 const leaf = path.join(src, 'packages', 'p000', 'm00000.js');
@@ -37,6 +50,7 @@ if (original.equals(edited)) throw new Error('Leaf is already edited; regenerate
 const out = path.resolve(options.out);
 fs.mkdirSync(path.dirname(out), { recursive: true });
 const report = {
+  bindingSha256,
   arm: options.arm, mode: options.mode, runs,
   host: {
     platform: process.platform, arch: process.arch, release: os.release(),

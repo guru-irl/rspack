@@ -9,6 +9,19 @@ const moduleCount = 4096;
 const entryCount = 16;
 const groupCount = 16;
 const { rspack } = await import(pathToFileURL(path.resolve(process.env.SC_CORE || 'packages/rspack/dist/index.js')).href);
+
+const bindingPath = fs.realpathSync(process.env.RSPACK_BINDING);
+const bindingSha256 = crypto.createHash('sha256').update(fs.readFileSync(bindingPath)).digest('hex');
+if (bindingSha256 !== process.env.EXPECTED_BINDING_SHA256) throw new Error('Binding SHA-256 mismatch');
+if (process.platform === 'linux') {
+  const mapped = new Set(fs.readFileSync('/proc/self/maps', 'utf8').split('\n').map(line => line.trim().split(/\s+/).slice(5).join(' ')).filter(file => file.endsWith('.node')));
+  if (!mapped.has(bindingPath)) throw new Error('Expected binding is not mapped');
+  for (const file of mapped) {
+    if (crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== bindingSha256) throw new Error('Unexpected mapped binding');
+  }
+}
+console.log('BINDING_SHA256', bindingSha256);
+
 fs.mkdirSync(path.join(root, 'src'), { recursive: true });
 for (let index = 0; index < moduleCount; index++) {
   fs.writeFileSync(path.join(root, 'src', `shared-${index}.js`), `export const value = ${index};\n`);
@@ -109,5 +122,5 @@ try {
 } finally {
   await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
 }
-fs.writeFileSync(resultPath, JSON.stringify({ records }, null, 2));
+fs.writeFileSync(resultPath, JSON.stringify({ bindingSha256, records }, null, 2));
 console.log(JSON.stringify(records.map(({ hashes, ...record }) => record)));

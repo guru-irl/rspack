@@ -4,8 +4,7 @@ from paired_stats import summarize
 root=Path(sys.argv[1]).resolve();repo=Path(sys.argv[2]).resolve();system=os.environ['RUNNER_OS']
 results=root/'results';results.mkdir(parents=True,exist_ok=True)
 native_filters_only=os.environ.get('BENCH_NATIVE_FILTERS_ONLY')=='1'
-labels=['main','main-prime','pr1'] if native_filters_only else ['main','main-prime','pr1','pr2']
-if system=='Linux' and not native_filters_only:labels.insert(2,'old24')
+labels=['main','main-prime','pr1']
 def artifact(label):return root/'bindings'/('optb-binding-'+system+'-'+('main' if label=='main-prime' else label))
 manifest={'host':platform.platform(),'cpuCount':os.cpu_count(),'node':subprocess.check_output(['node','--version'],text=True).strip(),'pairs':10,'samples':[],'failures':[],'memoryGateMetrics':[p+'/'+m for p in ('cold','rebuild','revert') for m in ('peakMiB','steadyMiB')]+['wholePeakMiB'],'bindings':{k:hashlib.sha256((artifact(k)/'binding.node').read_bytes()).hexdigest() for k in labels},'commits':{k:(artifact(k)/'commit.sha').read_text().strip() for k in labels}}
 assert manifest['bindings']['main']==manifest['bindings']['main-prime']
@@ -21,7 +20,7 @@ summary={'method':'Ten ABBA pairs; paired Hodges-Lehmann estimate, inverted exac
 
 def sample(arm,label,pair):
  name=f'{arm}-{pair:02d}-{label}';out=results/(name+'.json');assert not out.exists()
- env=dict(os.environ,RSPACK_BINDING=str(artifact(label)/'binding.node'),NAPI_RS_NATIVE_LIBRARY_PATH=str(artifact(label)/'binding.node'),NODE_OPTIONS='--max-old-space-size=8192',MEASURE_MEMORY='1',TMPDIR=str(root/'tmp'))
+ env=dict(os.environ,RSPACK_BINDING=str(artifact(label)/'binding.node'),NAPI_RS_NATIVE_LIBRARY_PATH=str(artifact(label)/'binding.node'),EXPECTED_BINDING_SHA256=manifest['bindings'][label],NODE_OPTIONS='--max-old-space-size=8192',MEASURE_MEMORY='1',TMPDIR=str(root/'tmp'))
  for key in ('RAYON_NUM_THREADS','TOKIO_WORKER_THREADS','RSPACK_RAYON_STATS','RSPACK_RAYON_MARKS','MIMALLOC_PURGE_DELAY','SPLIT_CHUNKS_NATIVE_PROBE','VERIFY_DEST'):env.pop(key,None)
  core=artifact(label)/'core'
  if arm=='gate':
@@ -37,6 +36,7 @@ def sample(arm,label,pair):
  if done.returncode:
   manifest['failures'].append({'name':name,'returncode':done.returncode});save();raise RuntimeError(f'{name}: exit {done.returncode}; not a sample')
  j=json.loads(out.read_text());assert not j.get('error') and len(j['records'])==3
+ assert j['bindingSha256']==manifest['bindings'][label]
  if arm!='gate':
   if sys.platform=='darwin':
    assert j['host']['arch']=='arm64';peak=re.search(r'(\d+)\s+peak memory footprint',(results/(name+'.time')).read_text());assert peak
@@ -81,11 +81,5 @@ for arm in arms:
  summary['comparisons'][arm]=metrics
  (results/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
  print('ARM_FINISHED',arm,'memoryIncrease',summary['contract']['memoryIncrease'],flush=True)
-if system=='Linux' and not native_filters_only:
- cb=summary['comparisons']['callback']
- keep=cb['cold+rebuild/cpuMs']['main-pr2']['hl']/cb['cold+rebuild/cpuMs']['main-24']['hl'] if cb['cold+rebuild/cpuMs']['main-24']['hl']<0 else None
- summary['deciding']={'cpuSavingRetained':keep,'callbackRebuildWallIncrease':cb['rebuild/wallMs']['24-pr2']['increase'],'gateEditTimerIncrease':summary['comparisons']['gate']['edit/processCacheGroupsMs']['24-pr2']['increase']}
- (results/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
- print('DECIDING',json.dumps(summary['deciding']),flush=True)
 print('ALL_ARMS_FINISHED',flush=True)
 if summary['contract']['memoryIncrease']:raise SystemExit('MEMORY_GATE_STOP')
