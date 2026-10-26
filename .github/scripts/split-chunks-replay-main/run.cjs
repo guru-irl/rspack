@@ -3,7 +3,7 @@ const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
 const { spawnSync, execFileSync } = require('node:child_process');
-const { hash, memory } = require('./native-identity.cjs');
+const { hash, memory, normalizedPath } = require('./native-identity.cjs');
 
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -15,7 +15,18 @@ if (process.argv.includes('--self-test')) {
   assert.equal(median([5, 1, 3]), 3);
   assert.equal(median([5, 1]), 3);
   assert.equal(median([1, 1, 9, 3, 2]), 2);
-  console.log('median controls passed');
+  const native = String.raw`D:\fixture\rspack.node`;
+  const namespaced = String.raw`\\?\D:\fixture\rspack.node`;
+  const other = String.raw`D:\other\rspack.node`;
+  assert.equal(
+    normalizedPath(native, 'win32'),
+    normalizedPath(namespaced, 'win32'),
+  );
+  assert.notEqual(
+    normalizedPath(native, 'win32'),
+    normalizedPath(other, 'win32'),
+  );
+  console.log('median and native path controls passed');
   process.exit(0);
 }
 

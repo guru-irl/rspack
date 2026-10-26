@@ -20,9 +20,14 @@ function hash(file) {
   return digest.digest('hex');
 }
 
+function normalizedPath(file, platform = process.platform) {
+  return platform === 'win32'
+    ? path.win32.toNamespacedPath(file).toLowerCase()
+    : file;
+}
+
 function canonical(file) {
-  const real = fs.realpathSync(file);
-  return process.platform === 'win32' ? real.toLowerCase() : real;
+  return normalizedPath(fs.realpathSync(file));
 }
 
 function identity() {
@@ -124,4 +129,4 @@ function install() {
   );
 }
 
-module.exports = { hash, identity, memory, install };
+module.exports = { hash, identity, memory, install, normalizedPath };
