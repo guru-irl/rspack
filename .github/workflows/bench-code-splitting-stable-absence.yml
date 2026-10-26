@@ -117,6 +117,7 @@ jobs:
         shell: bash
         env:
           SOURCE_REF: ${{ matrix.ref }}
+          BUILD_LABEL: ${{ matrix.label }}
           RUST_TARGET: ${{ matrix.target }}
         run: bash scripts/stable-absence-bench/build.sh
       - uses: actions/upload-artifact@v4

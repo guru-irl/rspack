@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$PWD/.bench-stable-absence"
 mkdir -p "$ROOT/artifact/core" "$ROOT/tmp"
+cp scripts/stable-absence-bench/mutant.sh "$ROOT/mutant.sh"
 export TMPDIR="$ROOT/tmp" CARGO_TARGET_DIR="$ROOT/target" CARGO_BUILD_JOBS=3
 unset RSPACK_BINDING NAPI_RS_NATIVE_LIBRARY_PATH RAYON_NUM_THREADS TOKIO_WORKER_THREADS
 { uname -a; node --version; pnpm --version; df -h .; } > "$ROOT/artifact/host.txt"
@@ -34,3 +35,7 @@ if [[ "$RUNNER_OS" == Linux ]]; then
  rm "$ROOT/artifact/stripped.node"
 fi
 { rustc --version --verbose; df -h .; } >> "$ROOT/artifact/host.txt"
+
+if [[ "$RUNNER_OS" == Linux && "$BUILD_LABEL" == pr ]]; then
+ bash "$ROOT/mutant.sh"
+fi
