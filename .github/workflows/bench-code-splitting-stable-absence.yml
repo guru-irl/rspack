@@ -37,8 +37,9 @@ jobs:
           gh run download 40283359653 --repo guru-irl/rspack -n "$NAME" -D "$E/binding"
           pnpm install --frozen-lockfile > "$E/install.log" 2>&1
           pnpm run build:js > "$E/build-js.log" 2>&1
-          export RSPACK_BINDING="$E/binding/rspack.linux-x64-gnu.node"
-          sha256sum "$RSPACK_BINDING" > "$E/binding.sha256"
+          cp "$E/binding/rspack.linux-x64-gnu.node" crates/node_binding/rspack.linux-x64-gnu.node
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node > "$E/binding.sha256"
+          unset RSPACK_BINDING NAPI_RS_NATIVE_LIBRARY_PATH
           rc=0
           pnpm --dir tests/rspack-test run test --project base Watch.part1.test.mjs -t code-splitting-cache/stable-absence --retry 0 > "$E/red.log" 2>&1 || rc=$?
           printf '%s\n' "$rc" > "$E/red.exit"
