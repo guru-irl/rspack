@@ -17,6 +17,9 @@ import { checkModuleObjectShapes } from '../util/moduleObjectShapes';
 import { JsSplitChunkSizes } from '../util/SplitChunkSize';
 import { createBuiltinPlugin, RspackBuiltinPlugin } from './base';
 
+const experimentalCacheOverride =
+  process.env.RSPACK_SPLIT_CHUNKS_EXPERIMENTAL_CACHE;
+
 export class SplitChunksPlugin extends RspackBuiltinPlugin {
   name = BuiltinPluginName.SplitChunksPlugin;
   affectedHooks = 'thisCompilation' as const;
@@ -30,7 +33,10 @@ export class SplitChunksPlugin extends RspackBuiltinPlugin {
     if (rawOptions === undefined) {
       throw new Error('rawOptions should not be undefined');
     }
-    if (this.options.experimentalCache)
+    if (
+      experimentalCacheOverride === '1' ||
+      (experimentalCacheOverride !== '0' && this.options.experimentalCache)
+    )
       rawOptions.moduleShapeCheck = checkModuleObjectShapes;
     return createBuiltinPlugin(this.name, rawOptions);
   }
