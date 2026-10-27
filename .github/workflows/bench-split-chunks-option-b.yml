@@ -1,13 +1,13 @@
-name: Native watcher round 2 release costs
+name: Native watcher final release costs
 on:
   push:
-    branches: [bench/pr62-round2-costs]
+    branches: [bench/pr62-final-costs]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr62-round2-costs
+  group: pr62-final-costs
   cancel-in-progress: false
 jobs:
   build:
@@ -15,12 +15,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: final, ref: ab0d71011539025cc03db06a8ac7788ce42c7c6a }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: final, ref: ab0d71011539025cc03db06a8ac7788ce42c7c6a }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: final, ref: ab0d71011539025cc03db06a8ac7788ce42c7c6a }
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: base, ref: 2810c7fc89a82850f7bb29388c961fd5c77534f6 }
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: final, ref: 3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: base, ref: 2810c7fc89a82850f7bb29388c961fd5c77534f6 }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: final, ref: 3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: base, ref: 2810c7fc89a82850f7bb29388c961fd5c77534f6 }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: final, ref: 3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -32,6 +32,9 @@ jobs:
         with:
           node-version: 22.23.3
           cache: pnpm
+      - name: Check useful build window
+        shell: bash
+        run: test "$(date -u +%s)" -lt 1793142000
       - name: Build exact production release source
         shell: bash
         env:
@@ -70,7 +73,14 @@ jobs:
         with:
           pattern: optb-binding-${{ matrix.platform }}-*
           path: .bench-split-chunks-option-b/bindings/
-      - name: Measure alternating pairs with same-binary calibration
+      - name: Reuse the unchanged restack release binding
+        uses: actions/download-artifact@v4
+        with:
+          pattern: optb-binding-${{ matrix.platform }}-restack
+          run-id: 40563637829
+          github-token: ${{ github.token }}
+          path: .bench-split-chunks-option-b/bindings/
+      - name: Measure interleaved release processes
         shell: bash
         env:
           RUST_TARGET: ${{ matrix.target }}

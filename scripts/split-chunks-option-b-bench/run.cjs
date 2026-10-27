@@ -13,7 +13,7 @@ const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest(
 const ns = () => process.hrtime.bigint();
 const elapsed = start => Number(ns() - start) / 1e6;
 const median = values => [...values].sort((a,b) => a-b)[Math.floor(values.length / 2)];
-const refs = { restack: '95c672a381ed713e582265e637badec09372eda3', final: 'ab0d71011539025cc03db06a8ac7788ce42c7c6a' };
+const refs = { restack: '95c672a381ed713e582265e637badec09372eda3', final: '3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba', base: '2810c7fc89a82850f7bb29388c961fd5c77534f6' };
 if (process.argv[2] === '--prepare') {
  fs.mkdirSync(path.join(root, 'results'), { recursive: true });
  fs.mkdirSync(fixture, { recursive: true });
@@ -136,7 +136,8 @@ async function latency() {
 (async()=>{
  let metrics;
  try {
-  if(scenario==='missing-heavy')metrics=await missingHeavy();
+  if(scenario==='missing-followup')metrics=await require('./missing-followup.cjs')({fixture:path.join(root,'missing-followup'),arm,rep,rspack,NativeWatcher});
+  else if(scenario==='missing-heavy')metrics=await missingHeavy();
   else if(scenario==='method'){
    const binary=path.join(artifact,process.platform==='win32'?'event-cost.exe':'event-cost');
    const p=spawnSync(binary,[fixture],{encoding:'utf8'});assert.equal(p.status,0,p.stderr);
