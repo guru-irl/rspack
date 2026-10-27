@@ -3,7 +3,7 @@ name: SplitChunks type and layer precompute
 on:
   push:
     branches:
-      - bench/split-chunks-type-layer-precompute
+      - bench/split-chunks-type-layer-fix-win
 
 permissions:
   contents: read
@@ -20,6 +20,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: '"macos-latest"'
             target: aarch64-apple-darwin
+          - runner: '"windows-2025"'
+            target: x86_64-pc-windows-msvc
     uses: ./.github/workflows/reusable-build-build.yml
     with:
       target: ${{ matrix.target }}
@@ -40,10 +42,17 @@ jobs:
             target: x86_64-unknown-linux-gnu
             arch: x64
             binding: rspack.linux-x64-gnu.node
+            pairs: 4
           - runner: macos-latest
             target: aarch64-apple-darwin
             arch: arm64
             binding: rspack.darwin-arm64.node
+            pairs: 8
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            arch: x64
+            binding: rspack.win32-x64-msvc.node
+            pairs: 4
     defaults:
       run:
         shell: bash
@@ -54,6 +63,7 @@ jobs:
       PARENT_RUN: '40283359653'
       PR_RUN: '40284286679'
       EXPECTED_ARCH: ${{ matrix.arch }}
+      PROCESS_PAIRS: ${{ matrix.pairs }}
     steps:
       - name: Checkout benchmark
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -147,7 +157,7 @@ jobs:
           node bench-data/repro.mjs setup > bench-data/fixture.log
           node .github/scripts/type-layer-precompute/compare.mjs --self-test
 
-      - name: Run four alternating process pairs
+      - name: Run alternating process pairs
         run: |
           set -euo pipefail
           node .github/scripts/type-layer-precompute/compare.mjs > bench-data/results/driver.log 2>&1

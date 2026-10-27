@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { hash } from './native.mjs';
 
+const pairs = Number(process.env.PROCESS_PAIRS ?? 4);
+assert(Number.isInteger(pairs) && pairs >= 4);
 const data = path.resolve('bench-data');
 const results = path.join(data, 'results');
 const scenarios = [['type', 'simple'], ['type', 'nested'], ['layer', 'nested'], ['type', 'none']];
@@ -27,13 +29,13 @@ function summarize(records) {
   for (const [mode, pattern] of scenarios) {
     const versions = pattern === 'nested' && mode === 'type' ? ['parent', 'pr', 'fix', 'fix-no-precompute'] : ['parent', 'pr', 'fix'];
     const selected = records.filter(record => record.mode === mode && record.pattern.replace('-no-precompute', '') === pattern);
-    assert.equal(selected.length, versions.length * 4, 'Incomplete process set');
+    assert.equal(selected.length, versions.length * pairs, 'Incomplete process set');
     const assets = selected[0].assets;
     assert(assets.length > 0);
     for (const record of selected) assert.deepEqual(record.assets, assets, 'Final asset hashes differ');
     const rows = versions.map(version => {
       const processes = selected.filter(record => record.variant === version);
-      assert.equal(processes.length, 4);
+      assert.equal(processes.length, pairs);
       for (const process of processes) {
         assert.equal(process.measurements.length, 6);
         assert(process.measurements.every(sample => Number.isFinite(sample.wallMs) && sample.wallMs > 0 && Number.isFinite(sample.cpuMs) && sample.cpuMs >= 0));
@@ -52,7 +54,7 @@ function summarize(records) {
 }
 function selfTest() {
   const record = (variant, mode, pattern, pair) => ({ variant, mode, pattern, pair, expectedSha256: 'abc', native: { sha256: 'abc' }, assets: [['main.js', 'abc']], memory: { peakRssKiB: 4096, steadyRssKiB: 2048 }, measurements: Array.from({ length: 6 }, () => ({ wallMs: 2, cpuMs: 1, splitLogs: { SplitChunks: { entries: [{ type: 'time', message: 'process cache groups: 1 ms' }] } } })) });
-  const good = scenarios.flatMap(([mode, pattern]) => Array.from({ length: 4 }, (_, pair) => (mode === 'type' && pattern === 'nested' ? ['parent', 'pr', 'fix', 'fix-no-precompute'] : ['parent', 'pr', 'fix']).map(version => record(version, mode, version.endsWith('no-precompute') ? pattern + '-no-precompute' : pattern, pair))).flat());
+  const good = scenarios.flatMap(([mode, pattern]) => Array.from({ length: pairs }, (_, pair) => (mode === 'type' && pattern === 'nested' ? ['parent', 'pr', 'fix', 'fix-no-precompute'] : ['parent', 'pr', 'fix']).map(version => record(version, mode, version.endsWith('no-precompute') ? pattern + '-no-precompute' : pattern, pair))).flat());
   assert.equal(summarize(good)[0].rows[0].splitMs, 1);
   for (const mutate of [records => records.pop(), records => records[0].assets[0][1] = 'bad', records => records[0].assets[0][0] = 'other.js', records => records[0].native.sha256 = 'bad', records => records[0].measurements.pop(), records => records[0].measurements[0].splitLogs = {}]) {
     const bad = structuredClone(good);
@@ -88,7 +90,7 @@ function run(version, mode, pattern, pair) {
   console.log(`${name}: ${median(record.measurements.map(sample => sample.wallMs)).toFixed(2)} ms`);
 }
 for (const [mode, pattern] of scenarios) {
-  for (let pair = 0; pair < 4; pair++) {
+  for (let pair = 0; pair < pairs; pair++) {
     const versions = ['parent', 'pr', 'fix'];
     if (mode === 'type' && pattern === 'nested') versions.push('fix-no-precompute');
     if (pair % 2) versions.reverse();
