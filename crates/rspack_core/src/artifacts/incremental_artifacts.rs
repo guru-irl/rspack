@@ -1,5 +1,10 @@
+use rspack_collections::IdentifierSet;
+use rustc_hash::FxHashSet;
+
 use crate::{
-  BuildChunkGraphArtifact, Compilation, artifacts::ArtifactExt, incremental::IncrementalPasses,
+  BuildChunkGraphArtifact, ChunkUkey, Compilation,
+  artifacts::ArtifactExt,
+  incremental::{IncrementalPasses, Mutation},
   recover_artifact,
 };
 
@@ -180,5 +185,130 @@ impl IncrementalArtifacts {
         &mut compilation.build_chunk_graph_artifact,
       );
     }
+
+    if passes.contains(IncrementalPasses::CHUNK_IDS) {
+      self.record_chunk_group_changes(compilation);
+    }
+  }
+
+  fn record_chunk_group_changes(&self, compilation: &Compilation) {
+    if ![
+      IncrementalPasses::MODULES_HASHES,
+      IncrementalPasses::CHUNKS_RUNTIME_REQUIREMENTS,
+      IncrementalPasses::CHUNKS_HASHES,
+      IncrementalPasses::CHUNK_ASSET,
+    ]
+    .into_iter()
+    .any(|pass| compilation.incremental.mutations_readable(pass))
+    {
+      return;
+    }
+    let Some(previous) = &self.previous_compilation else {
+      return;
+    };
+    let Some(mut mutations) = compilation.incremental.mutations_write() else {
+      return;
+    };
+
+    let mut modules = IdentifierSet::default();
+    let mut chunks = FxHashSet::default();
+    let current_graph = &compilation.build_chunk_graph_artifact;
+    let previous_graph = &previous.build_chunk_graph_artifact;
+    collect_changed_chunk_group_consumers(
+      current_graph,
+      previous_graph,
+      compilation,
+      &mut modules,
+      &mut chunks,
+    );
+    // Removed groups still identify surviving owners and consumers through the
+    // previous final graph, not the recovered pre-optimization snapshot.
+    collect_changed_chunk_group_consumers(
+      previous_graph,
+      current_graph,
+      compilation,
+      &mut modules,
+      &mut chunks,
+    );
+    if !modules.is_empty() || !chunks.is_empty() {
+      mutations.add(Mutation::ChunkGroupChunksChanged {
+        modules: Box::new(modules),
+        chunks: Box::new(chunks),
+      });
+    }
+  }
+}
+
+fn collect_changed_chunk_group_consumers(
+  graph: &BuildChunkGraphArtifact,
+  other: &BuildChunkGraphArtifact,
+  compilation: &Compilation,
+  modules: &mut IdentifierSet,
+  chunks: &mut FxHashSet<ChunkUkey>,
+) {
+  let mut ancestors = Vec::new();
+  let mut initial_descendants = Vec::new();
+  let module_graph = compilation.get_module_graph();
+  let current_chunks = &compilation.build_chunk_graph_artifact.chunk_by_ukey;
+  for group in graph.chunk_group_by_ukey.values() {
+    // Snapshot reuse preserves group keys. A rebuilt graph has fresh keys, so
+    // every group is changed even if its emitted chunk IDs happen to match.
+    if let Some(other_group) = other.chunk_group_by_ukey.get(&group.ukey)
+      && group
+        .chunks
+        .iter()
+        .map(|chunk| graph.chunk_by_ukey.expect_get(chunk).id())
+        .eq(
+          other_group
+            .chunks
+            .iter()
+            .map(|chunk| other.chunk_by_ukey.expect_get(chunk).id()),
+        )
+    {
+      continue;
+    }
+    modules.extend(
+      group
+        .origins()
+        .iter()
+        .filter_map(|origin| origin.module)
+        .filter(|module| module_graph.module_by_identifier(module).is_some()),
+    );
+    ancestors.push(group.ukey);
+    if group.is_initial() {
+      initial_descendants.push(group.ukey);
+    }
+  }
+
+  // Parent chunks can cache prefetch and preload work for changed children.
+  let mut visited = FxHashSet::default();
+  while let Some(key) = ancestors.pop() {
+    if !visited.insert(key) {
+      continue;
+    }
+    let group = graph.chunk_group_by_ukey.expect_get(&key);
+    chunks.extend(
+      group
+        .chunks
+        .iter()
+        .filter(|chunk| current_chunks.contains(chunk)),
+    );
+    ancestors.extend(group.parents.iter().copied());
+  }
+
+  // Entry startup also consumes the chunk lists of initial parent groups.
+  let mut visited = FxHashSet::default();
+  while let Some(key) = initial_descendants.pop() {
+    let group = graph.chunk_group_by_ukey.expect_get(&key);
+    if !group.is_initial() || !visited.insert(key) {
+      continue;
+    }
+    chunks.extend(
+      group
+        .chunks
+        .iter()
+        .filter(|chunk| current_chunks.contains(chunk)),
+    );
+    initial_descendants.extend(group.children.iter().copied());
   }
 }

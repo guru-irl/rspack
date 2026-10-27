@@ -31,19 +31,50 @@ impl fmt::Display for Mutations {
 
 #[derive(Debug)]
 pub enum Mutation {
-  ModuleAdd { module: ModuleIdentifier },
-  ModuleUpdate { module: ModuleIdentifier },
-  ModuleRemove { module: ModuleIdentifier },
-  DependencyUpdate { dependency: DependencyId },
-  ModuleSetAsync { module: ModuleIdentifier },
-  ModuleSetId { module: ModuleIdentifier },
-  ModuleSetHashes { module: ModuleIdentifier },
-  ChunkSetId { chunk: ChunkUkey },
-  ChunkAdd { chunk: ChunkUkey },
-  ChunkSplit { from: ChunkUkey, to: ChunkUkey },
-  ChunksIntegrate { to: ChunkUkey },
-  ChunkRemove { chunk: ChunkUkey },
-  ChunkSetHashes { chunk: ChunkUkey },
+  ModuleAdd {
+    module: ModuleIdentifier,
+  },
+  ModuleUpdate {
+    module: ModuleIdentifier,
+  },
+  ModuleRemove {
+    module: ModuleIdentifier,
+  },
+  DependencyUpdate {
+    dependency: DependencyId,
+  },
+  ModuleSetAsync {
+    module: ModuleIdentifier,
+  },
+  ModuleSetId {
+    module: ModuleIdentifier,
+  },
+  ModuleSetHashes {
+    module: ModuleIdentifier,
+  },
+  ChunkSetId {
+    chunk: ChunkUkey,
+  },
+  ChunkAdd {
+    chunk: ChunkUkey,
+  },
+  ChunkSplit {
+    from: ChunkUkey,
+    to: ChunkUkey,
+  },
+  ChunksIntegrate {
+    to: ChunkUkey,
+  },
+  ChunkRemove {
+    chunk: ChunkUkey,
+  },
+  ChunkSetHashes {
+    chunk: ChunkUkey,
+  },
+  ChunkGroupChunksChanged {
+    modules: Box<IdentifierSet>,
+    chunks: Box<FxHashSet<ChunkUkey>>,
+  },
 }
 
 impl fmt::Display for Mutation {
@@ -66,6 +97,12 @@ impl fmt::Display for Mutation {
       Mutation::ChunksIntegrate { to } => write!(f, "integrate chunks to {}", to.as_u32()),
       Mutation::ChunkRemove { chunk } => write!(f, "remove chunk {}", chunk.as_u32()),
       Mutation::ChunkSetHashes { chunk } => write!(f, "set hashes chunk {}", chunk.as_u32()),
+      Mutation::ChunkGroupChunksChanged { modules, chunks } => write!(
+        f,
+        "change chunk group chunks affecting {} modules and {} chunks",
+        modules.len(),
+        chunks.len()
+      ),
     }
   }
 }
@@ -155,6 +192,11 @@ impl Mutations {
         let mut chunks = FxHashSet::default();
         for mutation in self.iter() {
           match mutation {
+            Mutation::ChunkGroupChunksChanged {
+              modules: affected, ..
+            } => {
+              modules.extend(affected.iter().copied());
+            }
             Mutation::ModuleSetAsync { module } => {
               modules.insert(*module);
             }
@@ -213,6 +255,9 @@ impl Mutations {
       .get_or_init(|| {
         self.iter().fold(FxHashSet::default(), |mut acc, mutation| {
           match mutation {
+            Mutation::ChunkGroupChunksChanged { chunks, .. } => {
+              acc.extend(chunks.iter().copied());
+            }
             Mutation::ModuleSetHashes { module } => {
               acc.extend(
                 compilation
