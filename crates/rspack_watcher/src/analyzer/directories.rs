@@ -49,6 +49,8 @@ struct DirectoryAnalyzerState {
 
 impl Analyzer for WatcherDirectoriesAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    path_accessor.take_insertions();
     let mut state = self.state.lock().expect("directory analyzer lock poisoned");
     let invalidated = std::mem::take(
       &mut *self
@@ -77,9 +79,10 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     }
     let is_invalidated = |path: &InternedPath| {
       invalidated.all
-        || path
-          .ancestors()
-          .any(|ancestor| invalidated.paths.contains(&InternedPath::from(ancestor)))
+        || invalidated
+          .paths
+          .iter()
+          .any(|root| path.starts_with(root.as_path()))
     };
     if invalidated.all || !invalidated.paths.is_empty() {
       for path in path_accessor.all() {
