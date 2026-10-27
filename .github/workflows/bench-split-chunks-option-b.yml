@@ -1,0 +1,85 @@
+name: Native watcher round 2 release costs
+on:
+  push:
+    branches: [bench/pr62-round2-costs]
+    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: pr62-round2-costs
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: final, ref: afc02802ce48e5ef83a0b5761d80139a1436f4e5 }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: final, ref: afc02802ce48e5ef83a0b5761d80139a1436f4e5 }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: final, ref: afc02802ce48e5ef83a0b5761d80139a1436f4e5 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - name: Build exact production release source
+        shell: bash
+        env:
+          SOURCE_REF: ${{ matrix.ref }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: bash scripts/split-chunks-option-b-bench/build.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: optb-binding-${{ matrix.platform }}-${{ matrix.label }}
+          path: .bench-split-chunks-option-b/artifact/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  measure:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: optb-binding-${{ matrix.platform }}-*
+          path: .bench-split-chunks-option-b/bindings/
+      - name: Measure alternating pairs with same-binary calibration
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: bash scripts/split-chunks-option-b-bench/measure.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: optb-results-${{ matrix.platform }}
+          path: .bench-split-chunks-option-b/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
