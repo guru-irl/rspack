@@ -22,6 +22,7 @@ use super::{
   FsWatcherIgnored, TimeInfoEntries, TimeInfoEntry, disk_watcher::DiskWatcher,
   ignored::IgnoredMatcher,
 };
+use crate::registered_paths::{RegisteredPaths, collapse_deleted_paths};
 
 /// An iterator that chains together references to all files, directories, and missing paths
 /// stored in the [`PathTracker`]. This allows iteration over all registered paths as a single sequence.
@@ -217,6 +218,8 @@ struct PathTracker {
   added: InternedPathDashSet,
   removed: InternedPathDashSet,
   all: InternedPathDashSet,
+  /// Ordered membership used only for deletion recovery.
+  registered: Mutex<RegisteredPaths>,
   /// Recovery work that must survive the next watch cycle's reset.
   pending_scan: InternedPathDashSet,
 }
@@ -230,10 +233,25 @@ impl PathTracker {
   /// Adds a path to the tracker; whether it was not tracked before.
   fn add(&self, path: InternedPath) -> bool {
     if self.all.insert(path.clone()) {
+      self
+        .registered
+        .lock()
+        .expect("lock registered paths")
+        .insert(path.clone());
       self.added.insert(path);
       true
     } else {
       false
+    }
+  }
+
+  fn request_scans_under(&self, deleted: &[InternedPath], mut on_path: impl FnMut(&InternedPath)) {
+    let registered = self.registered.lock().expect("lock registered paths");
+    for root in deleted {
+      registered.for_each_under(root, |path| {
+        self.pending_scan.insert(path.clone());
+        on_path(path);
+      });
     }
   }
 
@@ -262,6 +280,13 @@ impl PathTracker {
   /// Removes a path from the tracker; whether it was tracked.
   fn remove(&self, path: InternedPath) -> bool {
     let tracked = self.all.remove(&path).is_some();
+    if tracked {
+      self
+        .registered
+        .lock()
+        .expect("lock registered paths")
+        .remove(&path);
+    }
     self.removed.insert(path);
     tracked
   }
@@ -422,6 +447,18 @@ impl PathManager {
     self.missing.reset();
   }
 
+  pub fn request_deleted_scans(&self, mut deleted: Vec<InternedPath>) {
+    if deleted.is_empty() {
+      return;
+    }
+    collapse_deleted_paths(&mut deleted);
+    self.files.request_scans_under(&deleted, |_| {});
+    self.directories.request_scans_under(&deleted, |path| {
+      self.absent_directories.insert(path.clone());
+    });
+    self.missing.request_scans_under(&deleted, |_| {});
+  }
+
   pub fn request_rescan(&self) {
     self.rescan_all.store(true, Ordering::Relaxed);
   }
@@ -516,9 +553,12 @@ impl PathManager {
 
   /// Drop a removed path's time info and present baseline. A reported absence
   /// survives later removals until the path reappears or is unregistered.
-  pub fn remove_file_time(&self, path: &InternedPath, observed_deletion: bool) {
+  pub fn remove_file_time(&self, path: &InternedPath) {
     self.remove_context_watch(path, true);
-    self.remove_file_record(path, observed_deletion);
+    self.remove_file_record(path);
+    if self.directories.all.contains(path) {
+      self.absent_directories.insert(path.clone());
+    }
     self.context_files.remove(path);
     if self.context_directories.remove(path).is_some() {
       self.last_watch_events.remove(path);
@@ -526,20 +566,14 @@ impl PathManager {
     self.unindex_record(path);
   }
 
-  fn remove_file_record(&self, path: &InternedPath, observed_deletion: bool) {
-    let removed_time = self.file_times.remove(path).is_some();
-    let removed_baseline = self
-      .baselines
-      .remove_if(path, |_, time| time.is_some())
-      .is_some();
-    if observed_deletion && (removed_time || removed_baseline) && self.files.all.contains(path) {
-      self.files.pending_scan.insert(path.clone());
-    }
+  fn remove_file_record(&self, path: &InternedPath) {
+    self.file_times.remove(path);
+    self.baselines.remove_if(path, |_, time| time.is_some());
   }
 
   /// Drop the records of every path inside the directory `dir` (watchpack's
   /// `onDirectoryRemoved` marks them all missing), walking only its subtree.
-  pub fn remove_file_times_under(&self, dir: &InternedPath, observed_deletion: bool) {
+  pub fn remove_file_times_under(&self, dir: &InternedPath) {
     let _index = self.lock_index();
     let mut pending = vec![dir.clone()];
     while let Some(path) = pending.pop() {
@@ -547,9 +581,10 @@ impl PathManager {
       if let Some((_, children)) = self.recorded_children.remove(&path) {
         pending.extend(children);
       }
-      // The existing record walk selects affected files without searching the
-      // full registration set. Only an observed deletion queues their backfill.
-      self.remove_file_record(&path, observed_deletion);
+      self.remove_file_record(&path);
+      if self.directories.all.contains(&path) {
+        self.absent_directories.insert(path.clone());
+      }
       self.context_files.remove(&path);
       self.context_directories.remove(&path);
       if !self.directories.all.contains(&path) {
@@ -557,12 +592,6 @@ impl PathManager {
       }
     }
     self.unlink_unrecorded(dir);
-    for context in self.directories.all.iter() {
-      if context.starts_with(dir.as_ref() as &Path) {
-        self.absent_directories.insert(context.clone());
-        self.directories.pending_scan.insert(context.clone());
-      }
-    }
   }
 
   /// Writes a record for `path` with `write` and indexes it, and its ancestors
