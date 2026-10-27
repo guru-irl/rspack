@@ -15,9 +15,7 @@ use crate::EventBatch;
 type ThreadSafetyReceiver<T> = ThreadSafety<UnboundedReceiver<T>>;
 type ThreadSafety<T> = Arc<Mutex<T>>;
 
-/// watchpack's `aggregatedChanges` / `aggregatedRemovals`: the events that
-/// have arrived since the last aggregated batch was delivered. Guarded by a
-/// synchronous mutex so a paused watcher can be drained from JS.
+/// The newest state of each path within one batch. The sets are disjoint.
 #[derive(Debug, Default)]
 pub(crate) struct FilesData {
   pub(crate) changed: HashSet<String>,
@@ -28,9 +26,118 @@ impl FilesData {
   fn is_empty(&self) -> bool {
     self.changed.is_empty() && self.deleted.is_empty()
   }
+
+  fn extend(&mut self, newer: Self) {
+    for path in newer.changed {
+      self.deleted.remove(&path);
+      self.changed.insert(path);
+    }
+    for path in newer.deleted {
+      self.changed.remove(&path);
+      self.deleted.insert(path);
+    }
+  }
 }
 
-pub(crate) type Aggregated = Arc<std::sync::Mutex<FilesData>>;
+/// Native owns pending and in-flight paths until JS accepts a ticket or a
+/// consuming getter drains them. Only one ticket may be in flight; pending is newer.
+/// Every merged view keeps a path in exactly one of changed and deleted.
+///
+/// This mutex also orders pause/resume against the deadline's take. If pause
+/// wins, the deadline leaves pending alone. If take wins, JS must answer the
+/// ticket with accept or hand_back, even when its registration is now stale.
+/// Never call a handler while holding this mutex.
+#[derive(Debug, Default)]
+pub(crate) struct AggregatedData {
+  pub(crate) pending: FilesData,
+  pub(crate) in_flight: Option<(u64, FilesData)>,
+  next_ticket: u64,
+  pub(crate) closed: bool,
+}
+
+impl AggregatedData {
+  fn take_pending(&mut self) -> (FilesData, u64) {
+    self.next_ticket = self
+      .next_ticket
+      .checked_add(1)
+      .expect("aggregate ticket overflow");
+    let ticket = self.next_ticket;
+    let batch = std::mem::take(&mut self.pending);
+    // JS gets a snapshot; native retains the batch for consumption or hand-back.
+    let delivery = FilesData {
+      changed: batch.changed.clone(),
+      deleted: batch.deleted.clone(),
+    };
+    self.in_flight = Some((ticket, batch));
+    (delivery, ticket)
+  }
+
+  pub(crate) fn peek(&self) -> FilesData {
+    let mut merged = FilesData::default();
+    for batch in self
+      .in_flight
+      .iter()
+      .map(|(_, batch)| batch)
+      .chain(std::iter::once(&self.pending))
+    {
+      merged.extend(FilesData {
+        changed: batch.changed.clone(),
+        deleted: batch.deleted.clone(),
+      });
+    }
+    merged
+  }
+
+  pub(crate) fn take(&mut self) -> FilesData {
+    let mut merged = self
+      .in_flight
+      .take()
+      .map(|(_, batch)| batch)
+      .unwrap_or_default();
+    merged.extend(std::mem::take(&mut self.pending));
+    merged
+  }
+
+  pub(crate) fn accept(&mut self, ticket: u64) -> bool {
+    !self.closed
+      && self
+        .in_flight
+        .take_if(|(in_flight_ticket, _)| *in_flight_ticket == ticket)
+        .is_some()
+  }
+
+  pub(crate) fn hand_back(&mut self, ticket: u64) -> bool {
+    let Some((_, batch)) = self
+      .in_flight
+      .take_if(|(in_flight_ticket, _)| *in_flight_ticket == ticket)
+    else {
+      return false;
+    };
+    // A newer pending state wins over this return.
+    let has_newer =
+      |path: &String| self.pending.changed.contains(path) || self.pending.deleted.contains(path);
+    let changed = batch
+      .changed
+      .into_iter()
+      .filter(|path| !has_newer(path))
+      .collect();
+    let deleted = batch
+      .deleted
+      .into_iter()
+      .filter(|path| !has_newer(path))
+      .collect();
+    self.pending.extend(FilesData { changed, deleted });
+    true
+  }
+
+  pub(crate) fn close(&mut self) {
+    self.closed = true;
+    self.pending = FilesData::default();
+    self.in_flight = None;
+  }
+}
+
+pub(crate) type Aggregated = Arc<std::sync::Mutex<AggregatedData>>;
 
 /// `WatcherExecutor` is responsible for managing the execution of file system event handlers,
 /// aggregating file change and delete events, and invoking the provided event handler after
@@ -71,8 +178,8 @@ enum ExecEvent {
 
 impl Executor {
   /// Create a new `WatcherExecutor` with the given receiver and optional aggregate timeout.
-  /// `paused` is shared with [`crate::FsWatcher`] so pausing stays a lock-free
-  /// synchronous operation.
+  /// `paused` is shared with [`crate::FsWatcher`]; the files mutex orders its
+  /// synchronous pause/resume writes against the aggregate deadline.
   pub fn new(
     rx: UnboundedReceiver<EventBatch>,
     aggregate_timeout: Option<u32>,
@@ -147,16 +254,19 @@ impl Executor {
         while let Some(events) = rx.lock().await.recv().await {
           {
             let mut files_data = files_data.lock().expect("aggregated sets poisoned");
+            if files_data.closed {
+              continue;
+            }
             for event in &events {
               let path = event.path.to_string_lossy().to_string();
               match event.kind {
                 FsEventKind::Change | FsEventKind::Create => {
-                  files_data.deleted.remove(&path);
-                  files_data.changed.insert(path);
+                  files_data.pending.deleted.remove(&path);
+                  files_data.pending.changed.insert(path);
                 }
                 FsEventKind::Remove => {
-                  files_data.changed.remove(&path);
-                  files_data.deleted.insert(path);
+                  files_data.pending.changed.remove(&path);
+                  files_data.pending.deleted.insert(path);
                 }
               }
             }
@@ -177,23 +287,21 @@ impl Executor {
       self.start_waiting = true;
     }
 
-    self.paused.store(false, Ordering::Relaxed);
+    // Resume was set synchronously when watch() enqueued this registration.
+    // A later pause must not be overwritten when the owner installs it.
     // abort the previous handlers if they exist
     self.abort().await;
 
     self.run_execute_handler(event_aggregate_handler, event_handler);
 
-    // Flush events accumulated during the pause period.
-    // Without this, events that arrived while paused would sit in files_data
-    // indefinitely — the event loop already processed them (added to files_data)
-    // but skipped sending Execute because paused was true. No future OS event
-    // will re-deliver them, so we must kick the aggregate task ourselves.
-    if !self
-      .files_data
-      .lock()
-      .expect("aggregated sets poisoned")
-      .is_empty()
-    {
+    self.flush_pending();
+  }
+
+  pub(crate) fn flush_pending(&self) {
+    let files = self.files_data.lock().expect("aggregated sets poisoned");
+    if !files.closed && !self.paused.load(Ordering::Relaxed) && !files.pending.is_empty() {
+      // Queue even when aggregate_running is set. A hand-back can arrive after
+      // that task took pending but before it clears running; it still needs a wake.
       let _ = self.exec_aggregate_tx.send(ExecAggregateEvent::Execute);
     }
   }
@@ -209,6 +317,7 @@ impl Executor {
       Arc::clone(&self.files_data),
       self.aggregate_timeout as u64,
       Arc::clone(&self.aggregate_running),
+      Arc::clone(&self.paused),
     ));
 
     self.execute_handle = Some(create_execute_task(
@@ -258,6 +367,7 @@ fn create_execute_aggregate_task(
   files: Aggregated,
   aggregate_timeout: u64,
   running: Arc<AtomicBool>,
+  paused: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
   let future = async move {
     loop {
@@ -276,19 +386,22 @@ fn create_execute_aggregate_task(
         // Wait for the aggregate timeout before executing the handler
         tokio::time::sleep(tokio::time::Duration::from_millis(aggregate_timeout)).await;
 
-        // Get the files to process
-        let files = {
+        let (batch, ticket) = {
           let mut files = files.lock().expect("aggregated sets poisoned");
-          if files.is_empty() {
+          // pause() takes this same lock. A take before pause stays owned by
+          // native in_flight until JS accepts, hands back, or consumes it.
+          if files.closed
+            || paused.load(Ordering::Relaxed)
+            || files.in_flight.is_some()
+            || files.pending.is_empty()
+          {
             running.store(false, Ordering::Relaxed);
             continue;
           }
-          std::mem::take(&mut *files)
+          files.take_pending()
         };
 
-        // A path is in one set only: `Trigger` reports each event by the
-        // path's state on disk, and a later event replaces an earlier one.
-        event_handler.on_event_handle(files.changed, files.deleted);
+        event_handler.on_event_handle(batch.changed, batch.deleted, ticket);
         running.store(false, Ordering::Relaxed);
       }
     }

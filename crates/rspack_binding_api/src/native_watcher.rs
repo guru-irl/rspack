@@ -68,6 +68,14 @@ pub struct NativeWatchResult {
   pub removed_files: Vec<String>,
 }
 
+/// A snapshot of one native-owned batch, answered exactly once by JS.
+#[napi(object, object_from_js = false)]
+pub struct NativeWatchAggregate {
+  pub changed_files: Vec<String>,
+  pub removed_files: Vec<String>,
+  pub ticket: BigInt,
+}
+
 /// One row of watchpack's `TimeInfoEntries`, flattened for napi: a file's
 /// `Entry` carries all three times, a directory's `OnlySafeTimeEntry` only
 /// `safe_time`, and an `ExistenceOnlyTimeEntry` sets `existence_only`.
@@ -249,7 +257,7 @@ impl NativeWatcher {
     directories: (Vec<String>, Vec<String>),
     missing: (Vec<String>, Vec<String>),
     start_time: BigInt,
-    #[napi(ts_arg_type = "(err: Error | null, result: NativeWatchResult) => void")]
+    #[napi(ts_arg_type = "(err: Error | null, result: NativeWatchAggregate) => void")]
     callback: Function<'static>,
     #[napi(ts_arg_type = "(event: NativeWatchUndelayedEvent) => void")]
     callback_undelayed: Function<'static>,
@@ -310,9 +318,28 @@ impl NativeWatcher {
     })
   }
 
-  /// watchpack's `aggregatedChanges` / `aggregatedRemovals`: the events that
-  /// arrived since the last aggregated batch (while paused), read without
-  /// draining them.
+  /// Accept only a batch still owned by this open native watcher.
+  ///
+  /// Acceptance does not re-arm delivery. The caller must pause after a successful
+  /// accept, as `NativeWatchFileSystem` does. A build consumes pending changes,
+  /// or the next `watch()` flushes them.
+  #[napi]
+  pub fn accept(&self, ticket: BigInt) -> bool {
+    let (negative, ticket, lossless) = ticket.get_u64();
+    !self.closed && !negative && lossless && self.watcher.accept(ticket)
+  }
+
+  /// Hand a rejected ticket back to pending. Consumed and closed tickets do nothing.
+  #[napi]
+  pub fn hand_back(&self, ticket: BigInt) {
+    let (negative, ticket, lossless) = ticket.get_u64();
+    if !self.closed && !negative && lossless {
+      self.watcher.hand_back(ticket);
+    }
+  }
+
+  /// watchpack's `aggregatedChanges` / `aggregatedRemovals`, including queued
+  /// batches not yet accepted, read without draining them.
   #[napi]
   pub fn peek_aggregated(&self) -> NativeWatchResult {
     let (changed_files, removed_files) = self.watcher.peek_aggregated();
@@ -374,8 +401,7 @@ fn to_tuple_path_iterator(
 
 #[derive(Default)]
 struct PendingEvents {
-  changed_files: FxHashSet<String>,
-  removed_files: FxHashSet<String>,
+  batches: VecDeque<NativeWatchAggregate>,
   errors: VecDeque<napi::Error>,
   in_flight: bool,
   closed: bool,
@@ -387,7 +413,7 @@ struct JsEventHandler {
     napi::threadsafe_function::ThreadsafeFunction<
       JsEventHandler,
       napi::Unknown<'static>,
-      NativeWatchResult,
+      NativeWatchAggregate,
       Status,
       true,
       true,
@@ -407,21 +433,23 @@ impl JsEventHandler {
       .build_callback(
         |ctx: napi::threadsafe_function::ThreadSafeCallContext<JsEventHandler>| {
           let handler = ctx.value;
-          let mut pending = handler.pending.lock().expect("pending events poisoned");
-          // Take the latest sets on the JS thread, not when the call is queued.
+          let mut pending = handler
+            .pending
+            .lock()
+            .map_err(|_| napi::Error::from_reason("Native watcher aggregate queue poisoned"))?;
+          // Preserve each ticket. Coalescing paths here would detach them from
+          // native ownership and hide batches from the consuming getter.
           pending.in_flight = false;
           if let Some(error) = pending.errors.pop_front() {
             // Errors use separate callbacks ahead of earlier changes; current callers never mix them.
             handler.schedule(&mut pending);
             return Err(error);
           }
-          let changed_files = std::mem::take(&mut pending.changed_files);
-          let removed_files = std::mem::take(&mut pending.removed_files);
-          drop(pending);
-          Ok(NativeWatchResult {
-            changed_files: changed_files.into_iter().collect(),
-            removed_files: removed_files.into_iter().collect(),
-          })
+          let batch = pending.batches.pop_front().ok_or_else(|| {
+            napi::Error::from_reason("Missing scheduled native watcher aggregate")
+          })?;
+          handler.schedule(&mut pending);
+          Ok(batch)
         },
       )?;
 
@@ -434,9 +462,7 @@ impl JsEventHandler {
   fn schedule(&self, pending: &mut PendingEvents) {
     if pending.closed
       || pending.in_flight
-      || (pending.changed_files.is_empty()
-        && pending.removed_files.is_empty()
-        && pending.errors.is_empty())
+      || (pending.batches.is_empty() && pending.errors.is_empty())
     {
       return;
     }
@@ -467,19 +493,17 @@ impl rspack_watcher::EventAggregateHandler for JsEventHandler {
     &self,
     changed_files: rspack_util::fx_hash::FxHashSet<String>,
     deleted_files: rspack_util::fx_hash::FxHashSet<String>,
+    ticket: u64,
   ) {
     let mut pending = self.pending.lock().expect("pending events poisoned");
     if pending.closed {
       return;
     }
-    for path in changed_files {
-      pending.removed_files.remove(&path);
-      pending.changed_files.insert(path);
-    }
-    for path in deleted_files {
-      pending.changed_files.remove(&path);
-      pending.removed_files.insert(path);
-    }
+    pending.batches.push_back(NativeWatchAggregate {
+      changed_files: changed_files.into_iter().collect(),
+      removed_files: deleted_files.into_iter().collect(),
+      ticket: BigInt::from(ticket),
+    });
     self.schedule(&mut pending);
   }
 

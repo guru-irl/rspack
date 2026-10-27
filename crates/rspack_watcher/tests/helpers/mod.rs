@@ -27,7 +27,7 @@ pub struct TestHelper {
   /// which causes issues when matching paths. Therefore, we use the canonicalized path.
   canonicalized_temp_dir: PathBuf,
   /// File system watcher instance
-  watcher: Arc<RwLock<FsWatcher>>,
+  watcher: Arc<RwLock<Arc<FsWatcher>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +142,7 @@ impl TestHelper {
     Self {
       temp_dir: ManuallyDrop::new(temp_dir),
       canonicalized_temp_dir,
-      watcher: Arc::new(RwLock::new(watcher)),
+      watcher: Arc::new(RwLock::new(Arc::new(watcher))),
     }
   }
 
@@ -316,15 +316,14 @@ impl TestHelper {
 
         let handle = TOKIO_RUNTIME.handle();
         handle.block_on(async {
+          let watcher = watcher.write().await;
           watcher
-            .write()
-            .await
             .watch(
               paths_to_iter!(files),
               paths_to_iter!(directories),
               paths_to_iter!(missing),
               start_time,
-              Box::new(AggregateHandler(tx.clone())),
+              Box::new(AggregateHandler(tx.clone(), Arc::clone(&watcher))),
               Box::new(ChangeHandler(tx)),
             )
             .await;
@@ -336,18 +335,21 @@ impl TestHelper {
       }
     });
 
-    struct AggregateHandler(Sender<Event>);
+    struct AggregateHandler(Sender<Event>, Arc<FsWatcher>);
 
     impl EventAggregateHandler for AggregateHandler {
       fn on_event_handle(
         &self,
         changed_files: FxHashSet<String>,
         deleted_files: FxHashSet<String>,
+        ticket: u64,
       ) {
         let _ = self.0.send(Event::Aggregated(AggregatedEvent {
           changed_files,
           deleted_files,
         }));
+        // The executor releases its files lock before calling this handler.
+        self.1.accept(ticket);
       }
     }
 

@@ -211,6 +211,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
     // `.watcher` surface).
     const watcher = new NativeWatcherShim(this);
     this.#watcher = watcher;
+    let paused = false;
+    let reported = false;
+    const isCurrent = () =>
+      this.#inner === nativeWatcher && this.#watcher === watcher;
 
     nativeWatcher.watch(
       this.formatWatchDependencies(files),
@@ -219,52 +223,83 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       BigInt(startTime),
       (err: Error | null, result) => {
         if (err) {
-          callback(err, new Map(), new Map(), new Set(), new Set());
+          if (isCurrent() && !paused) {
+            callback(err, new Map(), new Map(), new Set(), new Set());
+          } else {
+            console.error(err);
+          }
           return;
         }
-        nativeWatcher.pause();
-        const changedFiles = result.changedFiles;
-        const removedFiles = result.removedFiles;
-        if (this.#inputFileSystem?.purge) {
-          const fs = this.#inputFileSystem;
-          for (const item of changedFiles) {
-            fs.purge?.(item);
+        let answered = false;
+        try {
+          // Acceptance is the delivery boundary. A build may already have
+          // consumed this ticket while its Node callback was queued.
+          if (!isCurrent() || paused) {
+            return;
           }
-          for (const item of removedFiles) {
-            fs.purge?.(item);
+          answered = true;
+          if (!nativeWatcher.accept(result.ticket)) {
+            return;
+          }
+          // Pause before calling user code, which can close or re-watch.
+          // This closure must never pause a registration created by that code.
+          paused = true;
+          nativeWatcher.pause();
+          const changedFiles = result.changedFiles;
+          const removedFiles = result.removedFiles;
+          const invalidPath = changedFiles[0] ?? removedFiles[0];
+          if (!reported && invalidPath !== undefined) {
+            reported = true;
+            callbackUndelayed(invalidPath, Date.now());
+          }
+          if (this.#inputFileSystem?.purge) {
+            const fs = this.#inputFileSystem;
+            for (const item of changedFiles) {
+              fs.purge?.(item);
+            }
+            for (const item of removedFiles) {
+              fs.purge?.(item);
+            }
+          }
+          const changes = new Set(changedFiles);
+          const removals = new Set(removedFiles);
+          // Emit the accepted batch before its rebuild callback, as watchpack does.
+          this.#events.emit('aggregated', changes, removals);
+          watcher.emit('aggregated', changes, removals);
+          if (isInternalCallback(callback)) {
+            // Watching reads fresh timestamps through getInfo when the build starts.
+            callback(null, undefined, undefined, changes, removals);
+            return;
+          }
+          const { fileTimeInfoEntries, contextTimeInfoEntries } =
+            this.#fetchTimeInfo(nativeWatcher);
+          callback(
+            null,
+            fileTimeInfoEntries,
+            contextTimeInfoEntries,
+            changes,
+            removals,
+          );
+        } finally {
+          // Exactly one answer, including stale, paused and throwing callbacks.
+          // Closed or consumed tickets are harmless no-ops in native.
+          if (!answered) {
+            nativeWatcher.handBack(result.ticket);
           }
         }
-        const changes = new Set(changedFiles);
-        const removals = new Set(removedFiles);
-        // Mirror watchpack's public `aggregated` event (the batched summary
-        // delivered after the aggregate timeout) on both the standard
-        // `on`/`once` API and the watchpack-compatible `.watcher` shim. Emitted
-        // before `callback`, which synchronously starts the next rebuild, so
-        // listeners observe the batch before compilation — matching the node
-        // path, where the forwarded `aggregated` runs before its rebuild callback.
-        this.#events.emit('aggregated', changes, removals);
-        watcher.emit('aggregated', changes, removals);
-        if (isInternalCallback(callback)) {
-          // Watching reads fresh timestamps through getInfo when the build starts.
-          callback(null, undefined, undefined, changes, removals);
-          return;
-        }
-        const { fileTimeInfoEntries, contextTimeInfoEntries } =
-          this.#fetchTimeInfo(nativeWatcher);
-        callback(
-          err,
-          fileTimeInfoEntries,
-          contextTimeInfoEntries,
-          changes,
-          removals,
-        );
       },
       (event) => {
         if (event.kind === 'change') {
           // The native watcher reports paths without an mtime, so events are
           // stamped with their arrival time.
           const mtime = Date.now();
-          callbackUndelayed(event.path, mtime);
+          // Changes while paused reach the next build through the pending sets.
+          // This includes queued events, builds, async done hooks and suspension.
+          // Reporting them here could re-queue a build that already has them.
+          if (!paused) {
+            reported = true;
+            callbackUndelayed(event.path, mtime);
+          }
           this.#events.emit('change', event.path, mtime);
           watcher.emit('change', event.path, mtime);
         } else {
@@ -313,17 +348,23 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
         // Detach immediately: a closed native watcher rejects further watch()
         // calls, so a later compiler.watch() must get a fresh instance with a
         // full (non-incremental) registration.
-        if (this.#inner === nativeWatcher) {
-          this.#inner = undefined;
-          this.#isFirstWatch = true;
+        paused = true;
+        if (this.#inner !== nativeWatcher) {
+          return;
         }
+        this.#watcher = undefined;
+        this.#inner = undefined;
+        this.#isFirstWatch = true;
         nativeWatcher.close().catch((err: unknown) => {
           console.error('Error closing native watcher:', err);
         });
       },
 
       pause: () => {
-        nativeWatcher.pause();
+        paused = true;
+        if (isCurrent()) {
+          nativeWatcher.pause();
+        }
       },
 
       getInfo: () => info(nativeWatcher.peekAggregated()),
