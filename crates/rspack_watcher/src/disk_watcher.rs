@@ -236,7 +236,7 @@ pub(crate) fn handle_event(event: Event, trigger: &trigger::Trigger) {
   );
 
   if event.need_rescan() {
-    trigger.analyzer.invalidate_all();
+    trigger.request_rescan();
   }
   if event.paths.is_empty() {
     return;
