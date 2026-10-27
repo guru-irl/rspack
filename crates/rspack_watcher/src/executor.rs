@@ -1,9 +1,6 @@
-use std::{
-  collections::BTreeMap,
-  sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-  },
+use std::sync::{
+  Arc,
+  atomic::{AtomicBool, Ordering},
 };
 
 use rspack_util::fx_hash::FxHashSet as HashSet;
@@ -43,7 +40,7 @@ impl FilesData {
 }
 
 /// Native owns pending and in-flight paths until JS accepts a ticket or a
-/// consuming getter drains them. Higher tickets are newer; pending is newest.
+/// consuming getter drains them. Only one ticket may be in flight; pending is newer.
 /// Every merged view keeps a path in exactly one of changed and deleted.
 ///
 /// This mutex also orders pause/resume against the deadline's take. If pause
@@ -53,7 +50,7 @@ impl FilesData {
 #[derive(Debug, Default)]
 pub(crate) struct AggregatedData {
   pub(crate) pending: FilesData,
-  pub(crate) in_flight: BTreeMap<u64, FilesData>,
+  pub(crate) in_flight: Option<(u64, FilesData)>,
   next_ticket: u64,
   pub(crate) closed: bool,
 }
@@ -71,7 +68,7 @@ impl AggregatedData {
       changed: batch.changed.clone(),
       deleted: batch.deleted.clone(),
     };
-    self.in_flight.insert(ticket, batch);
+    self.in_flight = Some((ticket, batch));
     (delivery, ticket)
   }
 
@@ -79,7 +76,8 @@ impl AggregatedData {
     let mut merged = FilesData::default();
     for batch in self
       .in_flight
-      .values()
+      .iter()
+      .map(|(_, batch)| batch)
       .chain(std::iter::once(&self.pending))
     {
       merged.extend(FilesData {
@@ -91,34 +89,33 @@ impl AggregatedData {
   }
 
   pub(crate) fn take(&mut self) -> FilesData {
-    let mut merged = FilesData::default();
-    for (_, batch) in std::mem::take(&mut self.in_flight) {
-      merged.extend(batch);
-    }
+    let mut merged = self
+      .in_flight
+      .take()
+      .map(|(_, batch)| batch)
+      .unwrap_or_default();
     merged.extend(std::mem::take(&mut self.pending));
     merged
   }
 
   pub(crate) fn accept(&mut self, ticket: u64) -> bool {
-    !self.closed && self.in_flight.remove(&ticket).is_some()
+    !self.closed
+      && self
+        .in_flight
+        .take_if(|(in_flight_ticket, _)| *in_flight_ticket == ticket)
+        .is_some()
   }
 
   pub(crate) fn hand_back(&mut self, ticket: u64) -> bool {
-    let Some(batch) = self.in_flight.remove(&ticket) else {
+    let Some((_, batch)) = self
+      .in_flight
+      .take_if(|(in_flight_ticket, _)| *in_flight_ticket == ticket)
+    else {
       return false;
     };
-    // A newer pending state or higher-ticket batch wins over this return.
-    let has_newer = |path: &String| {
-      self.pending.changed.contains(path)
-        || self.pending.deleted.contains(path)
-        || self
-          .in_flight
-          .range((
-            std::ops::Bound::Excluded(ticket),
-            std::ops::Bound::Unbounded,
-          ))
-          .any(|(_, batch)| batch.changed.contains(path) || batch.deleted.contains(path))
-    };
+    // A newer pending state wins over this return.
+    let has_newer =
+      |path: &String| self.pending.changed.contains(path) || self.pending.deleted.contains(path);
     let changed = batch
       .changed
       .into_iter()
@@ -136,7 +133,7 @@ impl AggregatedData {
   pub(crate) fn close(&mut self) {
     self.closed = true;
     self.pending = FilesData::default();
-    self.in_flight.clear();
+    self.in_flight = None;
   }
 }
 
@@ -393,7 +390,11 @@ fn create_execute_aggregate_task(
           let mut files = files.lock().expect("aggregated sets poisoned");
           // pause() takes this same lock. A take before pause stays owned by
           // native in_flight until JS accepts, hands back, or consumes it.
-          if files.closed || paused.load(Ordering::Relaxed) || files.pending.is_empty() {
+          if files.closed
+            || paused.load(Ordering::Relaxed)
+            || files.in_flight.is_some()
+            || files.pending.is_empty()
+          {
             running.store(false, Ordering::Relaxed);
             continue;
           }
