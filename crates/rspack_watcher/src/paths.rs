@@ -466,7 +466,7 @@ impl PathManager {
     for (tracker, is_context) in [(&self.files, false), (&self.directories, true)] {
       let request = |path: &InternedPath| {
         tracker.pending_scan.insert(path.clone());
-        if is_context {
+        if is_context && !path.is_dir() {
           self.absent_directories.insert(path.clone());
         }
       };
