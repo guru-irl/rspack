@@ -211,6 +211,7 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
     // `.watcher` surface).
     const watcher = new NativeWatcherShim(this);
     this.#watcher = watcher;
+    let paused = false;
 
     nativeWatcher.watch(
       this.formatWatchDependencies(files),
@@ -222,6 +223,7 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
           callback(err, new Map(), new Map(), new Set(), new Set());
           return;
         }
+        paused = true;
         nativeWatcher.pause();
         const changedFiles = result.changedFiles;
         const removedFiles = result.removedFiles;
@@ -264,7 +266,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
           // The native watcher reports paths without an mtime, so events are
           // stamped with their arrival time.
           const mtime = Date.now();
-          callbackUndelayed(event.path, mtime);
+          // A queued event may arrive after its aggregate started a build.
+          if (!paused) {
+            callbackUndelayed(event.path, mtime);
+          }
           this.#events.emit('change', event.path, mtime);
           watcher.emit('change', event.path, mtime);
         } else {
@@ -323,6 +328,7 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
       },
 
       pause: () => {
+        paused = true;
         nativeWatcher.pause();
       },
 
