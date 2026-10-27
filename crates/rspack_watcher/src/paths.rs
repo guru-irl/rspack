@@ -26,7 +26,16 @@ use super::{
 };
 
 fn is_normalized(path: &InternedPath) -> bool {
-  path.as_os_str() == path.components().collect::<PathBuf>().as_os_str()
+  let normalized = path.components().collect::<PathBuf>();
+  #[cfg(target_os = "windows")]
+  {
+    // Interned Windows keys already use Path's separator-insensitive equality.
+    path.as_path() == normalized.as_path()
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    path.as_os_str() == normalized.as_os_str()
+  }
 }
 
 /// An iterator that chains together references to all files, directories, and missing paths
