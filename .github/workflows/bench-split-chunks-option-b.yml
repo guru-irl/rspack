@@ -1,13 +1,13 @@
 name: SplitChunks Option B measurements
 on:
   push:
-    branches: [bench/split-chunks-type-layer-main]
+    branches: [bench/split-chunks-type-layer-fix-60k]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: split-chunks-type-layer-main-measurements
+  group: split-chunks-type-layer-fix-60k-measurements
   cancel-in-progress: false
 jobs:
   build:
@@ -16,11 +16,11 @@ jobs:
       matrix:
         include:
           - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: main, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr1, ref: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31 }
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr1, ref: 7a15687de82662082b0f864d73a476d4fd8734ae }
           - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: main, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr1, ref: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31 }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr1, ref: 7a15687de82662082b0f864d73a476d4fd8734ae }
           - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: main, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr1, ref: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31 }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr1, ref: 7a15687de82662082b0f864d73a476d4fd8734ae }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
