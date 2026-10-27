@@ -14,7 +14,7 @@ use dashmap::setref::multiple::RefMulti;
 use rspack_error::Result;
 use rspack_paths::{InternedPath, InternedPathDashMap, InternedPathDashSet, InternedPathSet};
 use rspack_util::{
-  fx_hash::FxHashMap,
+  fx_hash::{FxDashMap, FxHashMap},
   time::{current_time, fs_accuracy, mtime_accuracy, mtime_safe_time, system_time_to_millis},
 };
 
@@ -346,6 +346,17 @@ impl FileTime {
   }
 }
 
+#[derive(PartialEq, Eq)]
+enum ContextWatchErrorKind {
+  Io(std::io::ErrorKind),
+  Notify(std::mem::Discriminant<notify::ErrorKind>),
+}
+
+struct ContextWatchFailure {
+  cycle: usize,
+  kind: ContextWatchErrorKind,
+}
+
 /// `PathManager` is responsible for managing the set of files, directories, and missing paths.
 #[derive(Default)]
 pub(crate) struct PathManager {
@@ -354,6 +365,9 @@ pub(crate) struct PathManager {
   missing: PathTracker,
   /// An overflow has no affected subtree. Scan every registration once.
   rescan_all: AtomicBool,
+  watch_cycle: AtomicUsize,
+  /// Only failed extra context watches, keyed by component-normalized paths.
+  context_watch_failures: FxDashMap<PathBuf, ContextWatchFailure>,
   ignored: IgnoredMatcher,
   /// watchpack's `files` map: the last observation of each registered file,
   /// each registered-missing path found on disk, and each file found below a
@@ -415,6 +429,8 @@ impl PathManager {
       directories: PathTracker::default(),
       missing: PathTracker::default(),
       rescan_all: AtomicBool::default(),
+      watch_cycle: AtomicUsize::new(0),
+      context_watch_failures: FxDashMap::default(),
       ignored: IgnoredMatcher::new(ignored),
       file_times: InternedPathDashMap::default(),
       baselines: InternedPathDashMap::default(),
@@ -449,6 +465,7 @@ impl PathManager {
   /// entries for files that have actually been unregistered are pruned by
   /// `update()` via `remove_file_mtime`.
   pub fn reset(&self) {
+    self.watch_cycle.fetch_add(1, Ordering::Relaxed);
     self.files.reset();
     self.directories.reset();
     self.missing.reset();
@@ -558,14 +575,60 @@ impl PathManager {
 
   fn watch_context_directory(&self, path: &InternedPath) -> rspack_error::Result<()> {
     if let Some(watcher) = self.context_watcher.get().and_then(Weak::upgrade) {
+      // The disk lock also serializes first failures for the same folder.
       let mut watcher = watcher.lock().expect("disk watcher lock poisoned");
+      let cycle = self.watch_cycle.load(Ordering::Relaxed);
+      if let Some(mut failure) = self.context_watch_failures.get_mut(path.as_path()) {
+        if failure.cycle == cycle {
+          return Ok(());
+        }
+        failure.cycle = cycle;
+      }
       // A scan can outlive the context that started it.
-      if (self.directories.all.contains(path) || self.is_below_context(path))
-        && path.is_dir()
-        && let Err(error) = watcher.watch_context_directory(path)
-        && path.is_dir()
-      {
-        return Err(error);
+      if !self.directories.all.contains(path) && !self.is_below_context(path) {
+        self.context_watch_failures.remove(path.as_path());
+        return Ok(());
+      }
+      match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_dir() => {
+          self.context_watch_failures.remove(path.as_path());
+          return Ok(());
+        }
+        Err(error) => {
+          if matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+          ) {
+            self.context_watch_failures.remove(path.as_path());
+          }
+          return Ok(());
+        }
+        _ => {}
+      }
+      match watcher.watch_context_directory(path) {
+        Ok(()) => {
+          self.context_watch_failures.remove(path.as_path());
+        }
+        Err(error) if path.is_dir() => {
+          let kind = match &error.kind {
+            notify::ErrorKind::Io(error) => ContextWatchErrorKind::Io(error.kind()),
+            kind => ContextWatchErrorKind::Notify(std::mem::discriminant(kind)),
+          };
+          if let Some(mut failure) = self.context_watch_failures.get_mut(path.as_path()) {
+            if failure.kind == kind {
+              return Ok(());
+            }
+            failure.kind = kind;
+          } else {
+            self
+              .context_watch_failures
+              .insert(path.to_path_buf(), ContextWatchFailure { cycle, kind });
+          }
+          return Err(rspack_error::error!(
+            "failed to watch context directory {path:?}: {error}"
+          ));
+        }
+        Err(_) => {}
       }
     }
     Ok(())
@@ -737,10 +800,92 @@ impl PathManager {
   /// `checkStartTime`): they changed before the watch was active, so no event
   /// will come for them.
   pub async fn scan_contexts(&self, start_time: SystemTime) -> Vec<InternedPath> {
-    let contexts: Vec<InternedPath> = self.directories.added.iter().map(|p| p.clone()).collect();
-    self
-      .scan_below(contexts, false, Some(system_time_to_millis(start_time)))
-      .await
+    let contexts = self
+      .directories
+      .added
+      .iter()
+      .map(|path| (path.clone(), Vec::new()))
+      .collect();
+    let changed_since = Some(system_time_to_millis(start_time));
+    let mut changed = self.scan_below(contexts, false, changed_since).await;
+    let cycle = self.watch_cycle.load(Ordering::Relaxed);
+    let mut failed: Vec<_> = self
+      .context_watch_failures
+      .iter()
+      .filter(|failure| failure.cycle != cycle)
+      .map(|failure| InternedPath::from(failure.key()))
+      .collect();
+    if failed.is_empty() {
+      return changed;
+    }
+
+    let contexts: Vec<InternedPath> = self
+      .directories
+      .all
+      .iter()
+      .map(|path| path.clone())
+      .collect();
+    let mut owners: FxHashMap<&Path, &InternedPath> = FxHashMap::default();
+    for path in &contexts {
+      owners
+        .entry(path.as_path())
+        .and_modify(|owner| {
+          if path.as_os_str().len() < owner.as_os_str().len() {
+            *owner = path;
+          }
+        })
+        .or_insert(path);
+    }
+    // Visit parents first, but retain children in case a parent cannot be read.
+    failed.sort_unstable_by(|left, right| left.as_path().cmp(right.as_path()));
+    for dir in failed {
+      let owner = dir
+        .ancestors()
+        .find_map(|ancestor| owners.get(ancestor).map(|owner| (ancestor, *owner)));
+      let Some((ancestor, owner)) = owner else {
+        self.context_watch_failures.remove(dir.as_path());
+        continue;
+      };
+      // Keep the spelling of a currently registered owner, including aliases.
+      let dir =
+        InternedPath::from(owner.join(dir.strip_prefix(ancestor).expect("matched ancestor")));
+      let absent = match std::fs::metadata(&dir) {
+        Ok(metadata) => !metadata.is_dir(),
+        Err(error) => matches!(
+          error.kind(),
+          std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ),
+      };
+      if absent {
+        self.context_watch_failures.remove(dir.as_path());
+        continue;
+      }
+      if self
+        .context_watch_failures
+        .get(dir.as_path())
+        .is_none_or(|failure| failure.cycle == cycle)
+      {
+        continue;
+      }
+      // A retry starts below its context. Seed the same loop guard that walking
+      // from its closest owning context would have built.
+      let ancestry = if self.follow_symlinks {
+        dir
+          .ancestors()
+          .skip(1)
+          .take_while(|ancestor| ancestor.starts_with(owner.as_path()))
+          .filter_map(|ancestor| std::fs::canonicalize(ancestor).ok())
+          .collect()
+      } else {
+        Vec::new()
+      };
+      changed.extend(
+        self
+          .scan_below(vec![(dir, ancestry)], false, changed_since)
+          .await,
+      );
+    }
+    changed
   }
 
   /// Index every file and subdirectory below `roots`, minus what `ignored`
@@ -751,7 +896,7 @@ impl PathManager {
   /// Returns the files whose safe time is at or after `changed_since`.
   async fn scan_below(
     &self,
-    roots: Vec<InternedPath>,
+    roots: Vec<(InternedPath, Vec<PathBuf>)>,
     recovered: bool,
     changed_since: Option<u64>,
   ) -> Vec<InternedPath> {
@@ -763,7 +908,7 @@ impl PathManager {
     // links to one directory are two aliases, each scanned.
     let mut pending: Vec<(InternedPath, Vec<PathBuf>, bool)> = roots
       .into_iter()
-      .map(|root| (root, Vec::new(), recovered))
+      .map(|(root, ancestry)| (root, ancestry, recovered))
       .collect();
     while let Some((dir, mut ancestry, observed)) = pending.pop() {
       if self.follow_symlinks {
@@ -778,11 +923,6 @@ impl PathManager {
       // Install the non-recursive watch before enumerating, including empty
       // directories. Children pass the ignored filter before reaching this walk.
       if let Err(error) = self.watch_context_directory(&dir) {
-        for context in self.directories.all.iter() {
-          if dir.starts_with(context.as_path()) {
-            self.directories.pending_scan.insert(context.clone());
-          }
-        }
         watch_errors += 1;
         first_watch_error.get_or_insert(error);
       }
@@ -885,7 +1025,16 @@ impl PathManager {
         self.absent_directories.remove(context);
         self.baselines.remove_if(context, |_, time| time.is_none());
       }
-      self.scan_below(recovered, true, None).await;
+      self
+        .scan_below(
+          recovered
+            .into_iter()
+            .map(|path| (path, Vec::new()))
+            .collect(),
+          true,
+          None,
+        )
+        .await;
     }
 
     if self.directories.all.contains(path) || !self.is_below_context(path) {
@@ -900,7 +1049,9 @@ impl PathManager {
       // Like watchpack's `setDirectory`, only a directory not known before is
       // scanned: an event on a known one, e.g. a `chmod`, changes nothing below.
       if self.record(path, || self.context_directories.insert(path.clone())) {
-        self.scan_below(vec![path.clone()], false, None).await;
+        self
+          .scan_below(vec![(path.clone(), Vec::new())], false, None)
+          .await;
       }
       return true;
     }
