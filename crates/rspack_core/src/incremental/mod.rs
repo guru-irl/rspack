@@ -9,7 +9,7 @@ use std::{
 };
 
 use bitflags::bitflags;
-pub use mutations::{Mutation, Mutations};
+pub use mutations::{ChunkGroupChanges, Mutation, Mutations};
 use rspack_error::{Diagnostic, Error};
 
 pub const TRACING_TARGET: &str = "rspack_incremental";
