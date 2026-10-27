@@ -212,6 +212,7 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
     const watcher = new NativeWatcherShim(this);
     this.#watcher = watcher;
     let paused = false;
+    let reported = false;
 
     nativeWatcher.watch(
       this.formatWatchDependencies(files),
@@ -222,6 +223,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
         if (err) {
           callback(err, new Map(), new Map(), new Set(), new Set());
           return;
+        }
+        if (!paused && !reported && result.changedFiles.length > 0) {
+          reported = true;
+          callbackUndelayed(result.changedFiles[0], Date.now());
         }
         paused = true;
         nativeWatcher.pause();
@@ -266,8 +271,11 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
           // The native watcher reports paths without an mtime, so events are
           // stamped with their arrival time.
           const mtime = Date.now();
-          // A queued event may arrive after its aggregate started a build.
+          // Changes while paused reach the next build through the pending sets.
+          // This includes queued events, builds, async done hooks and suspension.
+          // Reporting them here could re-queue a build that already has them.
           if (!paused) {
+            reported = true;
             callbackUndelayed(event.path, mtime);
           }
           this.#events.emit('change', event.path, mtime);
