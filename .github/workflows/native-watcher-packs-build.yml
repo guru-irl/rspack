@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - arm: native
-            source: 5dbb2988628675d3c7f100772badde74a644e9a9
+            source: 51f7a87b83980e5ac1ef00cc2b433ba5ff27f8bc
     steps:
       - uses: actions/checkout@v4
         with:
