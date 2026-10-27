@@ -193,7 +193,7 @@ impl DiskWatcher {
   /// Release only this scan's requirement. Another registration can still need
   /// the same directory. Removed directories also invalidate the native watch.
   pub(crate) fn remove_context_directory(&mut self, path: &InternedPath, removed: bool) {
-    if !self.context_paths.remove(path) {
+    if !self.context_paths.remove(path) && !removed {
       return;
     }
     let mut pattern = WatchPattern {
