@@ -464,7 +464,13 @@ export declare class NativeWatcher {
   watch(files: [Array<string>, Array<string>], directories: [Array<string>, Array<string>], missing: [Array<string>, Array<string>], startTime: bigint, callback: (err: Error | null, result: NativeWatchAggregate) => void, callbackUndelayed: (event: NativeWatchUndelayedEvent) => void): void
   triggerEvent(kind: 'change' | 'remove' | 'create', path: string): void
   close(): Promise<void>
-  /** Accept only a batch still owned by this open native watcher. */
+  /**
+   * Accept only a batch still owned by this open native watcher.
+   *
+   * Acceptance does not re-arm delivery. The caller must pause after a successful
+   * accept, as `NativeWatchFileSystem` does. A build consumes pending changes,
+   * or the next `watch()` flushes them.
+   */
   accept(ticket: bigint): boolean
   /** Hand a rejected ticket back to pending. Consumed and closed tickets do nothing. */
   handBack(ticket: bigint): void

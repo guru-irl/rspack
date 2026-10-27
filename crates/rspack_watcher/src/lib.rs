@@ -225,6 +225,10 @@ impl FsWatcher {
 
   /// Accept a queued batch exactly once. Consumed or returned tickets and
   /// tickets from a closed watcher cannot be accepted.
+  ///
+  /// Acceptance does not re-arm delivery. The caller must pause after a successful
+  /// accept, as `NativeWatchFileSystem` does. A build consumes pending changes,
+  /// or the next `watch()` flushes them.
   pub fn accept(&self, ticket: u64) -> bool {
     self
       .aggregated
