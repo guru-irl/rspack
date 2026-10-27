@@ -146,7 +146,7 @@ use crate::{
   plugins::{
     JsCleanupPlugin, JsHooksAdapterPlugin, RegisterJsTapKind, RegisterJsTaps, buildtime_plugins,
   },
-  raw_options::{BuiltinPlugin, RawOptions, WithFalse},
+  raw_options::{BuiltinPlugin, BuiltinPluginName, RawOptions, WithFalse},
   resolver_factory::JsResolverFactory,
   trace_event::RawTraceEvent,
   utils::callbackify,
@@ -284,6 +284,18 @@ impl JsCompiler {
     let builtin_plugins: Vec<BuiltinPlugin> = compiler_scoped_tsfn_manager.scope(|| unsafe {
       Vec::<BuiltinPlugin>::from_napi_value(env.raw(), raw_builtin_plugins.raw())
     })?;
+    let mut record_module_shapes = false;
+    for plugin in &builtin_plugins {
+      if matches!(
+        &plugin.name,
+        Either::A(BuiltinPluginName::SplitChunksPlugin)
+      ) {
+        let options = plugin.options.coerce_to_object()?;
+        record_module_shapes |= options
+          .get_named_property::<Option<Function>>("moduleShapeCheck")?
+          .is_some();
+      }
+    }
     let register_js_taps: RegisterJsTaps = compiler_scoped_tsfn_manager.scope(|| unsafe {
       RegisterJsTaps::from_napi_value(env.raw(), raw_register_js_taps.raw())
     })?;
@@ -414,6 +426,10 @@ impl JsCompiler {
         cache,
         infrastructure_log_sink,
       );
+
+      if record_module_shapes {
+        ModuleObject::enable_shape_recording(rspack.id());
+      }
 
       Ok(Self {
         infrastructure_log_dispatcher,

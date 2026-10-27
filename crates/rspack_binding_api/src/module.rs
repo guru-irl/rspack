@@ -685,7 +685,13 @@ type ModuleInstanceMutRef<'a> = Either5<
 
 type ModuleInstanceNapiRefs = IdentifierMap<ModuleInstanceNapiRef>;
 
-type ModuleInstanceNapiRefsByCompilerId = RefCell<FxHashMap<CompilerId, ModuleInstanceNapiRefs>>;
+#[derive(Default)]
+struct ModuleInstances {
+  objects: ModuleInstanceNapiRefs,
+  record_shapes: bool,
+}
+
+type ModuleInstanceNapiRefsByCompilerId = RefCell<FxHashMap<CompilerId, ModuleInstances>>;
 
 thread_local! {
   static MODULE_INSTANCE_REFS: ModuleInstanceNapiRefsByCompilerId = Default::default();
@@ -707,6 +713,12 @@ unsafe impl Send for ModuleObject {}
 unsafe impl Sync for ModuleObject {}
 
 impl ModuleObject {
+  pub(crate) fn enable_shape_recording(compiler_id: CompilerId) {
+    MODULE_INSTANCE_REFS.with_borrow_mut(|refs| {
+      refs.entry(compiler_id).or_default().record_shapes = true;
+    });
+  }
+
   pub fn with_ref(module: &dyn rspack_core::Module, compiler_id: CompilerId) -> Self {
     Self {
       type_id: module.as_any().type_id(),
@@ -742,7 +754,7 @@ impl ModuleObject {
       let mut refs_by_compiler_id = refs.borrow_mut();
       for module_identifier in revoked_modules {
         if let Some(refs) = refs_by_compiler_id.get_mut(compiler_id)
-          && let Some(r) = refs.remove(module_identifier)
+          && let Some(r) = refs.objects.remove(module_identifier)
         {
           match r {
             Either5::A(mut normal_module) => normal_module.module.ptr = None,
@@ -773,7 +785,7 @@ impl ToNapiValue for CachedModuleObjects {
       let mut array = env_wrapper.create_array(0)?;
       MODULE_INSTANCE_REFS.with_borrow_mut(|all| -> Result<()> {
         if let Some(modules) = all.get_mut(&value.compiler_id) {
-          for (index, module) in modules.values_mut().enumerate() {
+          for (index, module) in modules.objects.values_mut().enumerate() {
             let raw = match module {
               Either5::A(r) => ToNapiValue::to_napi_value(env, r),
               Either5::B(r) => ToNapiValue::to_napi_value(env, r),
@@ -796,16 +808,10 @@ impl ToNapiValue for ModuleObject {
     unsafe {
       MODULE_INSTANCE_REFS.with(|refs| {
         let mut refs_by_compiler_id = refs.borrow_mut();
-        let entry = refs_by_compiler_id.entry(val.compiler_id);
-        let refs = match entry {
-          std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-          std::collections::hash_map::Entry::Vacant(entry) => {
-            let refs = IdentifierMap::default();
-            entry.insert(refs)
-          }
-        };
+        let refs = refs_by_compiler_id.entry(val.compiler_id).or_default();
+        let record_shapes = refs.record_shapes;
 
-        match refs.entry(val.identifier) {
+        match refs.objects.entry(val.identifier) {
           std::collections::hash_map::Entry::Occupied(mut entry) => {
             let instance_ref = entry.get_mut();
             let instance = match instance_ref {
@@ -870,7 +876,9 @@ impl ToNapiValue for ModuleObject {
               Either5::D(r) => ToNapiValue::to_napi_value(env, r),
               Either5::E(r) => ToNapiValue::to_napi_value(env, r),
             }?;
-            crate::module_object_state::seed(&env_wrapper, Object::from_raw(env, value))?;
+            if record_shapes {
+              crate::module_object_state::seed(&env_wrapper, Object::from_raw(env, value))?;
+            }
             Ok(value)
           }
         }
