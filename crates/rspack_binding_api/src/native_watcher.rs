@@ -319,6 +319,10 @@ impl NativeWatcher {
   }
 
   /// Accept only a batch still owned by this open native watcher.
+  ///
+  /// Acceptance does not re-arm delivery. The caller must pause after a successful
+  /// accept, as `NativeWatchFileSystem` does. A build consumes pending changes,
+  /// or the next `watch()` flushes them.
   #[napi]
   pub fn accept(&self, ticket: BigInt) -> bool {
     let (negative, ticket, lossless) = ticket.get_u64();
