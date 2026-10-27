@@ -182,19 +182,33 @@ impl PathTree {
   }
 
   pub fn add_path(&self, path: &InternedPath) {
-    self.inner.entry(path.clone()).or_default();
+    self.inner.entry(path.clone()).or_default().registered = true;
     self.add_path_recursive(path);
   }
 
   pub fn remove_path(&self, path: &InternedPath) {
-    self.inner.remove(path);
-    // Detach from the PARENT's child set. The previous code removed `path` from
-    // its own set (a no-op), leaving a stale child reference on the parent that
-    // could later surface as a tree node that no longer exists.
-    if let Some(parent) = path.parent().map(InternedPath::from)
-      && let Some(mut parent_node) = self.inner.get_mut(&parent)
-    {
-      parent_node.children.remove(path);
+    let remove = self.inner.get_mut(path).is_some_and(|mut node| {
+      node.registered = false;
+      node.children.is_empty()
+    });
+    if !remove {
+      return;
+    }
+
+    let mut path = path.clone();
+    loop {
+      self.inner.remove(&path);
+      let Some(parent) = path.parent().map(InternedPath::from) else {
+        break;
+      };
+      let prune = self.inner.get_mut(&parent).is_some_and(|mut node| {
+        node.children.remove(&path);
+        !node.registered && node.children.is_empty()
+      });
+      if !prune {
+        break;
+      }
+      path = parent;
     }
   }
 
@@ -237,6 +251,8 @@ impl PathTree {
 
 #[derive(Debug, Default)]
 struct TreeNode {
+  // Structural ancestors stay attached while any registered child needs them.
+  registered: bool,
   children: InternedPathSet,
 }
 
@@ -330,13 +346,8 @@ mod tests {
     tree.remove_path(&leaf);
     assert!(!tree.inner.contains_key(&leaf));
     assert!(
-      !tree
-        .inner
-        .get(&dir)
-        .expect("a present")
-        .children
-        .contains(&leaf),
-      "leaf must be detached from its parent's children"
+      !tree.inner.contains_key(&dir),
+      "unregistered empty ancestors must be pruned"
     );
   }
 
