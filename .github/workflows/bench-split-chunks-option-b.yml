@@ -1,13 +1,13 @@
-name: Native watcher Windows release measurements
+name: PR base and head watch measurements
 on:
   push:
-    branches: [bench/pr62-windows-measure]
+    branches: [bench/pr66-merge-costs]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr62-windows-measure
+  group: pr66-merge-costs
   cancel-in-progress: false
 jobs:
   measure:
@@ -15,9 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { platform: Linux, runner: ubuntu-24.04 }
+          - { platform: macOS, runner: macos-15 }
+          - { platform: Windows, runner: windows-2025 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -27,48 +29,21 @@ jobs:
         with:
           node-version: 22.23.3
           cache: pnpm
-      - uses: actions/download-artifact@v4
+      - name: Reuse the two production bindings
+        uses: actions/download-artifact@v4
         with:
           pattern: optb-binding-${{ matrix.platform }}-*
           run-id: 40578412745
           github-token: ${{ github.token }}
-          path: .bench-split-chunks-option-b/bindings/
-      - name: Reuse the unchanged restack release binding
-        uses: actions/download-artifact@v4
-        with:
-          pattern: optb-binding-${{ matrix.platform }}-restack
-          run-id: 40563637829
-          github-token: ${{ github.token }}
-          path: .bench-split-chunks-option-b/bindings/
-      - name: Verify the three real Windows binding identities before instrumentation
+          path: .bench-pr66-merge-costs/bindings/
+      - name: Measure without rebuilding
         shell: bash
-        run: |
-          node - <<'JS'
-          const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
-          const helper=path.resolve('scripts/split-chunks-option-b-bench/loaded-binding-identity.cjs');
-          const pins=require('./scripts/split-chunks-option-b-bench/expected-windows-bindings.json');
-          for(const [arm,sha] of Object.entries(pins)){
-            const addon=path.resolve('.bench-split-chunks-option-b/bindings/optb-binding-Windows-'+arm+'/binding.node');
-            const result=spawnSync(process.execPath,[helper,addon,sha],{stdio:'inherit'});assert.equal(result.status,0,arm+' identity preflight');
-          }
-          JS
-      - name: Measure interleaved release processes
-        shell: bash
-        env:
-          RUST_TARGET: ${{ matrix.target }}
-        run: bash scripts/split-chunks-option-b-bench/measure.sh
+        run: bash scripts/split-chunks-option-b-bench/measure-merge.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: optb-results-${{ matrix.platform }}
-          path: .bench-split-chunks-option-b/results/
+          name: merge-costs-${{ matrix.platform }}
+          path: .bench-pr66-merge-costs/results/
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 14
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: optb-instrumentation-Windows
-          path: .bench-split-chunks-option-b/bindings/*/event-cost.exe
-          if-no-files-found: warn
           retention-days: 14

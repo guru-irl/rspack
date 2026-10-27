@@ -1,0 +1,14 @@
+{
+  "Linux": {
+    "base": "de1b8670b8c687cc6b27ec4a394633c08e95f0626a82efe3399c76f01ce6fbca",
+    "final": "dd8ab1dbbc345271c2a86c5403ed53b6dbebea42c976c64b55d7657fe366ed59"
+  },
+  "Windows": {
+    "base": "12ea61fc0da2425fd1d7da50e71261b42cdb67af3924c2a807594f552563df74",
+    "final": "d3a4a8048b7a624de84a7759b570f6345298ada0ecdf10dab33e0ec4d9fd2192"
+  },
+  "macOS": {
+    "base": "90c2587e7e595185e62c56aed106df8df695cfca0788f921bd3bf6966c34ef67",
+    "final": "5e845cfadd7cdb7ad40945f98e0ece878a78a76126f77b2210435ec952ebc57c"
+  }
+}
