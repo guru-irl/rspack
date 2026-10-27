@@ -91,11 +91,12 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     let mut symlink_ancestors = InternedPathMap::default();
     for path in dirty {
       state.symlink_dependent_paths.remove(&path);
-      if let Some(Some(pattern)) = state.paths.remove(&path) {
-        let count = state.patterns.get_mut(&pattern).expect("watch requirement");
+      let previous = state.paths.remove(&path);
+      if let Some(Some(pattern)) = &previous {
+        let count = state.patterns.get_mut(pattern).expect("watch requirement");
         *count -= 1;
         if *count == 0 {
-          state.patterns.remove(&pattern);
+          state.patterns.remove(pattern);
         }
       }
       if is_registered(&path) {
@@ -116,6 +117,12 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
               }
             },
           );
+        if previous
+          .as_ref()
+          .is_some_and(|previous| previous != &pattern)
+        {
+          path_accessor.rescan(&path);
+        }
         if let Some(pattern) = &pattern {
           *state.patterns.entry(pattern.clone()).or_default() += 1;
         }

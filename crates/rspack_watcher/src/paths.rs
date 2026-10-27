@@ -114,7 +114,7 @@ impl<'a> PathAccessor<'a> {
     )
   }
 
-  /// Rescan a registration whose symlink target may have changed without an event.
+  /// Rescan a registration whose native watch coverage may have changed.
   pub fn rescan(&self, path: &InternedPath) {
     for tracker in [self.files, self.directories, self.missing] {
       if tracker.all.contains(path) {
@@ -252,12 +252,6 @@ impl PathTracker {
         self.pending_scan.insert(path.clone());
         on_path(path);
       });
-    }
-  }
-
-  fn retry_scans(&self) {
-    for path in self.added.iter() {
-      self.pending_scan.insert(path.clone());
     }
   }
 
@@ -461,12 +455,6 @@ impl PathManager {
 
   pub fn request_rescan(&self) {
     self.rescan_all.store(true, Ordering::Relaxed);
-  }
-
-  pub fn retry_scans(&self) {
-    for tracker in [&self.files, &self.directories, &self.missing] {
-      tracker.retry_scans();
-    }
   }
 
   /// Record an initial baseline mtime for `path`, but only if no present

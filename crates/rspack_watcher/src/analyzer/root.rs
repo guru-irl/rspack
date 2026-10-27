@@ -19,6 +19,7 @@ use crate::paths::PathAccessor;
 /// path to be watched.
 pub struct WatcherRootAnalyzer {
   path_tree: PathTree,
+  root: Mutex<Option<InternedPath>>,
   symlink_dependent_paths: Mutex<InternedPathSet>,
   invalidated: Mutex<InvalidatedPaths>,
 }
@@ -80,6 +81,13 @@ impl Analyzer for WatcherRootAnalyzer {
     self.path_tree.update_paths(&added, &removed);
 
     let common_root = self.path_tree.find_common_root();
+    let mut previous_root = self.root.lock().expect("root lock poisoned");
+    if *previous_root != common_root {
+      for path in path_accessor.all() {
+        path_accessor.rescan(&path);
+      }
+      *previous_root = common_root.clone();
+    }
 
     match common_root {
       Some(root) => vec![WatchPattern {
