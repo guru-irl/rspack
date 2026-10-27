@@ -19,13 +19,11 @@ use rspack_util::{
 };
 
 use super::{
-  FsWatcherIgnored, TimeInfoEntries, TimeInfoEntry, disk_watcher::DiskWatcher,
+  FsWatcherIgnored, TimeInfoEntries, TimeInfoEntry,
+  disk_watcher::DiskWatcher,
   ignored::IgnoredMatcher,
+  path_prefixes::{PathPrefixes, collapse_paths},
 };
-fn collapse_deleted_paths(paths: &mut Vec<InternedPath>) {
-  paths.sort_unstable_by(|left, right| left.as_path().cmp(right.as_path()));
-  paths.dedup_by(|path, ancestor| path.starts_with(ancestor.as_path()));
-}
 
 fn is_normalized(path: &InternedPath) -> bool {
   path.as_os_str() == path.components().collect::<PathBuf>().as_os_str()
@@ -451,11 +449,11 @@ impl PathManager {
     if deleted.is_empty() {
       return;
     }
-    collapse_deleted_paths(&mut deleted);
+    collapse_paths(&mut deleted);
     let aliases = self.non_normalized_registrations.load(Ordering::Relaxed) != 0;
     let mut leaves = Vec::new();
     let mut directories = Vec::new();
-    for root in &deleted {
+    for root in deleted {
       let key = InternedPath::from(root.components().collect::<PathBuf>());
       if aliases || self.registered_ancestors.contains_key(&key) {
         directories.push(root);
@@ -463,6 +461,7 @@ impl PathManager {
         leaves.push(key);
       }
     }
+    let prefixes = PathPrefixes::new(&mut directories);
     for (tracker, is_context) in [(&self.files, false), (&self.directories, true)] {
       let request = |path: &InternedPath| {
         tracker.pending_scan.insert(path.clone());
@@ -475,14 +474,10 @@ impl PathManager {
           request(path);
         }
       }
-      // Directory removals are rare. Scan membership once for the collapsed
-      // roots, including registrations that no longer hold a timestamp record.
-      if !directories.is_empty() {
+      // Inspect membership once, using component-prefix lookups for large batches.
+      if !prefixes.is_empty() {
         for path in tracker.all.iter() {
-          if directories
-            .iter()
-            .any(|root| path.starts_with(root.as_path()))
-          {
+          if prefixes.contains(path.as_path()) {
             request(&path);
           }
         }
