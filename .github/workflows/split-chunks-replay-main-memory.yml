@@ -1,19 +1,37 @@
-name: SplitChunks replay memory
+name: SplitChunks type and layer precompute
 
 on:
   push:
     branches:
-      - bench/split-chunks-replay-main-xplat
+      - bench/split-chunks-type-layer-precompute
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  memory:
-    name: Memory ${{ matrix.target }}
+  build-fix:
+    name: Build fix ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: '"ubuntu-22.04"'
+            target: x86_64-unknown-linux-gnu
+          - runner: '"macos-latest"'
+            target: aarch64-apple-darwin
+    uses: ./.github/workflows/reusable-build-build.yml
+    with:
+      target: ${{ matrix.target }}
+      runner: ${{ matrix.runner }}
+      profile: ci
+      ref: 7a15687de82662082b0f864d73a476d4fd8734ae
+
+  measure:
+    name: Measure ${{ matrix.target }}
+    needs: build-fix
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -26,18 +44,16 @@ jobs:
             target: aarch64-apple-darwin
             arch: arm64
             binding: rspack.darwin-arm64.node
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            arch: x64
-            binding: rspack.win32-x64-msvc.node
     defaults:
       run:
         shell: bash
     env:
-      SOURCE_HEAD: 7eaf36f9d0cfa238417a8f1cea5353119cd343eb
-      SOURCE_RUN: '40306650235'
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-      PUPPETEER_SKIP_DOWNLOAD: '1'
+      PARENT_HEAD: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8
+      PR_HEAD: 8190b0aaa7dc93f5d859c305e5d3b5fe4fa53c31
+      FIX_HEAD: 7a15687de82662082b0f864d73a476d4fd8734ae
+      PARENT_RUN: '40283359653'
+      PR_RUN: '40284286679'
+      EXPECTED_ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout benchmark
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -47,84 +63,105 @@ jobs:
 
       - name: Prepare scratch
         run: |
+          set -euo pipefail
           mkdir -p bench-data/tmp bench-data/results
           printf 'TMPDIR=%s/bench-data/tmp\nTMP=%s/bench-data/tmp\nTEMP=%s/bench-data/tmp\n' "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/pnpm/setup
         with:
-          node-version: 22.18.0
+          node-version: 22.23.4
 
-      - name: Verify source provenance
+      - name: Record source runs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" --jq '{id,head_sha,workflow_id}' > bench-data/source-run.json
-          node <<'NODE'
-          const fs = require('node:fs');
-          const assert = require('node:assert/strict');
-          const { execFileSync } = require('node:child_process');
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN" > bench-data/parent-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PR_RUN" > bench-data/pr-run.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          const parent = JSON.parse(fs.readFileSync('bench-data/parent-run.json'));
+          const pr = JSON.parse(fs.readFileSync('bench-data/pr-run.json'));
+          assert.equal(parent.head_sha, process.env.PARENT_HEAD);
+          assert.equal(pr.head_sha, process.env.PR_HEAD);
           const git = args => execFileSync('git', args, { encoding: 'utf8' }).trim();
-          const run = JSON.parse(fs.readFileSync('bench-data/source-run.json', 'utf8'));
-          assert.equal(run.head_sha, process.env.SOURCE_HEAD);
-          const changed = git(['diff', '--name-only', process.env.SOURCE_HEAD, 'HEAD']).split('\n').filter(Boolean);
-          assert(changed.every(file => file.startsWith('.github/scripts/split-chunks-replay-main/') || file === '.github/workflows/split-chunks-replay-main-memory.yml'));
-          const blob = git(['hash-object', '.github/scripts/split-chunks-replay-main/prepare.mjs']);
-          assert.equal(blob, '3d698dd2eb43b3dd7ad77fbe58c7692f1d685c4f');
-          fs.writeFileSync('bench-data/provenance.json', JSON.stringify({ sourceHead: run.head_sha, sourceRun: run.id, benchmarkHead: git(['rev-parse', 'HEAD']), fixtureCommit: 'a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc', fixtureBlob: blob, changed }, null, 2));
+          assert.equal(git(['rev-parse', process.env.FIX_HEAD + '^']), process.env.PR_HEAD);
+          fs.writeFileSync('bench-data/provenance.json', JSON.stringify({ parent: parent.head_sha, pr: pr.head_sha, fix: process.env.FIX_HEAD, benchmark: git(['rev-parse', 'HEAD']), parentRun: parent.id, prRun: pr.id, fixRun: process.env.GITHUB_RUN_ID, frontend: '@rspack-canary/core@2.3.0-canary-162dd637-20261023172544', node: process.version, arch: process.arch }, null, 2));
           NODE
 
-      - name: Download source binding
+      - name: Download parent binding
         uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
           name: bindings-${{ matrix.target }}
-          path: crates/node_binding/
-          run-id: ${{ env.SOURCE_RUN }}
+          path: bench-data/parent-binding
+          run-id: ${{ env.PARENT_RUN }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
 
-      - name: Pin source binding checksum
+      - name: Download PR binding
+        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bench-data/pr-binding
+          run-id: ${{ env.PR_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Download fix binding
+        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bench-data/fix-binding
+
+      - name: Pin native checksums
         env:
-          RSPACK_BINDING: ${{ github.workspace }}/crates/node_binding/${{ matrix.binding }}
+          BINDING_FILE: ${{ matrix.binding }}
         run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const { hash } = require('./.github/scripts/split-chunks-replay-main/native-identity.cjs');
-          const sha256 = hash(process.env.RSPACK_BINDING);
-          fs.appendFileSync(process.env.GITHUB_ENV, `SOURCE_NATIVE_SHA=${sha256}\n`);
-          fs.writeFileSync('bench-data/native-provenance.json', JSON.stringify({ sourceHead: process.env.SOURCE_HEAD, sourceRun: process.env.SOURCE_RUN, file: path.basename(process.env.RSPACK_BINDING), sha256 }, null, 2));
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { hash } from './.github/scripts/type-layer-precompute/native.mjs';
+          const bindings = Object.fromEntries(['parent', 'pr', 'fix'].map(version => {
+            const file = path.resolve('bench-data', version + '-binding', process.env.BINDING_FILE);
+            return [version, { path: fs.realpathSync(file), sha256: hash(file) }];
+          }));
+          fs.writeFileSync('bench-data/bindings.json', JSON.stringify(bindings, null, 2));
           NODE
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build JavaScript
-        run: pnpm run build:js > bench-data/js-build.log 2>&1
-
-      - name: Prepare public fixture
+      - name: Install fixed frontend
         run: |
-          npm install --prefix bench-data/parser --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund acorn@8.19.0 escodegen@2.1.0 > bench-data/parser-install.log 2>&1
-          node .github/scripts/split-chunks-replay-main/prepare.mjs bench-data/fixture > bench-data/fixture.json
-          node .github/scripts/split-chunks-replay-main/run.cjs --self-test
+          set -euo pipefail
+          npm install --prefix bench-data --registry=https://registry.npmjs.org --ignore-scripts --legacy-peer-deps --save-exact --no-audit --no-fund @rspack-canary/core@2.3.0-canary-162dd637-20261023172544 > bench-data/frontend-install.log 2>&1
+          cp .github/scripts/type-layer-precompute/{repro,native}.mjs bench-data/
 
-      - name: Run three memory pairs
+      - name: Prepare fixture and check comparator
         env:
-          RSPACK_BINDING: ${{ github.workspace }}/crates/node_binding/${{ matrix.binding }}
-          EXPECTED_ARCH: ${{ matrix.arch }}
-        run: node .github/scripts/split-chunks-replay-main/run.cjs
+          RSPACK_BINDING: ${{ github.workspace }}/bench-data/parent-binding/${{ matrix.binding }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/type-layer-precompute/native-test.mjs
+          node bench-data/repro.mjs setup > bench-data/fixture.log
+          node .github/scripts/type-layer-precompute/compare.mjs --self-test
 
-      - name: Upload memory evidence
+      - name: Run four alternating process pairs
+        run: |
+          set -euo pipefail
+          node .github/scripts/type-layer-precompute/compare.mjs > bench-data/results/driver.log 2>&1
+
+      - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: split-chunks-replay-memory-${{ matrix.target }}
+          name: type-layer-precompute-${{ matrix.target }}
           path: |
             bench-data/results/
             bench-data/provenance.json
-            bench-data/native-provenance.json
-            bench-data/fixture.json
-            bench-data/parser-install.log
-            bench-data/js-build.log
+            bench-data/bindings.json
+            bench-data/frontend-install.log
+            bench-data/fixture.log
           if-no-files-found: error
           retention-days: 7
