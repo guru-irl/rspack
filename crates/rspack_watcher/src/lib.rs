@@ -289,6 +289,9 @@ impl FsWatcher {
     event_handler: Box<dyn EventHandler + Send>,
   ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     let (done_tx, done_rx) = oneshot::channel();
+    let files = (files.0.collect(), files.1.collect());
+    let directories = (directories.0.collect(), directories.1.collect());
+    let missing = (missing.0.collect(), missing.1.collect());
 
     let send_result = {
       let state = self.aggregated.lock().expect("aggregated sets poisoned");
@@ -298,9 +301,9 @@ impl FsWatcher {
         self.paused.store(false, Ordering::Relaxed);
       }
       self.op_tx.send(WatcherOp::Watch {
-        files: (files.0.collect(), files.1.collect()),
-        directories: (directories.0.collect(), directories.1.collect()),
-        missing: (missing.0.collect(), missing.1.collect()),
+        files,
+        directories,
+        missing,
         start_time,
         event_aggregate_handler,
         event_handler,
@@ -444,7 +447,6 @@ impl FsWatcherInner {
     {
       self.path_manager.retry_scans();
       event_aggregate_handler.on_error(e);
-      return;
     };
 
     self

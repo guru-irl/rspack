@@ -242,6 +242,8 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
         if (err) {
           if (isCurrent() && !paused) {
             callback(err, new Map(), new Map(), new Set(), new Set());
+          } else {
+            console.error(err);
           }
           return;
         }
@@ -369,7 +371,7 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
         // calls, so a later compiler.watch() must get a fresh instance with a
         // full (non-incremental) registration.
         paused = true;
-        if (!isCurrent()) {
+        if (this.#inner !== nativeWatcher) {
           return;
         }
         this.#watcher = undefined;

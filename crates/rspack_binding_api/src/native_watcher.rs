@@ -429,7 +429,10 @@ impl JsEventHandler {
       .build_callback(
         |ctx: napi::threadsafe_function::ThreadSafeCallContext<JsEventHandler>| {
           let handler = ctx.value;
-          let mut pending = handler.pending.lock().expect("pending events poisoned");
+          let mut pending = handler
+            .pending
+            .lock()
+            .map_err(|_| napi::Error::from_reason("Native watcher aggregate queue poisoned"))?;
           // Preserve each ticket. Coalescing paths here would detach them from
           // native ownership and hide batches from the consuming getter.
           pending.in_flight = false;
@@ -438,10 +441,9 @@ impl JsEventHandler {
             handler.schedule(&mut pending);
             return Err(error);
           }
-          let batch = pending
-            .batches
-            .pop_front()
-            .expect("scheduled aggregate batch");
+          let batch = pending.batches.pop_front().ok_or_else(|| {
+            napi::Error::from_reason("Missing scheduled native watcher aggregate")
+          })?;
           handler.schedule(&mut pending);
           Ok(batch)
         },
