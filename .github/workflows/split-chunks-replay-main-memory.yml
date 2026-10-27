@@ -10,28 +10,8 @@ permissions:
   actions: read
 
 jobs:
-  build-fix:
-    name: Build fix ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: '"ubuntu-22.04"'
-            target: x86_64-unknown-linux-gnu
-          - runner: '"macos-latest"'
-            target: aarch64-apple-darwin
-          - runner: '"windows-2025"'
-            target: x86_64-pc-windows-msvc
-    uses: ./.github/workflows/reusable-build-build.yml
-    with:
-      target: ${{ matrix.target }}
-      runner: ${{ matrix.runner }}
-      profile: ci
-      ref: 7a15687de82662082b0f864d73a476d4fd8734ae
-
   measure:
     name: Measure ${{ matrix.target }}
-    needs: build-fix
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -62,6 +42,7 @@ jobs:
       FIX_HEAD: 7a15687de82662082b0f864d73a476d4fd8734ae
       PARENT_RUN: '40283359653'
       PR_RUN: '40284286679'
+      FIX_RUN: '40501216259'
       EXPECTED_ARCH: ${{ matrix.arch }}
       PROCESS_PAIRS: ${{ matrix.pairs }}
     steps:
@@ -99,7 +80,7 @@ jobs:
           assert.equal(pr.head_sha, process.env.PR_HEAD);
           const git = args => execFileSync('git', args, { encoding: 'utf8' }).trim();
           assert.equal(git(['rev-parse', process.env.FIX_HEAD + '^']), process.env.PR_HEAD);
-          fs.writeFileSync('bench-data/provenance.json', JSON.stringify({ parent: parent.head_sha, pr: pr.head_sha, fix: process.env.FIX_HEAD, benchmark: git(['rev-parse', 'HEAD']), parentRun: parent.id, prRun: pr.id, fixRun: process.env.GITHUB_RUN_ID, frontend: '@rspack-canary/core@2.3.0-canary-162dd637-20261023172544', node: process.version, arch: process.arch }, null, 2));
+          fs.writeFileSync('bench-data/provenance.json', JSON.stringify({ parent: parent.head_sha, pr: pr.head_sha, fix: process.env.FIX_HEAD, benchmark: git(['rev-parse', 'HEAD']), parentRun: parent.id, prRun: pr.id, fixRun: process.env.FIX_RUN, frontend: '@rspack-canary/core@2.3.0-canary-162dd637-20261023172544', node: process.version, arch: process.arch }, null, 2));
           NODE
 
       - name: Download parent binding
@@ -125,6 +106,9 @@ jobs:
         with:
           name: bindings-${{ matrix.target }}
           path: bench-data/fix-binding
+          run-id: ${{ env.FIX_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
 
       - name: Pin native checksums
         env:
