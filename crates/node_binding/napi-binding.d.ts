@@ -461,13 +461,16 @@ export declare class NativeTimeInfoEntries {
 
 export declare class NativeWatcher {
   constructor(options: NativeWatcherOptions)
-  watch(files: [Array<string>, Array<string>], directories: [Array<string>, Array<string>], missing: [Array<string>, Array<string>], startTime: bigint, callback: (err: Error | null, result: NativeWatchResult) => void, callbackUndelayed: (event: NativeWatchUndelayedEvent) => void): void
+  watch(files: [Array<string>, Array<string>], directories: [Array<string>, Array<string>], missing: [Array<string>, Array<string>], startTime: bigint, callback: (err: Error | null, result: NativeWatchAggregate) => void, callbackUndelayed: (event: NativeWatchUndelayedEvent) => void): void
   triggerEvent(kind: 'change' | 'remove' | 'create', path: string): void
   close(): Promise<void>
+  /** Accept only a batch still owned by this open native watcher. */
+  accept(ticket: bigint): boolean
+  /** Hand a rejected ticket back to pending. Consumed and closed tickets do nothing. */
+  handBack(ticket: bigint): void
   /**
-   * watchpack's `aggregatedChanges` / `aggregatedRemovals`: the events that
-   * arrived since the last aggregated batch (while paused), read without
-   * draining them.
+   * watchpack's `aggregatedChanges` / `aggregatedRemovals`, including queued
+   * batches not yet accepted, read without draining them.
    */
   peekAggregated(): NativeWatchResult
   /**
@@ -1835,6 +1838,13 @@ export interface NativeTimeInfoEntry {
 export interface NativeTimeInfoTable {
   entries: Array<NativeTimeInfoEntry>
   missing: Array<string>
+}
+
+/** A snapshot of one native-owned batch, answered exactly once by JS. */
+export interface NativeWatchAggregate {
+  changedFiles: Array<string>
+  removedFiles: Array<string>
+  ticket: bigint
 }
 
 export interface NativeWatcherOptions {

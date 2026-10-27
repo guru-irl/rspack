@@ -200,14 +200,20 @@ export default {
 								);
 								events.push(`build:${modified.join(',')}`);
 								record('watchRun', { modified });
-								if (modified.includes('a.js')) {
-									fs.writeFileSync(
-										path.join(directory, 'b.js'),
-										'module.exports = "b-during-build";',
-									);
-									record('save', { file: 'b.js', value: 'b-during-build' });
-									await wait(600);
-								}
+							});
+							single.hooks.afterCompile.tapPromise(CASE_NAME, async () => {
+								if (
+									!singleRecording ||
+									!single.modifiedFiles.has(path.join(directory, 'a.js'))
+								)
+									return;
+								record('afterCompile', { modified: ['a.js'] });
+								fs.writeFileSync(
+									path.join(directory, 'b.js'),
+									'module.exports = "b-during-build";',
+								);
+								record('save', { file: 'b.js', value: 'b-during-build' });
+								await wait(600);
 							});
 						},
 					},
@@ -245,6 +251,14 @@ export default {
 				'build:a.js',
 				'invalid:b.js',
 				'build:b.js',
+			]);
+			expect(builds).toEqual([
+				{ modified: [], values: ['a-new', 'b-new', 'c-new'] },
+				{ modified: ['a.js'], values: ['a-trigger', 'b-new', 'c-new'] },
+				{
+					modified: ['b.js'],
+					values: ['a-trigger', 'b-during-build', 'c-new'],
+				},
 			]);
 		} finally {
 			writer.kill();

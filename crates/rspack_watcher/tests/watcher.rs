@@ -204,6 +204,7 @@ async fn should_report_error_when_watching_after_close() {
       &self,
       _changed_files: rspack_util::fx_hash::FxHashSet<String>,
       _deleted_files: rspack_util::fx_hash::FxHashSet<String>,
+      _ticket: u64,
     ) {
     }
     fn on_error(&self, error: rspack_error::Error) {

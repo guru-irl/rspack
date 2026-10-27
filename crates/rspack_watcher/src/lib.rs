@@ -84,8 +84,14 @@ pub(crate) type EventBatch = Vec<FsEvent>;
 /// This trait is intended to be used with the file system watcher to aggregate events
 /// and handle them in a single place.
 pub trait EventAggregateHandler {
-  /// Handle a batch of file system events.
-  fn on_event_handle(&self, _changed_files: HashSet<String>, _deleted_files: HashSet<String>);
+  /// Handle a batch of file system events. The ticket stays native-owned until
+  /// accepted, handed back, or drained by the consuming getter.
+  fn on_event_handle(
+    &self,
+    _changed_files: HashSet<String>,
+    _deleted_files: HashSet<String>,
+    _ticket: u64,
+  );
 
   /// Handle an error that occurs during file system watching.
   fn on_error(&self, _error: rspack_error::Error) {
@@ -133,6 +139,7 @@ enum WatcherOp {
     event_handler: Box<dyn EventHandler + Send>,
     done: oneshot::Sender<()>,
   },
+  Flush,
   Close {
     done: oneshot::Sender<Result<()>>,
   },
@@ -202,21 +209,45 @@ impl FsWatcher {
     }
   }
 
-  /// watchpack's `aggregatedChanges` / `aggregatedRemovals`: the events that
-  /// arrived since the last aggregated batch, typically while paused. Read,
-  /// not drained, so a caller peeking at them cannot swallow the batch they
-  /// are about to be delivered in.
+  /// watchpack's `aggregatedChanges` / `aggregatedRemovals`, including batches
+  /// queued for JS but not accepted yet. Newer states replace older ones.
   pub fn peek_aggregated(&self) -> (HashSet<String>, HashSet<String>) {
-    let files = self.aggregated.lock().expect("aggregated sets poisoned");
-    (files.changed.clone(), files.deleted.clone())
+    let files = self
+      .aggregated
+      .lock()
+      .expect("aggregated sets poisoned")
+      .peek();
+    (files.changed, files.deleted)
   }
 
   /// [`Self::peek_aggregated`], drained: for the build that folds these events in,
   /// so they are not delivered again as a batch of their own on resume.
   /// Events arriving afterwards are kept.
   pub fn take_aggregated(&self) -> (HashSet<String>, HashSet<String>) {
-    let files = std::mem::take(&mut *self.aggregated.lock().expect("aggregated sets poisoned"));
+    let files = self
+      .aggregated
+      .lock()
+      .expect("aggregated sets poisoned")
+      .take();
     (files.changed, files.deleted)
+  }
+
+  /// Accept a queued batch exactly once. Consumed or returned tickets and
+  /// tickets from a closed watcher cannot be accepted.
+  pub fn accept(&self, ticket: u64) -> bool {
+    self
+      .aggregated
+      .lock()
+      .expect("aggregated sets poisoned")
+      .accept(ticket)
+  }
+
+  /// Return a rejected delivery to pending without replacing newer states.
+  pub fn hand_back(&self, ticket: u64) {
+    let mut files = self.aggregated.lock().expect("aggregated sets poisoned");
+    if files.hand_back(ticket) {
+      let _ = self.op_tx.send(WatcherOp::Flush);
+    }
   }
 
   /// watchpack's `collectTimeInfoEntries`, as `(fileTimestamps, directoryTimestamps)`.
@@ -259,15 +290,23 @@ impl FsWatcher {
   ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     let (done_tx, done_rx) = oneshot::channel();
 
-    let send_result = self.op_tx.send(WatcherOp::Watch {
-      files: (files.0.collect(), files.1.collect()),
-      directories: (directories.0.collect(), directories.1.collect()),
-      missing: (missing.0.collect(), missing.1.collect()),
-      start_time,
-      event_aggregate_handler,
-      event_handler,
-      done: done_tx,
-    });
+    let send_result = {
+      let state = self.aggregated.lock().expect("aggregated sets poisoned");
+      // Resume at submission, not later on the owner. A pause after watch()
+      // returns must remain effective when its registration is installed.
+      if !state.closed {
+        self.paused.store(false, Ordering::Relaxed);
+      }
+      self.op_tx.send(WatcherOp::Watch {
+        files: (files.0.collect(), files.1.collect()),
+        directories: (directories.0.collect(), directories.1.collect()),
+        missing: (missing.0.collect(), missing.1.collect()),
+        start_time,
+        event_aggregate_handler,
+        event_handler,
+        done: done_tx,
+      })
+    };
     if let Err(send_error) = send_result
       && let WatcherOp::Watch {
         event_aggregate_handler,
@@ -285,7 +324,11 @@ impl FsWatcher {
   /// Closes the file system watcher, stopping all background tasks and releasing resources.
   pub fn close(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let (done_tx, done_rx) = oneshot::channel();
-    let submitted = self.op_tx.send(WatcherOp::Close { done: done_tx }).is_ok();
+    let submitted = {
+      let mut files = self.aggregated.lock().expect("aggregated sets poisoned");
+      files.close();
+      self.op_tx.send(WatcherOp::Close { done: done_tx }).is_ok()
+    };
 
     Box::pin(async move {
       if !submitted {
@@ -309,6 +352,7 @@ impl FsWatcher {
 
   /// Pauses the file system watcher, stopping the execution of the event loop.
   pub fn pause(&self) -> Result<()> {
+    let _files = self.aggregated.lock().expect("aggregated sets poisoned");
     self.paused.store(true, Ordering::Relaxed);
 
     Ok(())
@@ -350,6 +394,11 @@ fn spawn_owner_thread(mut inner: FsWatcherInner) -> mpsc::UnboundedSender<Watche
             )
             .await;
           let _ = done.send(());
+        }
+        WatcherOp::Flush => {
+          if !closed {
+            inner.executor.flush_pending();
+          }
         }
         WatcherOp::Close { done } if closed => {
           let _ = done.send(Ok(()));
