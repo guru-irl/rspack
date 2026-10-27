@@ -29,10 +29,12 @@ export default {
       entry,
       output: path.join(root, 'dist', 'retained.txt'),
       barrier: path.join(root, 'barrier'),
+      recoveryBarrier: path.join(root, 'recovery-barrier'),
       hold: false,
       entered: deferred(),
       released: deferred(),
       classified: deferred(),
+      recoveryQueued: deferred(),
     };
     context.setValue('state', state);
     return {
@@ -101,6 +103,10 @@ export default {
             state.classified.resolve();
             return true;
           }
+          if (entry === state.recoveryBarrier) {
+            state.recoveryQueued.resolve();
+            return true;
+          }
           return false;
         },
       },
@@ -132,6 +138,9 @@ export default {
       compiler.watchFileSystem.watcher._onRemove(path.dirname(state.retained));
       compiler.watchFileSystem.watcher._onChange(state.barrier);
       await bounded(state.classified.promise, 'the removal event barrier');
+      // A later batch proves the removal batch has queued its recovery scan.
+      compiler.watchFileSystem.watcher._onChange(state.recoveryBarrier);
+      await bounded(state.recoveryQueued.promise, 'the recovery request barrier');
       fs.mkdirSync(path.dirname(state.retained), { recursive: true });
       fs.writeFileSync(state.retained, 'restored');
       state.released.resolve();
