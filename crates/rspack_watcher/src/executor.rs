@@ -152,6 +152,7 @@ struct AggregateTime {
 /// a configurable aggregate timeout. It receives events from a channel, tracks changed and
 /// deleted files, and coordinates the event handling logic.
 pub struct Executor {
+  pub(crate) timing_id: usize,
   aggregate_timeout: u32,
   rx: ThreadSafetyReceiver<EventBatch>,
   files_data: Aggregated,
@@ -198,6 +199,7 @@ impl Executor {
     let (exec_tx, exec_rx) = mpsc::unbounded_channel::<ExecEvent>();
 
     Self {
+      timing_id: 0,
       start_waiting: false,
       aggregate_running: Arc::new(AtomicBool::new(false)),
       aggregate_time: Arc::new(AggregateTime {
@@ -338,7 +340,7 @@ impl Executor {
       event_aggregate_handler,
       Arc::clone(&self.exec_aggregate_rx),
       Arc::clone(&self.files_data),
-      self.aggregate_timeout as u64,
+      (self.aggregate_timeout as u64, self.timing_id),
       Arc::clone(&self.aggregate_running),
       Arc::clone(&self.aggregate_time),
       Arc::clone(&self.paused),
@@ -389,7 +391,7 @@ fn create_execute_aggregate_task(
   event_handler: Box<dyn EventAggregateHandler + Send>,
   exec_aggregate_rx: ThreadSafetyReceiver<ExecAggregateEvent>,
   files: Aggregated,
-  aggregate_timeout: u64,
+  (aggregate_timeout, timing_id): (u64, usize),
   running: Arc<AtomicBool>,
   aggregate_time: Arc<AggregateTime>,
   paused: Arc<AtomicBool>,
@@ -441,6 +443,20 @@ fn create_execute_aggregate_task(
           continue;
         };
 
+        if crate::timing::enabled() {
+          let emit = std::time::Instant::now();
+          crate::timing::emit(
+            timing_id,
+            format_args!(
+              "phase=aggregate deadline_ms={:.3} emit_ms={:.3} lateness_ms={:.3} changed={} removed={} ticket={ticket}",
+              crate::timing::timestamp(deadline.into_std()),
+              crate::timing::timestamp(emit),
+              crate::timing::ms(emit.saturating_duration_since(deadline.into_std())),
+              batch.changed.len(),
+              batch.deleted.len()
+            ),
+          );
+        }
         event_handler.on_event_handle(batch.changed, batch.deleted, ticket);
         running.store(false, Ordering::Relaxed);
       }

@@ -25,6 +25,7 @@ pub struct WatcherRootAnalyzer {
 
 impl Analyzer for WatcherRootAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
+    let timing = crate::timing::start();
     let (_, added_files, removed_files) = path_accessor.files();
     let (_, added_directories, removed_directories) = path_accessor.directories();
     let (_, added_missing, removed_missing) = path_accessor.missing();
@@ -59,6 +60,7 @@ impl Analyzer for WatcherRootAnalyzer {
             .any(|ancestor| invalidated.paths.contains(&InternedPath::from(ancestor)))
       }));
     }
+    let mut counts = timing.map(|_| (candidates.len(), symlinks.len()));
     for path in symlinks.iter() {
       path_accessor.rescan(path);
     }
@@ -66,6 +68,9 @@ impl Analyzer for WatcherRootAnalyzer {
     let mut ancestors = InternedPathMap::default();
     for path in candidates {
       if is_registered(&path) && has_symlink_ancestor(&path, &mut ancestors) {
+        if let Some((_, count)) = &mut counts {
+          *count += 1;
+        }
         path_accessor.rescan(&path);
         symlinks.insert(path);
       }
@@ -81,6 +86,16 @@ impl Analyzer for WatcherRootAnalyzer {
 
     let common_root = self.path_tree.find_common_root();
 
+    if let Some(start) = timing {
+      let (dirty, symlink_rescans) = counts.unwrap_or_default();
+      crate::timing::emit(
+        path_accessor.timing_id(),
+        format_args!(
+          "phase=analyze backend=root duration_ms={:.3} dirty={dirty} symlink_rescans={symlink_rescans}",
+          crate::timing::ms(start.elapsed())
+        ),
+      );
+    }
     match common_root {
       Some(root) => vec![WatchPattern {
         path: root,
