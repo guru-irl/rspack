@@ -1,0 +1,94 @@
+name: Chunk-list rebuild cost
+on:
+  push:
+    branches: [bench/incremental-chunk-list-cost]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BASE_SHA: 8c6d9dd112ddaf42ab29902f021f264db793e38f
+      CANDIDATE_SHA: 0e48d102bcc8ad0b9f671615b047398faa929371
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+      RAYON_NUM_THREADS: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Prepare evidence paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COST_ROOT="$GITHUB_WORKSPACE/bench-results/chunk-list-cost"
+          mkdir -p "$COST_ROOT/tmp"
+          cp scripts/bench/chunk-list-cost.cjs scripts/bench/chunk-list-summary.py "$COST_ROOT/"
+          echo "COST_ROOT=$COST_ROOT" >> "$GITHUB_ENV"
+          echo "TMPDIR=$COST_ROOT/tmp" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$COST_ROOT/target" >> "$GITHUB_ENV"
+          git fetch origin "$BASE_SHA" "$CANDIDATE_SHA"
+          git checkout --detach "$BASE_SHA"
+          df -h .
+          nproc
+      - uses: ./.github/actions/pnpm/setup
+      - uses: ./.github/actions/rustup
+        with:
+          key: chunk-list-cost
+          use-cache: false
+      - name: Build matched optimized bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile > "$COST_ROOT/install.log" 2>&1
+          pnpm --filter @rspack/binding run build:ci > "$COST_ROOT/build-base.log" 2>&1
+          cp crates/node_binding/rspack.linux-x64-gnu.node "$COST_ROOT/base.node"
+          pnpm run build:js > "$COST_ROOT/build-js.log" 2>&1
+          git checkout --detach "$CANDIDATE_SHA"
+          pnpm --filter @rspack/binding run build:ci > "$COST_ROOT/build-fix.log" 2>&1
+          grep 'Compiling rspack_core' "$COST_ROOT/build-fix.log"
+          cp crates/node_binding/rspack.linux-x64-gnu.node "$COST_ROOT/fix.node"
+          sha256sum "$COST_ROOT/base.node" "$COST_ROOT/fix.node" > "$COST_ROOT/native-sha256.txt"
+          test "$(sha256sum "$COST_ROOT/base.node" | cut -d ' ' -f1)" != "$(sha256sum "$COST_ROOT/fix.node" | cut -d ' ' -f1)"
+          df -h .
+      - name: Identity controls and alternating pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arm in base fix; do
+            cp "$COST_ROOT/$arm.node" crates/node_binding/rspack.linux-x64-gnu.node
+            export EXPECTED_NATIVE_SHA256
+            EXPECTED_NATIVE_SHA256=$(sha256sum "$COST_ROOT/$arm.node" | cut -d ' ' -f1)
+            if EXPECTED_NATIVE_SHA256=wrong node "$COST_ROOT/chunk-list-cost.cjs" identity > "$COST_ROOT/negative-$arm.log" 2>&1; then
+              echo 'The wrong native hash was accepted'; exit 3
+            fi
+            node "$COST_ROOT/chunk-list-cost.cjs" identity > "$COST_ROOT/positive-$arm.json"
+          done
+          for COST_PAIR in 0 1 2 3 4 5 6; do
+            export COST_PAIR
+            if (( COST_PAIR % 2 == 0 )); then order='base fix'; else order='fix base'; fi
+            for COST_ARM in $order; do
+              export COST_ARM
+              cp "$COST_ROOT/$COST_ARM.node" crates/node_binding/rspack.linux-x64-gnu.node
+              export EXPECTED_NATIVE_SHA256
+              EXPECTED_NATIVE_SHA256=$(sha256sum "$COST_ROOT/$COST_ARM.node" | cut -d ' ' -f1)
+              for kind in steady crossing; do
+                node --expose-gc "$COST_ROOT/chunk-list-cost.cjs" "$kind" > "$COST_ROOT/$COST_PAIR-$COST_ARM-$kind.json"
+                cat "$COST_ROOT/$COST_PAIR-$COST_ARM-$kind.json" >> "$COST_ROOT/results.jsonl"
+              done
+            done
+          done
+          python3 "$COST_ROOT/chunk-list-summary.py" "$COST_ROOT/results.jsonl" "$COST_ROOT/summary.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chunk-list-cost
+          path: |
+            bench-results/chunk-list-cost/*.log
+            bench-results/chunk-list-cost/*.json
+            bench-results/chunk-list-cost/*.jsonl
+            bench-results/chunk-list-cost/*.txt
+            bench-results/chunk-list-cost/*.cjs
+            bench-results/chunk-list-cost/*.py
