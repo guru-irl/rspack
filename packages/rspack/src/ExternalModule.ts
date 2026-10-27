@@ -3,13 +3,14 @@ import * as liteTapable from '@rspack/lite-tapable';
 import type { Source } from 'webpack-sources';
 import type { Chunk } from './Chunk';
 import { type Compilation, getOrCreateCompilationHooks } from './Compilation';
+import { defineCoreModuleProperty } from './util/moduleObjectShapeState';
 import { SourceAdapter } from './util/source';
 import {
   COMPILATION_HOOKS_MAP_SYMBOL,
   MODULE_IDENTIFIER_SYMBOL,
 } from './util/symbols';
 
-Object.defineProperty(binding.ExternalModule.prototype, 'identifier', {
+defineCoreModuleProperty(binding.ExternalModule.prototype, 'identifier', {
   enumerable: true,
   configurable: true,
   value(this: binding.ExternalModule): string {
@@ -17,7 +18,7 @@ Object.defineProperty(binding.ExternalModule.prototype, 'identifier', {
     return this[MODULE_IDENTIFIER_SYMBOL];
   },
 });
-Object.defineProperty(binding.ExternalModule.prototype, 'originalSource', {
+defineCoreModuleProperty(binding.ExternalModule.prototype, 'originalSource', {
   enumerable: true,
   configurable: true,
   value(this: binding.ExternalModule) {
@@ -28,7 +29,7 @@ Object.defineProperty(binding.ExternalModule.prototype, 'originalSource', {
     return null;
   },
 });
-Object.defineProperty(binding.ExternalModule.prototype, 'emitFile', {
+defineCoreModuleProperty(binding.ExternalModule.prototype, 'emitFile', {
   enumerable: true,
   configurable: true,
   value(

@@ -1,9 +1,10 @@
 import binding from '@rspack/binding';
 import type { Source } from 'webpack-sources';
+import { defineCoreModuleProperty } from './util/moduleObjectShapeState';
 import { SourceAdapter } from './util/source';
 import { MODULE_IDENTIFIER_SYMBOL } from './util/symbols';
 
-Object.defineProperty(binding.ContextModule.prototype, 'identifier', {
+defineCoreModuleProperty(binding.ContextModule.prototype, 'identifier', {
   enumerable: true,
   configurable: true,
   value(this: binding.Module): string {
@@ -11,7 +12,7 @@ Object.defineProperty(binding.ContextModule.prototype, 'identifier', {
     return this[MODULE_IDENTIFIER_SYMBOL];
   },
 });
-Object.defineProperty(binding.ContextModule.prototype, 'originalSource', {
+defineCoreModuleProperty(binding.ContextModule.prototype, 'originalSource', {
   enumerable: true,
   configurable: true,
   value(this: binding.ContextModule) {
@@ -22,7 +23,7 @@ Object.defineProperty(binding.ContextModule.prototype, 'originalSource', {
     return null;
   },
 });
-Object.defineProperty(binding.ContextModule.prototype, 'emitFile', {
+defineCoreModuleProperty(binding.ContextModule.prototype, 'emitFile', {
   enumerable: true,
   configurable: true,
   value(

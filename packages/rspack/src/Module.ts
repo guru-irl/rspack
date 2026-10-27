@@ -1,6 +1,7 @@
 import binding, { type AssetInfo } from '@rspack/binding';
 import type { Source } from 'webpack-sources';
 import type { ResourceData } from './Resolver';
+import { defineCoreModuleProperty } from './util/moduleObjectShapeState';
 import { SourceAdapter } from './util/source';
 // patch buildInfo
 import './BuildInfo';
@@ -169,7 +170,7 @@ export class ContextModuleFactoryAfterResolveData {
 export type ContextModuleFactoryAfterResolveResult =
   false | ContextModuleFactoryAfterResolveData;
 
-Object.defineProperty(binding.Module.prototype, 'identifier', {
+defineCoreModuleProperty(binding.Module.prototype, 'identifier', {
   enumerable: true,
   configurable: true,
   value(this: binding.Module): string {
@@ -177,7 +178,7 @@ Object.defineProperty(binding.Module.prototype, 'identifier', {
     return this[MODULE_IDENTIFIER_SYMBOL];
   },
 });
-Object.defineProperty(binding.Module.prototype, 'originalSource', {
+defineCoreModuleProperty(binding.Module.prototype, 'originalSource', {
   enumerable: true,
   configurable: true,
   value(this: binding.Module) {
@@ -188,7 +189,7 @@ Object.defineProperty(binding.Module.prototype, 'originalSource', {
     return null;
   },
 });
-Object.defineProperty(binding.Module.prototype, 'emitFile', {
+defineCoreModuleProperty(binding.Module.prototype, 'emitFile', {
   enumerable: true,
   configurable: true,
   value(

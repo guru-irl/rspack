@@ -4,13 +4,14 @@ import type { Source } from 'webpack-sources';
 import { type Compilation, getOrCreateCompilationHooks } from './Compilation';
 import type { LoaderContext } from './config';
 import type { Module } from './Module';
+import { defineCoreModuleProperty } from './util/moduleObjectShapeState';
 import { SourceAdapter } from './util/source';
 import {
   COMPILATION_HOOKS_MAP_SYMBOL,
   MODULE_IDENTIFIER_SYMBOL,
 } from './util/symbols';
 
-Object.defineProperty(binding.NormalModule.prototype, 'identifier', {
+defineCoreModuleProperty(binding.NormalModule.prototype, 'identifier', {
   enumerable: true,
   configurable: true,
   value(this: binding.NormalModule): string {
@@ -18,7 +19,7 @@ Object.defineProperty(binding.NormalModule.prototype, 'identifier', {
     return this[MODULE_IDENTIFIER_SYMBOL];
   },
 });
-Object.defineProperty(binding.NormalModule.prototype, 'originalSource', {
+defineCoreModuleProperty(binding.NormalModule.prototype, 'originalSource', {
   enumerable: true,
   configurable: true,
   value(this: binding.NormalModule) {
@@ -29,7 +30,7 @@ Object.defineProperty(binding.NormalModule.prototype, 'originalSource', {
     return null;
   },
 });
-Object.defineProperty(binding.NormalModule.prototype, 'emitFile', {
+defineCoreModuleProperty(binding.NormalModule.prototype, 'emitFile', {
   enumerable: true,
   configurable: true,
   value(
