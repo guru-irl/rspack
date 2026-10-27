@@ -1,12 +1,17 @@
 #![allow(unused)]
-use std::ops::Deref;
+use std::{ops::Deref, sync::Mutex};
 
 use dashmap::DashSet as HashSet;
-use rspack_paths::{InternedPath, InternedPathDashMap, InternedPathDashSet, InternedPathSet};
+use rspack_paths::{
+  InternedPath, InternedPathDashMap, InternedPathDashSet, InternedPathMap, InternedPathSet,
+};
 use rspack_util::fx_hash::FxDashMap as HashMap;
 
-use super::{Analyzer, WatchPattern};
-use crate::paths::PathAccessor;
+use super::{
+  Analyzer, WatchPattern,
+  directories::{InvalidatedPaths, has_symlink_ancestor},
+};
+use crate::{path_prefixes::PathPrefixes, paths::PathAccessor};
 
 #[derive(Default)]
 /// The `WatcherRootAnalyzer` is an implementation of the `Analyzer` trait that
@@ -14,28 +19,74 @@ use crate::paths::PathAccessor;
 /// path to be watched.
 pub struct WatcherRootAnalyzer {
   path_tree: PathTree,
+  root: Mutex<Option<InternedPath>>,
+  symlink_dependent_paths: Mutex<InternedPathSet>,
+  invalidated: Mutex<InvalidatedPaths>,
 }
 
 impl Analyzer for WatcherRootAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
-    let (_, added_files, removed_files) = path_accessor.files();
-    let (_, added_directories, removed_directories) = path_accessor.directories();
-    let (_, added_missing, removed_missing) = path_accessor.missing();
+    let (_, _, removed_files) = path_accessor.files();
+    let (_, _, removed_directories) = path_accessor.directories();
+    let (_, _, removed_missing) = path_accessor.missing();
+    let added = path_accessor.take_insertions();
 
-    // files / directories / missing share one `path_tree`. On recovery a path
-    // can migrate between sets within a single cycle (e.g. the unresolved
-    // dependency `node_modules/some-module` becomes a real directory): it then
-    // shows up in one set's `added` and another set's `removed`. Applying each
-    // set's delta independently lets the stray `removed` delete a node the other
-    // set still references — orphaning its children and disconnecting the tree.
-    // Merge the three sets first, then cancel migrating paths out of both nets.
-    let adds = union3(added_files, added_directories, added_missing);
-    let removes = union3(removed_files, removed_directories, removed_missing);
-    let added = difference(&adds, &removes);
-    let removed = difference(&removes, &adds);
+    let is_registered = |path: &InternedPath| {
+      path_accessor.files().0.contains(path)
+        || path_accessor.directories().0.contains(path)
+        || path_accessor.missing().0.contains(path)
+    };
+    let mut symlinks = self
+      .symlink_dependent_paths
+      .lock()
+      .expect("symlink paths lock poisoned");
+    let mut candidates: Vec<_> = added
+      .iter()
+      .map(|path| path.clone())
+      .chain(symlinks.iter().cloned())
+      .collect();
+    let invalidated = std::mem::take(
+      &mut *self
+        .invalidated
+        .lock()
+        .expect("root invalidation lock poisoned"),
+    );
+    if invalidated.all || !invalidated.paths.is_empty() {
+      let mut paths = invalidated.paths.into_iter().collect();
+      let prefixes = PathPrefixes::new(&mut paths);
+      candidates.extend(
+        path_accessor
+          .all()
+          .filter(|path| invalidated.all || prefixes.contains(path.as_path())),
+      );
+    }
+    for path in symlinks.iter() {
+      path_accessor.rescan(path);
+    }
+    symlinks.clear();
+    let mut ancestors = InternedPathMap::default();
+    for path in candidates {
+      if is_registered(&path) && has_symlink_ancestor(&path, &mut ancestors) {
+        path_accessor.rescan(&path);
+        symlinks.insert(path);
+      }
+    }
+
+    // The tree is shared by all categories. A removal must not drop a path
+    // still held by another category, even if it was not newly added there.
+    let removed = union3(removed_files, removed_directories, removed_missing);
+    added.retain(is_registered);
+    removed.retain(|path| !is_registered(path));
     self.path_tree.update_paths(&added, &removed);
 
     let common_root = self.path_tree.find_common_root();
+    let mut previous_root = self.root.lock().expect("root lock poisoned");
+    if *previous_root != common_root {
+      for path in path_accessor.all() {
+        path_accessor.rescan(&path);
+      }
+      *previous_root = common_root.clone();
+    }
 
     match common_root {
       Some(root) => vec![WatchPattern {
@@ -44,6 +95,31 @@ impl Analyzer for WatcherRootAnalyzer {
       }],
       None => vec![],
     }
+  }
+
+  fn invalidate_path(&self, path: &InternedPath) {
+    match path.symlink_metadata() {
+      Ok(metadata) if !metadata.file_type().is_symlink() => return,
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+      _ => {}
+    }
+    // Existing symlink dependencies are rechecked every cycle. Only a new
+    // symlink, or uncertain metadata, needs a prefix search of registrations.
+    self
+      .invalidated
+      .lock()
+      .expect("root invalidation lock poisoned")
+      .invalidate_path(path);
+  }
+
+  fn invalidate_all(&self) {
+    *self
+      .invalidated
+      .lock()
+      .expect("root invalidation lock poisoned") = InvalidatedPaths {
+      all: true,
+      ..Default::default()
+    };
   }
 }
 
@@ -56,17 +132,6 @@ fn union3(
   let out = InternedPathDashSet::default();
   for set in [a, b, c] {
     for path in set.iter() {
-      out.insert(path.deref().clone());
-    }
-  }
-  out
-}
-
-/// Set difference `a - b` into a fresh set.
-fn difference(a: &InternedPathDashSet, b: &InternedPathDashSet) -> InternedPathDashSet {
-  let out = InternedPathDashSet::default();
-  for path in a.iter() {
-    if !b.contains(path.deref()) {
       out.insert(path.deref().clone());
     }
   }
@@ -117,19 +182,33 @@ impl PathTree {
   }
 
   pub fn add_path(&self, path: &InternedPath) {
-    self.inner.entry(path.clone()).or_default();
+    self.inner.entry(path.clone()).or_default().registered = true;
     self.add_path_recursive(path);
   }
 
   pub fn remove_path(&self, path: &InternedPath) {
-    self.inner.remove(path);
-    // Detach from the PARENT's child set. The previous code removed `path` from
-    // its own set (a no-op), leaving a stale child reference on the parent that
-    // could later surface as a tree node that no longer exists.
-    if let Some(parent) = path.parent().map(InternedPath::from)
-      && let Some(mut parent_node) = self.inner.get_mut(&parent)
-    {
-      parent_node.children.remove(path);
+    let remove = self.inner.get_mut(path).is_some_and(|mut node| {
+      node.registered = false;
+      node.children.is_empty()
+    });
+    if !remove {
+      return;
+    }
+
+    let mut path = path.clone();
+    loop {
+      self.inner.remove(&path);
+      let Some(parent) = path.parent().map(InternedPath::from) else {
+        break;
+      };
+      let prune = self.inner.get_mut(&parent).is_some_and(|mut node| {
+        node.children.remove(&path);
+        !node.registered && node.children.is_empty()
+      });
+      if !prune {
+        break;
+      }
+      path = parent;
     }
   }
 
@@ -172,6 +251,8 @@ impl PathTree {
 
 #[derive(Debug, Default)]
 struct TreeNode {
+  // Structural ancestors stay attached while any registered child needs them.
+  registered: bool,
   children: InternedPathSet,
 }
 
@@ -265,13 +346,8 @@ mod tests {
     tree.remove_path(&leaf);
     assert!(!tree.inner.contains_key(&leaf));
     assert!(
-      !tree
-        .inner
-        .get(&dir)
-        .expect("a present")
-        .children
-        .contains(&leaf),
-      "leaf must be detached from its parent's children"
+      !tree.inner.contains_key(&dir),
+      "unregistered empty ancestors must be pruned"
     );
   }
 

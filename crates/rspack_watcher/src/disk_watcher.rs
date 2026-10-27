@@ -157,10 +157,7 @@ impl DiskWatcher {
 
   /// Register before reading a directory, so a file is found either by the scan
   /// or by its live event. The caller has already applied the ignored filter.
-  pub(crate) fn watch_context_directory(
-    &mut self,
-    path: &InternedPath,
-  ) -> rspack_error::Result<()> {
+  pub(crate) fn watch_context_directory(&mut self, path: &InternedPath) -> notify::Result<()> {
     if self.inner.is_none() {
       return Ok(());
     }
@@ -175,11 +172,7 @@ impl DiskWatcher {
     });
     if !covered {
       if let Some(watcher) = &mut self.inner {
-        watcher
-          .watch(path, notify::RecursiveMode::NonRecursive)
-          .map_err(|error| {
-            rspack_error::error!("failed to watch context directory {path:?}: {error}")
-          })?;
+        watcher.watch(path, notify::RecursiveMode::NonRecursive)?;
       }
       self.watch_patterns.insert(WatchPattern {
         path: path.clone(),
@@ -236,7 +229,7 @@ pub(crate) fn handle_event(event: Event, trigger: &trigger::Trigger) {
   );
 
   if event.need_rescan() {
-    trigger.analyzer.invalidate_all();
+    trigger.request_rescan();
   }
   if event.paths.is_empty() {
     return;

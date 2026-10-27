@@ -5,7 +5,7 @@ use rspack_paths::{InternedPath, InternedPathMap, InternedPathSet};
 use rspack_util::fx_hash::FxHashMap;
 
 use super::{Analyzer, WatchPattern};
-use crate::paths::PathAccessor;
+use crate::{path_prefixes::PathPrefixes, paths::PathAccessor};
 
 /// `WatcherDirectoriesAnalyzer` analyzes the path register and determines
 ///
@@ -19,9 +19,25 @@ pub struct WatcherDirectoriesAnalyzer {
 }
 
 #[derive(Default)]
-struct InvalidatedPaths {
-  paths: InternedPathSet,
-  all: bool,
+pub(super) struct InvalidatedPaths {
+  pub(super) paths: InternedPathSet,
+  pub(super) all: bool,
+}
+
+impl InvalidatedPaths {
+  pub(super) fn invalidate_path(&mut self, path: &InternedPath) {
+    if self.all {
+      return;
+    }
+    self.paths.insert(path.clone());
+    // Filtered events may never trigger another analyze, so bound retained path names.
+    if self.paths.len() >= MAX_INVALIDATED_PATHS {
+      *self = Self {
+        all: true,
+        ..Default::default()
+      };
+    }
+  }
 }
 
 #[derive(Default)]
@@ -33,6 +49,8 @@ struct DirectoryAnalyzerState {
 
 impl Analyzer for WatcherDirectoriesAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    path_accessor.take_insertions();
     let mut state = self.state.lock().expect("directory analyzer lock poisoned");
     let invalidated = std::mem::take(
       &mut *self
@@ -47,6 +65,9 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     ];
     let is_registered =
       |path: &InternedPath| subscriptions.iter().any(|(all, _, _)| all.contains(path));
+    for path in &state.symlink_dependent_paths {
+      path_accessor.rescan(path);
+    }
     let mut dirty = state.symlink_dependent_paths.clone();
     for (_, added, removed) in subscriptions {
       dirty.extend(added.iter().map(|path| path.clone()));
@@ -57,12 +78,10 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
       }
     }
     if invalidated.all || !invalidated.paths.is_empty() {
+      let mut paths = invalidated.paths.into_iter().collect();
+      let prefixes = PathPrefixes::new(&mut paths);
       for path in path_accessor.all() {
-        if invalidated.all
-          || path
-            .ancestors()
-            .any(|ancestor| invalidated.paths.contains(&InternedPath::from(ancestor)))
-        {
+        if invalidated.all || prefixes.contains(path.as_path()) {
           dirty.insert(path);
         }
       }
@@ -72,23 +91,21 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     let mut symlink_ancestors = InternedPathMap::default();
     for path in dirty {
       state.symlink_dependent_paths.remove(&path);
-      if let Some(Some(pattern)) = state.paths.remove(&path) {
-        let count = state.patterns.get_mut(&pattern).expect("watch requirement");
+      let previous = state.paths.remove(&path);
+      if let Some(Some(pattern)) = &previous {
+        let count = state.patterns.get_mut(pattern).expect("watch requirement");
         *count -= 1;
         if *count == 0 {
-          state.patterns.remove(&pattern);
+          state.patterns.remove(pattern);
         }
       }
       if is_registered(&path) {
         let pattern =
           find_existing_directory(path.clone(), &mut resolutions, &mut symlink_ancestors).map(
             |(dir, depth, recheck, non_directory_symlink)| {
-              if recheck
-                || (non_directory_symlink
-                  && (path_accessor.directories().0.contains(&path)
-                    || path_accessor.missing().0.contains(&path)))
-              {
+              if recheck || non_directory_symlink {
                 state.symlink_dependent_paths.insert(path.clone());
+                path_accessor.rescan(&path);
               }
               WatchPattern {
                 path: dir,
@@ -100,6 +117,12 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
               }
             },
           );
+        if previous
+          .as_ref()
+          .is_some_and(|previous| previous != &pattern)
+        {
+          path_accessor.rescan(&path);
+        }
         if let Some(pattern) = &pattern {
           *state.patterns.entry(pattern.clone()).or_default() += 1;
         }
@@ -110,21 +133,11 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
   }
 
   fn invalidate_path(&self, path: &InternedPath) {
-    let mut invalidated = self
+    self
       .invalidated
       .lock()
-      .expect("directory invalidation lock poisoned");
-    if invalidated.all {
-      return;
-    }
-    invalidated.paths.insert(path.clone());
-    // Filtered events may never trigger another analyze, so bound retained path names.
-    if invalidated.paths.len() >= MAX_INVALIDATED_PATHS {
-      *invalidated = InvalidatedPaths {
-        all: true,
-        ..Default::default()
-      };
-    }
+      .expect("directory invalidation lock poisoned")
+      .invalidate_path(path);
   }
 
   fn invalidate_all(&self) {
@@ -179,7 +192,7 @@ fn find_existing_directory(
   resolution
 }
 
-fn has_symlink_ancestor(
+pub(super) fn has_symlink_ancestor(
   path: &InternedPath,
   symlink_ancestors: &mut InternedPathMap<bool>,
 ) -> bool {

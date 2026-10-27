@@ -117,6 +117,7 @@ struct EventProcessor {
 pub struct Trigger {
   pending: UnboundedSender<(InternedPath, FsEventKind, Origin)>,
   pub(crate) analyzer: Arc<RecommendedAnalyzer>,
+  path_manager: Arc<PathManager>,
 }
 
 /// Where an event comes from.
@@ -137,7 +138,7 @@ impl Trigger {
     let (pending, mut incoming) = unbounded_channel::<(InternedPath, FsEventKind, Origin)>();
     let analyzer = Arc::default();
     let processor = EventProcessor {
-      path_manager,
+      path_manager: Arc::clone(&path_manager),
       tx,
       analyzer: Arc::clone(&analyzer),
     };
@@ -156,14 +157,42 @@ impl Trigger {
           .expect("create watcher event filter runtime");
 
         runtime.block_on(async move {
-          while let Some((path, kind, origin)) = incoming.recv().await {
-            processor.process(&path, kind, origin).await;
+          let mut batch = Vec::new();
+          while incoming.recv_many(&mut batch, 256).await != 0 {
+            let mut events = Vec::new();
+            let mut deleted = Vec::new();
+            let mut dispatch = false;
+            for (path, kind, origin) in &batch {
+              if let Some(mut next) = processor.process(path, *kind, *origin, &mut deleted).await {
+                dispatch = true;
+                if events.is_empty() {
+                  events = next;
+                } else {
+                  events.append(&mut next);
+                }
+              }
+            }
+            batch.clear();
+            // Recovery is queued before this batch can start another build.
+            processor.path_manager.request_deleted_scans(deleted);
+            if dispatch {
+              processor.trigger_events(events);
+            }
           }
         });
       })
       .expect("spawn watcher event filter thread");
 
-    Self { pending, analyzer }
+    Self {
+      pending,
+      analyzer,
+      path_manager,
+    }
+  }
+
+  pub(crate) fn request_rescan(&self) {
+    self.path_manager.request_rescan();
+    self.analyzer.invalidate_all();
   }
 
   /// Hands a raw event to the filter thread. Never blocks — this runs straight
@@ -224,15 +253,22 @@ impl EventProcessor {
   /// If the file `/path/to/file.js` is changed, the trigger will send an event for the following paths:
   /// - `/path`
   /// - `/path/to`
-  async fn process(&self, path: &InternedPath, kind: FsEventKind, origin: Origin) {
+  async fn process(
+    &self,
+    path: &InternedPath,
+    kind: FsEventKind,
+    origin: Origin,
+    deleted: &mut Vec<InternedPath>,
+  ) -> Option<Vec<(InternedPath, FsEventKind)>> {
     let appeared = matches!(origin, Origin::Disk { appeared: true });
+    let observed_deletion = matches!(origin, Origin::Disk { .. });
     // Drop events inside ignored subtrees. The recursive-root watch delivers
     // events for unregistered paths (e.g. the build-output dir); left through,
     // `find_associated_event` bubbles them to a registered parent and triggers
     // a spurious rebuild.
     // A scan's event was filtered when the scan found the path.
     if !matches!(origin, Origin::Scan) && self.path_manager.is_ignored_path(path.as_ref()).await {
-      return;
+      return None;
     }
 
     // A watched path that no longer exists on disk is a removal, regardless of
@@ -260,6 +296,9 @@ impl EventProcessor {
     // removals, so its descendants' records go with it. Only a path that can
     // hold records is swept, so deleting many unrelated files stays cheap.
     if removed || kind == FsEventKind::Remove {
+      if observed_deletion {
+        deleted.push(path.clone());
+      }
       let may_contain_records = self.path_manager.may_contain_records(path);
       self.path_manager.remove_file_time(path);
       if may_contain_records {
@@ -281,7 +320,7 @@ impl EventProcessor {
       && !self.path_manager.has_mtime_changed(path)
       && !matches!(origin, Origin::Scan)
     {
-      return;
+      return None;
     }
 
     if kind != FsEventKind::Remove
@@ -290,7 +329,7 @@ impl EventProcessor {
         .set_context_entry(path, matches!(origin, Origin::Scan) || is_watched_path)
         .await
     {
-      return;
+      return None;
     }
     self.path_manager.set_last_watch_events(path);
 
@@ -305,6 +344,9 @@ impl EventProcessor {
         && std::fs::symlink_metadata(&*associated).is_err()
       {
         *associated_kind = FsEventKind::Remove;
+        if observed_deletion {
+          deleted.push(associated.clone());
+        }
         self.analyzer.invalidate_path(associated);
         let may_contain_records = self.path_manager.may_contain_records(associated);
         self.path_manager.remove_file_time(associated);
@@ -365,7 +407,7 @@ impl EventProcessor {
         self.analyzer.invalidate_path(associated);
       }
     }
-    self.trigger_events(associated_event);
+    Some(associated_event)
   }
   /// Helper to construct a `DependencyFinder` for the current path register state.
   fn finder(&self) -> DependencyFinder<'_> {

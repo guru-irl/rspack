@@ -4,6 +4,7 @@ mod canonical_watcher;
 mod disk_watcher;
 mod executor;
 mod ignored;
+mod path_prefixes;
 mod paths;
 mod scanner;
 mod trigger;
@@ -392,6 +393,7 @@ impl FsWatcherInner {
       .wait_for_event(files, directories, missing, start_time)
       .await
     {
+      self.path_manager.request_rescan();
       event_aggregate_handler.on_error(e);
       return;
     };

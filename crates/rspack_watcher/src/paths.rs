@@ -3,7 +3,10 @@ use std::{
   fmt::Debug,
   ops::Deref,
   path::{Path, PathBuf},
-  sync::{Mutex, OnceLock, Weak},
+  sync::{
+    Mutex, OnceLock, Weak,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+  },
   time::SystemTime,
 };
 
@@ -11,14 +14,29 @@ use dashmap::setref::multiple::RefMulti;
 use rspack_error::Result;
 use rspack_paths::{InternedPath, InternedPathDashMap, InternedPathDashSet, InternedPathSet};
 use rspack_util::{
-  fx_hash::FxHashMap,
+  fx_hash::{FxDashMap, FxHashMap},
   time::{current_time, fs_accuracy, mtime_accuracy, mtime_safe_time, system_time_to_millis},
 };
 
 use super::{
-  FsWatcherIgnored, TimeInfoEntries, TimeInfoEntry, disk_watcher::DiskWatcher,
+  FsWatcherIgnored, TimeInfoEntries, TimeInfoEntry,
+  disk_watcher::DiskWatcher,
   ignored::IgnoredMatcher,
+  path_prefixes::{PathPrefixes, collapse_paths},
 };
+
+fn is_normalized(path: &InternedPath) -> bool {
+  let normalized = path.components().collect::<PathBuf>();
+  #[cfg(target_os = "windows")]
+  {
+    // Interned Windows keys already use Path's separator-insensitive equality.
+    path.as_path() == normalized.as_path()
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    path.as_os_str() == normalized.as_os_str()
+  }
+}
 
 /// An iterator that chains together references to all files, directories, and missing paths
 /// stored in the [`PathTracker`]. This allows iteration over all registered paths as a single sequence.
@@ -110,6 +128,30 @@ impl<'a> PathAccessor<'a> {
     )
   }
 
+  /// Consume true insertions without treating recovery scans as registrations.
+  pub fn take_insertions(&self) -> InternedPathDashSet {
+    let inserted = InternedPathDashSet::default();
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    for tracker in [self.files, self.directories, self.missing] {
+      let pending: Vec<_> = tracker.inserted.iter().map(|path| path.clone()).collect();
+      for path in pending {
+        if tracker.inserted.remove(&path).is_some() && tracker.all.contains(&path) {
+          inserted.insert(path);
+        }
+      }
+    }
+    inserted
+  }
+
+  /// Rescan a registration whose native watch coverage may have changed.
+  pub fn rescan(&self, path: &InternedPath) {
+    for tracker in [self.files, self.directories, self.missing] {
+      if tracker.all.contains(path) {
+        tracker.added.insert(path.clone());
+      }
+    }
+  }
+
   /// Returns an iterator that combines all files, directories, and missing paths into a single sequence.
   pub fn all(&self) -> impl Iterator<Item = InternedPath> + '_ {
     All::new(&self.files.all, &self.directories.all, &self.missing.all)
@@ -193,10 +235,11 @@ impl PathUpdater {
 #[derive(Debug, Default)]
 /// `PathTracker` is responsible for tracking the state of file system paths for the watcher.
 ///
-/// It maintains three sets:
-/// - `added`: Paths that have been recently added and are being watched.
+/// It maintains registration deltas and scan recovery work:
+/// - `added`: New registrations or recovery scans for the current watch cycle.
 /// - `removed`: Paths that have been removed from watching.
 /// - `all`: All currently watched paths.
+/// - `pending_scan`: Recovery scans retained for the next watch cycle.
 ///
 /// This struct enables efficient updates and queries for the file system watcher,
 /// ensuring that changes to the set of watched paths are tracked and managed correctly.
@@ -204,6 +247,11 @@ struct PathTracker {
   added: InternedPathDashSet,
   removed: InternedPathDashSet,
   all: InternedPathDashSet,
+  /// True insertions not yet consumed by the recursive-root analyzer.
+  #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+  inserted: InternedPathDashSet,
+  /// Recovery work that must survive the next watch cycle's reset.
+  pending_scan: InternedPathDashSet,
 }
 
 impl PathTracker {
@@ -214,8 +262,30 @@ impl PathTracker {
 
   /// Adds a path to the tracker; whether it was not tracked before.
   fn add(&self, path: InternedPath) -> bool {
-    self.added.insert(path.clone());
-    self.all.insert(path)
+    if self.all.insert(path.clone()) {
+      #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+      self.inserted.insert(path.clone());
+      self.added.insert(path);
+      true
+    } else {
+      false
+    }
+  }
+
+  fn apply_pending_scans(&self, all: bool) {
+    if all {
+      for path in self.all.iter() {
+        self.added.insert(path.clone());
+      }
+    }
+    let pending: Vec<_> = self.pending_scan.iter().map(|path| path.clone()).collect();
+    for path in pending {
+      // Move the request into this cycle. A later request stays pending.
+      // A failed watch application requests a full rescan for the next cycle.
+      if self.pending_scan.remove(&path).is_some() && self.all.contains(&path) {
+        self.added.insert(path);
+      }
+    }
   }
 
   /// Removes a path from the tracker; whether it was tracked.
@@ -276,12 +346,28 @@ impl FileTime {
   }
 }
 
+#[derive(PartialEq, Eq)]
+enum ContextWatchErrorKind {
+  Io(std::io::ErrorKind),
+  Notify(std::mem::Discriminant<notify::ErrorKind>),
+}
+
+struct ContextWatchFailure {
+  cycle: usize,
+  kind: ContextWatchErrorKind,
+}
+
 /// `PathManager` is responsible for managing the set of files, directories, and missing paths.
 #[derive(Default)]
 pub(crate) struct PathManager {
   files: PathTracker,
   directories: PathTracker,
   missing: PathTracker,
+  /// An overflow has no affected subtree. Scan every registration once.
+  rescan_all: AtomicBool,
+  watch_cycle: AtomicUsize,
+  /// Only failed extra context watches, keyed by component-normalized paths.
+  context_watch_failures: FxDashMap<PathBuf, ContextWatchFailure>,
   ignored: IgnoredMatcher,
   /// watchpack's `files` map: the last observation of each registered file,
   /// each registered-missing path found on disk, and each file found below a
@@ -312,6 +398,8 @@ pub(crate) struct PathManager {
   /// counts the registrations directly in it plus its subdirectories here,
   /// and goes once that count is back to zero.
   registered_ancestors: InternedPathDashMap<usize>,
+  /// Raw spellings that cannot use normalized membership lookups.
+  non_normalized_registrations: AtomicUsize,
   /// Every path holding a record (in `file_times`, the context sets or
   /// `last_watch_events`) under its parent directory, ancestors included up
   /// to the first one already indexed: a removed directory's records are
@@ -340,6 +428,9 @@ impl PathManager {
       files: PathTracker::default(),
       directories: PathTracker::default(),
       missing: PathTracker::default(),
+      rescan_all: AtomicBool::default(),
+      watch_cycle: AtomicUsize::new(0),
+      context_watch_failures: FxDashMap::default(),
       ignored: IgnoredMatcher::new(ignored),
       file_times: InternedPathDashMap::default(),
       baselines: InternedPathDashMap::default(),
@@ -347,6 +438,7 @@ impl PathManager {
       context_files: InternedPathDashSet::default(),
       context_directories: InternedPathDashSet::default(),
       registered_ancestors: InternedPathDashMap::default(),
+      non_normalized_registrations: AtomicUsize::new(0),
       absent_directories: InternedPathDashSet::default(),
       recorded_children: InternedPathDashMap::default(),
       index_lock: std::sync::Mutex::default(),
@@ -373,9 +465,54 @@ impl PathManager {
   /// entries for files that have actually been unregistered are pruned by
   /// `update()` via `remove_file_mtime`.
   pub fn reset(&self) {
+    self.watch_cycle.fetch_add(1, Ordering::Relaxed);
     self.files.reset();
     self.directories.reset();
     self.missing.reset();
+  }
+
+  pub fn request_deleted_scans(&self, mut deleted: Vec<InternedPath>) {
+    if deleted.is_empty() {
+      return;
+    }
+    collapse_paths(&mut deleted);
+    let aliases = self.non_normalized_registrations.load(Ordering::Relaxed) != 0;
+    let mut leaves = Vec::new();
+    let mut directories = Vec::new();
+    for root in deleted {
+      let key = InternedPath::from(root.components().collect::<PathBuf>());
+      if aliases || self.registered_ancestors.contains_key(&key) {
+        directories.push(root);
+      } else {
+        leaves.push(key);
+      }
+    }
+    let prefixes = PathPrefixes::new(&mut directories);
+    for (tracker, is_context) in [(&self.files, false), (&self.directories, true)] {
+      let request = |path: &InternedPath| {
+        tracker.pending_scan.insert(path.clone());
+        if is_context && !path.is_dir() {
+          self.absent_directories.insert(path.clone());
+        }
+      };
+      for path in &leaves {
+        if tracker.all.contains(path) {
+          request(path);
+        }
+      }
+      // Inspect membership once, using component-prefix lookups for large batches.
+      if !prefixes.is_empty() {
+        for path in tracker.all.iter() {
+          if prefixes.contains(path.as_path()) {
+            request(&path);
+          }
+        }
+      }
+    }
+  }
+
+  pub fn request_rescan(&self) {
+    self.rescan_all.store(true, Ordering::Relaxed);
   }
 
   /// Record an initial baseline mtime for `path`, but only if no present
@@ -438,14 +575,60 @@ impl PathManager {
 
   fn watch_context_directory(&self, path: &InternedPath) -> rspack_error::Result<()> {
     if let Some(watcher) = self.context_watcher.get().and_then(Weak::upgrade) {
+      // The disk lock also serializes first failures for the same folder.
       let mut watcher = watcher.lock().expect("disk watcher lock poisoned");
+      let cycle = self.watch_cycle.load(Ordering::Relaxed);
+      if let Some(mut failure) = self.context_watch_failures.get_mut(path.as_path()) {
+        if failure.cycle == cycle {
+          return Ok(());
+        }
+        failure.cycle = cycle;
+      }
       // A scan can outlive the context that started it.
-      if (self.directories.all.contains(path) || self.is_below_context(path))
-        && path.is_dir()
-        && let Err(error) = watcher.watch_context_directory(path)
-        && path.is_dir()
-      {
-        return Err(error);
+      if !self.directories.all.contains(path) && !self.is_below_context(path) {
+        self.context_watch_failures.remove(path.as_path());
+        return Ok(());
+      }
+      match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_dir() => {
+          self.context_watch_failures.remove(path.as_path());
+          return Ok(());
+        }
+        Err(error) => {
+          if matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+          ) {
+            self.context_watch_failures.remove(path.as_path());
+          }
+          return Ok(());
+        }
+        _ => {}
+      }
+      match watcher.watch_context_directory(path) {
+        Ok(()) => {
+          self.context_watch_failures.remove(path.as_path());
+        }
+        Err(error) if path.is_dir() => {
+          let kind = match &error.kind {
+            notify::ErrorKind::Io(error) => ContextWatchErrorKind::Io(error.kind()),
+            kind => ContextWatchErrorKind::Notify(std::mem::discriminant(kind)),
+          };
+          if let Some(mut failure) = self.context_watch_failures.get_mut(path.as_path()) {
+            if failure.kind == kind {
+              return Ok(());
+            }
+            failure.kind = kind;
+          } else {
+            self
+              .context_watch_failures
+              .insert(path.to_path_buf(), ContextWatchFailure { cycle, kind });
+          }
+          return Err(rspack_error::error!(
+            "failed to watch context directory {path:?}: {error}"
+          ));
+        }
+        Err(_) => {}
       }
     }
     Ok(())
@@ -464,13 +647,20 @@ impl PathManager {
   /// survives later removals until the path reappears or is unregistered.
   pub fn remove_file_time(&self, path: &InternedPath) {
     self.remove_context_watch(path, true);
-    self.file_times.remove(path);
-    self.baselines.remove_if(path, |_, time| time.is_some());
+    self.remove_file_record(path);
+    if self.directories.all.contains(path) {
+      self.absent_directories.insert(path.clone());
+    }
     self.context_files.remove(path);
     if self.context_directories.remove(path).is_some() {
       self.last_watch_events.remove(path);
     }
     self.unindex_record(path);
+  }
+
+  fn remove_file_record(&self, path: &InternedPath) {
+    self.file_times.remove(path);
+    self.baselines.remove_if(path, |_, time| time.is_some());
   }
 
   /// Drop the records of every path inside the directory `dir` (watchpack's
@@ -483,8 +673,10 @@ impl PathManager {
       if let Some((_, children)) = self.recorded_children.remove(&path) {
         pending.extend(children);
       }
-      self.file_times.remove(&path);
-      self.baselines.remove_if(&path, |_, time| time.is_some());
+      self.remove_file_record(&path);
+      if self.directories.all.contains(&path) {
+        self.absent_directories.insert(path.clone());
+      }
       self.context_files.remove(&path);
       self.context_directories.remove(&path);
       if !self.directories.all.contains(&path) {
@@ -492,11 +684,6 @@ impl PathManager {
       }
     }
     self.unlink_unrecorded(dir);
-    for context in self.directories.all.iter() {
-      if context.starts_with(dir.as_ref() as &Path) {
-        self.absent_directories.insert(context.clone());
-      }
-    }
   }
 
   /// Writes a record for `path` with `write` and indexes it, and its ancestors
@@ -613,10 +800,92 @@ impl PathManager {
   /// `checkStartTime`): they changed before the watch was active, so no event
   /// will come for them.
   pub async fn scan_contexts(&self, start_time: SystemTime) -> Vec<InternedPath> {
-    let contexts: Vec<InternedPath> = self.directories.added.iter().map(|p| p.clone()).collect();
-    self
-      .scan_below(contexts, false, Some(system_time_to_millis(start_time)))
-      .await
+    let contexts = self
+      .directories
+      .added
+      .iter()
+      .map(|path| (path.clone(), Vec::new()))
+      .collect();
+    let changed_since = Some(system_time_to_millis(start_time));
+    let mut changed = self.scan_below(contexts, false, changed_since).await;
+    let cycle = self.watch_cycle.load(Ordering::Relaxed);
+    let mut failed: Vec<_> = self
+      .context_watch_failures
+      .iter()
+      .filter(|failure| failure.cycle != cycle)
+      .map(|failure| InternedPath::from(failure.key()))
+      .collect();
+    if failed.is_empty() {
+      return changed;
+    }
+
+    let contexts: Vec<InternedPath> = self
+      .directories
+      .all
+      .iter()
+      .map(|path| path.clone())
+      .collect();
+    let mut owners: FxHashMap<&Path, &InternedPath> = FxHashMap::default();
+    for path in &contexts {
+      owners
+        .entry(path.as_path())
+        .and_modify(|owner| {
+          if path.as_os_str().len() < owner.as_os_str().len() {
+            *owner = path;
+          }
+        })
+        .or_insert(path);
+    }
+    // Visit parents first, but retain children in case a parent cannot be read.
+    failed.sort_unstable_by(|left, right| left.as_path().cmp(right.as_path()));
+    for dir in failed {
+      let owner = dir
+        .ancestors()
+        .find_map(|ancestor| owners.get(ancestor).map(|owner| (ancestor, *owner)));
+      let Some((ancestor, owner)) = owner else {
+        self.context_watch_failures.remove(dir.as_path());
+        continue;
+      };
+      // Keep the spelling of a currently registered owner, including aliases.
+      let dir =
+        InternedPath::from(owner.join(dir.strip_prefix(ancestor).expect("matched ancestor")));
+      let absent = match std::fs::metadata(&dir) {
+        Ok(metadata) => !metadata.is_dir(),
+        Err(error) => matches!(
+          error.kind(),
+          std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ),
+      };
+      if absent {
+        self.context_watch_failures.remove(dir.as_path());
+        continue;
+      }
+      if self
+        .context_watch_failures
+        .get(dir.as_path())
+        .is_none_or(|failure| failure.cycle == cycle)
+      {
+        continue;
+      }
+      // A retry starts below its context. Seed the same loop guard that walking
+      // from its closest owning context would have built.
+      let ancestry = if self.follow_symlinks {
+        dir
+          .ancestors()
+          .skip(1)
+          .take_while(|ancestor| ancestor.starts_with(owner.as_path()))
+          .filter_map(|ancestor| std::fs::canonicalize(ancestor).ok())
+          .collect()
+      } else {
+        Vec::new()
+      };
+      changed.extend(
+        self
+          .scan_below(vec![(dir, ancestry)], false, changed_since)
+          .await,
+      );
+    }
+    changed
   }
 
   /// Index every file and subdirectory below `roots`, minus what `ignored`
@@ -627,7 +896,7 @@ impl PathManager {
   /// Returns the files whose safe time is at or after `changed_since`.
   async fn scan_below(
     &self,
-    roots: Vec<InternedPath>,
+    roots: Vec<(InternedPath, Vec<PathBuf>)>,
     recovered: bool,
     changed_since: Option<u64>,
   ) -> Vec<InternedPath> {
@@ -639,7 +908,7 @@ impl PathManager {
     // links to one directory are two aliases, each scanned.
     let mut pending: Vec<(InternedPath, Vec<PathBuf>, bool)> = roots
       .into_iter()
-      .map(|root| (root, Vec::new(), recovered))
+      .map(|(root, ancestry)| (root, ancestry, recovered))
       .collect();
     while let Some((dir, mut ancestry, observed)) = pending.pop() {
       if self.follow_symlinks {
@@ -756,7 +1025,16 @@ impl PathManager {
         self.absent_directories.remove(context);
         self.baselines.remove_if(context, |_, time| time.is_none());
       }
-      self.scan_below(recovered, true, None).await;
+      self
+        .scan_below(
+          recovered
+            .into_iter()
+            .map(|path| (path, Vec::new()))
+            .collect(),
+          true,
+          None,
+        )
+        .await;
     }
 
     if self.directories.all.contains(path) || !self.is_below_context(path) {
@@ -771,7 +1049,9 @@ impl PathManager {
       // Like watchpack's `setDirectory`, only a directory not known before is
       // scanned: an event on a known one, e.g. a `chmod`, changes nothing below.
       if self.record(path, || self.context_directories.insert(path.clone())) {
-        self.scan_below(vec![path.clone()], false, None).await;
+        self
+          .scan_below(vec![(path.clone(), Vec::new())], false, None)
+          .await;
       }
       return true;
     }
@@ -939,12 +1219,22 @@ impl PathManager {
   ) -> Result<()> {
     let mut registered = Vec::new();
     let mut unregistered = Vec::new();
-    for (paths, tracker) in [
-      (PathUpdater::from(files), &self.files),
-      (PathUpdater::from(directories), &self.directories),
-      (PathUpdater::from(missing), &self.missing),
+    for (paths, tracker, track_aliases) in [
+      (PathUpdater::from(files), &self.files, true),
+      (PathUpdater::from(directories), &self.directories, true),
+      (PathUpdater::from(missing), &self.missing, false),
     ] {
       let (added, removed) = paths.update(tracker, &self.ignored).await?;
+      if track_aliases {
+        self.non_normalized_registrations.fetch_add(
+          added.iter().filter(|path| !is_normalized(path)).count(),
+          Ordering::Relaxed,
+        );
+        self.non_normalized_registrations.fetch_sub(
+          removed.iter().filter(|path| !is_normalized(path)).count(),
+          Ordering::Relaxed,
+        );
+      }
       registered.extend(added);
       unregistered.extend(removed);
     }
@@ -953,6 +1243,11 @@ impl PathManager {
     }
     for path in &unregistered {
       self.release_registered_ancestors(path);
+    }
+
+    let rescan_all = self.rescan_all.swap(false, Ordering::Relaxed);
+    for tracker in [&self.files, &self.directories, &self.missing] {
+      tracker.apply_pending_scans(rescan_all);
     }
 
     for dir in self.directories.added.iter() {
