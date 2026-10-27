@@ -11,7 +11,7 @@ use super::{
   Analyzer, WatchPattern,
   directories::{InvalidatedPaths, has_symlink_ancestor},
 };
-use crate::paths::PathAccessor;
+use crate::{path_prefixes::PathPrefixes, paths::PathAccessor};
 
 #[derive(Default)]
 /// The `WatcherRootAnalyzer` is an implementation of the `Analyzer` trait that
@@ -52,13 +52,13 @@ impl Analyzer for WatcherRootAnalyzer {
         .expect("root invalidation lock poisoned"),
     );
     if invalidated.all || !invalidated.paths.is_empty() {
-      candidates.extend(path_accessor.all().filter(|path| {
-        invalidated.all
-          || invalidated
-            .paths
-            .iter()
-            .any(|root| path.starts_with(root.as_path()))
-      }));
+      let mut paths = invalidated.paths.into_iter().collect();
+      let prefixes = PathPrefixes::new(&mut paths);
+      candidates.extend(
+        path_accessor
+          .all()
+          .filter(|path| invalidated.all || prefixes.contains(path.as_path())),
+      );
     }
     for path in symlinks.iter() {
       path_accessor.rescan(path);
