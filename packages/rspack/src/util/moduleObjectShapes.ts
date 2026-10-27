@@ -29,6 +29,7 @@ const isExtensible = Object.isExtensible;
 const sameValue = Object.is;
 const defaults = new WeakMap<object, Defaults>();
 const templates = new WeakMap<object, Template[]>();
+const allowed = new WeakMap<object, Map<PropertyKey, Descriptor>>();
 const store = binding.getModuleObjectStateStore() as StateStore;
 const sameDescriptor = (
   actual: Descriptor | undefined,
@@ -77,8 +78,16 @@ store.seed = (object) => {
       .map((value) => value.value),
   });
 };
-// A lazily added property is not part of a freshly constructed wrapper's defaults.
-store.allow = () => {};
+// Native code calls this just after installing a core-owned lazy property.
+store.allow = (object, key) => {
+  const before = defaults.get(object);
+  if (!before || before.template.keys.includes(key)) return;
+  const installed = descriptor(object, key);
+  if (!installed) return;
+  let properties = allowed.get(object);
+  if (!properties) allowed.set(object, (properties = new Map()));
+  properties.set(key, installed);
+};
 delete store.check;
 
 function isPristine(object: object): boolean {
@@ -89,16 +98,29 @@ function isPristine(object: object): boolean {
     prototypeOf(object) !== before.template.prototype
   )
     return false;
-  const keys = ownKeys(object);
-  if (keys.length !== before.template.keys.length) return false;
-  for (let index = 0; index < keys.length; index++) {
-    if (keys[index] !== before.template.keys[index]) return false;
-    const actual = descriptor(object, keys[index]);
+  const properties = allowed.get(object);
+  if (
+    ownKeys(object).length !==
+    before.template.keys.length + (properties?.size ?? 0)
+  )
+    return false;
+  for (let index = 0; index < before.template.keys.length; index++) {
+    const actual = descriptor(object, before.template.keys[index]);
     if (!sameDescriptor(actual, before.template.descriptors[index]))
       return false;
     const slot = before.template.dataSlots[index];
     if (slot !== -1 && !sameValue(actual!.value, before.values[slot]))
       return false;
+  }
+  if (properties) {
+    for (const [key, expected] of properties) {
+      const actual = descriptor(object, key);
+      if (
+        !sameDescriptor(actual, expected) ||
+        !sameValue(actual!.value, expected.value)
+      )
+        return false;
+    }
   }
   return true;
 }
