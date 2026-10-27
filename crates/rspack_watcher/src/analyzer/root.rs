@@ -26,9 +26,10 @@ pub struct WatcherRootAnalyzer {
 
 impl Analyzer for WatcherRootAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
-    let (_, added_files, removed_files) = path_accessor.files();
-    let (_, added_directories, removed_directories) = path_accessor.directories();
-    let (_, added_missing, removed_missing) = path_accessor.missing();
+    let (_, _, removed_files) = path_accessor.files();
+    let (_, _, removed_directories) = path_accessor.directories();
+    let (_, _, removed_missing) = path_accessor.missing();
+    let added = path_accessor.take_insertions();
 
     let is_registered = |path: &InternedPath| {
       path_accessor.files().0.contains(path)
@@ -39,10 +40,8 @@ impl Analyzer for WatcherRootAnalyzer {
       .symlink_dependent_paths
       .lock()
       .expect("symlink paths lock poisoned");
-    let mut candidates: Vec<_> = added_files
+    let mut candidates: Vec<_> = added
       .iter()
-      .chain(added_directories.iter())
-      .chain(added_missing.iter())
       .map(|path| path.clone())
       .chain(symlinks.iter().cloned())
       .collect();
@@ -55,9 +54,10 @@ impl Analyzer for WatcherRootAnalyzer {
     if invalidated.all || !invalidated.paths.is_empty() {
       candidates.extend(path_accessor.all().filter(|path| {
         invalidated.all
-          || path
-            .ancestors()
-            .any(|ancestor| invalidated.paths.contains(&InternedPath::from(ancestor)))
+          || invalidated
+            .paths
+            .iter()
+            .any(|root| path.starts_with(root.as_path()))
       }));
     }
     for path in symlinks.iter() {
@@ -74,7 +74,6 @@ impl Analyzer for WatcherRootAnalyzer {
 
     // The tree is shared by all categories. A removal must not drop a path
     // still held by another category, even if it was not newly added there.
-    let added = union3(added_files, added_directories, added_missing);
     let removed = union3(removed_files, removed_directories, removed_missing);
     added.retain(is_registered);
     removed.retain(|path| !is_registered(path));
@@ -99,6 +98,13 @@ impl Analyzer for WatcherRootAnalyzer {
   }
 
   fn invalidate_path(&self, path: &InternedPath) {
+    match path.symlink_metadata() {
+      Ok(metadata) if !metadata.file_type().is_symlink() => return,
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+      _ => {}
+    }
+    // Existing symlink dependencies are rechecked every cycle. Only a new
+    // symlink, or uncertain metadata, needs a prefix search of registrations.
     self
       .invalidated
       .lock()

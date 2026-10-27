@@ -121,6 +121,21 @@ impl<'a> PathAccessor<'a> {
     )
   }
 
+  /// Consume true insertions without treating recovery scans as registrations.
+  pub fn take_insertions(&self) -> InternedPathDashSet {
+    let inserted = InternedPathDashSet::default();
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    for tracker in [self.files, self.directories, self.missing] {
+      let pending: Vec<_> = tracker.inserted.iter().map(|path| path.clone()).collect();
+      for path in pending {
+        if tracker.inserted.remove(&path).is_some() && tracker.all.contains(&path) {
+          inserted.insert(path);
+        }
+      }
+    }
+    inserted
+  }
+
   /// Rescan a registration whose native watch coverage may have changed.
   pub fn rescan(&self, path: &InternedPath) {
     for tracker in [self.files, self.directories, self.missing] {
@@ -225,6 +240,9 @@ struct PathTracker {
   added: InternedPathDashSet,
   removed: InternedPathDashSet,
   all: InternedPathDashSet,
+  /// True insertions not yet consumed by the recursive-root analyzer.
+  #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+  inserted: InternedPathDashSet,
   /// Recovery work that must survive the next watch cycle's reset.
   pending_scan: InternedPathDashSet,
 }
@@ -238,6 +256,8 @@ impl PathTracker {
   /// Adds a path to the tracker; whether it was not tracked before.
   fn add(&self, path: InternedPath) -> bool {
     if self.all.insert(path.clone()) {
+      #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+      self.inserted.insert(path.clone());
       self.added.insert(path);
       true
     } else {
