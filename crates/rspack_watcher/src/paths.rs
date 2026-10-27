@@ -1098,10 +1098,6 @@ impl PathManager {
     for tracker in [&self.files, &self.directories, &self.missing] {
       tracker.apply_pending_scans(rescan_all);
     }
-    // Missing dependencies retain their per-cycle backfill, even when re-added.
-    for path in self.missing.all.iter() {
-      self.missing.added.insert(path.clone());
-    }
 
     for dir in self.directories.added.iter() {
       if dir.exists() {
