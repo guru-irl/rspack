@@ -1,7 +1,7 @@
-name: Treatment B4 release pack
+name: Treatment B5 release pack
 on:
   push:
-    branches: [bench/treatment-b4-build]
+    branches: [bench/treatment-b5-build]
 permissions:
   contents: read
 defaults:
@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - arm: treatment-a
-            source: 57f0907b10af5662e1d93107c6c25861e60aae47
+            source: 4b44df2ba04892be178bb686ca2d19362c57b8b5
     steps:
       - uses: actions/checkout@v4
         with:
