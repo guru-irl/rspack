@@ -384,6 +384,7 @@ impl FsWatcherInner {
       .wait_for_event(files, directories, missing, start_time)
       .await
     {
+      self.path_manager.retry_scans();
       event_aggregate_handler.on_error(e);
       return;
     };
