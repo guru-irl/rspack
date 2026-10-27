@@ -280,8 +280,8 @@ impl PathTracker {
     }
     let pending: Vec<_> = self.pending_scan.iter().map(|path| path.clone()).collect();
     for path in pending {
-      // Move the request into this cycle. A later request stays pending, and
-      // a failed registration puts this cycle's work back before reset.
+      // Move the request into this cycle. A later request stays pending.
+      // A failed watch application requests a full rescan for the next cycle.
       if self.pending_scan.remove(&path).is_some() && self.all.contains(&path) {
         self.added.insert(path);
       }
