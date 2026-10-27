@@ -1,12 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use notify::{
-  Event, EventKind, RecommendedWatcher, Watcher,
+  Event, EventKind,
   event::{ModifyKind, RenameMode},
 };
+#[cfg(not(target_os = "linux"))]
+use notify::{RecommendedWatcher, Watcher};
 use rspack_paths::InternedPath;
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
+#[cfg(target_os = "linux")]
+use crate::canonical_watcher::CanonicalWatcher as RecommendedWatcher;
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
 
 /// `DiskWatcher` is responsible for managing the underlying file system watcher
@@ -16,6 +20,10 @@ pub struct DiskWatcher {
   inner: Option<RecommendedWatcher>,
   /// A set of pattern that are currently being watched.
   watch_patterns: HashSet<WatchPattern>,
+  /// Requirements from registered files, contexts and missing paths.
+  analyzer_patterns: HashSet<WatchPattern>,
+  /// Descendant directories found by the filtered context scan.
+  context_paths: HashSet<InternedPath>,
 }
 
 impl DiskWatcher {
@@ -48,6 +56,8 @@ impl DiskWatcher {
     DiskWatcher {
       inner: Some(inner),
       watch_patterns: HashSet::default(),
+      analyzer_patterns: HashSet::default(),
+      context_paths: HashSet::default(),
     }
   }
 
@@ -60,15 +70,51 @@ impl DiskWatcher {
     &mut self,
     patterns: impl Iterator<Item = WatchPattern>,
   ) -> rspack_error::Result<()> {
-    let new_patterns: HashSet<WatchPattern> = patterns.collect();
-
-    let new_paths = new_patterns.iter().map(|p| &p.path).collect::<HashSet<_>>();
+    self.analyzer_patterns = patterns.collect();
+    let mut modes = rspack_paths::InternedPathMap::default();
+    for pattern in &self.analyzer_patterns {
+      modes
+        .entry(pattern.path.clone())
+        .and_modify(|mode| {
+          if pattern.mode == notify::RecursiveMode::Recursive {
+            *mode = pattern.mode;
+          }
+        })
+        .or_insert(pattern.mode);
+    }
+    for path in &self.context_paths {
+      modes
+        .entry(path.clone())
+        .or_insert(notify::RecursiveMode::NonRecursive);
+    }
+    // notify shares one watch per path. A non-recursive add must never downgrade
+    // a recursive requirement, and unwatching a recursive parent removes its children.
+    let has_recursive = modes
+      .values()
+      .any(|mode| *mode == notify::RecursiveMode::Recursive);
+    let new_patterns: HashSet<WatchPattern> = modes
+      .iter()
+      .filter_map(|(path, mode)| {
+        if has_recursive
+          && path.ancestors().skip(1).any(|parent| {
+            modes.get(&InternedPath::from(parent)) == Some(&notify::RecursiveMode::Recursive)
+          })
+        {
+          None
+        } else {
+          Some(WatchPattern {
+            path: path.clone(),
+            mode: *mode,
+          })
+        }
+      })
+      .collect();
 
     // Collect stale paths that are no longer needed, then unwatch and remove them.
     let stale_paths: HashSet<InternedPath> = self
       .watch_patterns
       .iter()
-      .filter(|p| !new_paths.contains(&p.path))
+      .filter(|p| !new_patterns.contains(p))
       .map(|p| p.path.clone())
       .collect();
 
@@ -107,6 +153,72 @@ impl DiskWatcher {
     }
 
     Ok(())
+  }
+
+  /// Register before reading a directory, so a file is found either by the scan
+  /// or by its live event. The caller has already applied the ignored filter.
+  pub(crate) fn watch_context_directory(
+    &mut self,
+    path: &InternedPath,
+  ) -> rspack_error::Result<()> {
+    if self.inner.is_none() {
+      return Ok(());
+    }
+    let covered = self.watch_patterns.contains(&WatchPattern {
+      path: path.clone(),
+      mode: notify::RecursiveMode::NonRecursive,
+    }) || path.ancestors().any(|ancestor| {
+      self.watch_patterns.contains(&WatchPattern {
+        path: InternedPath::from(ancestor),
+        mode: notify::RecursiveMode::Recursive,
+      })
+    });
+    if !covered {
+      if let Some(watcher) = &mut self.inner {
+        watcher
+          .watch(path, notify::RecursiveMode::NonRecursive)
+          .map_err(|error| {
+            rspack_error::error!("failed to watch context directory {path:?}: {error}")
+          })?;
+      }
+      self.watch_patterns.insert(WatchPattern {
+        path: path.clone(),
+        mode: notify::RecursiveMode::NonRecursive,
+      });
+    }
+    self.context_paths.insert(path.clone());
+    Ok(())
+  }
+
+  /// Release only this scan's requirement. Another registration can still need
+  /// the same directory. Removed directories also invalidate the native watch.
+  pub(crate) fn remove_context_directory(&mut self, path: &InternedPath, removed: bool) {
+    if !self.context_paths.remove(path) {
+      return;
+    }
+    let mut pattern = WatchPattern {
+      path: path.clone(),
+      mode: notify::RecursiveMode::NonRecursive,
+    };
+    if !removed
+      && (self.analyzer_patterns.contains(&pattern)
+        || self.analyzer_patterns.contains(&WatchPattern {
+          path: path.clone(),
+          mode: notify::RecursiveMode::Recursive,
+        }))
+    {
+      return;
+    }
+    if removed && !self.watch_patterns.contains(&pattern) {
+      pattern.mode = notify::RecursiveMode::Recursive;
+    }
+    if self.watch_patterns.remove(&pattern)
+      && let Some(watcher) = &mut self.inner
+      && let Err(error) = watcher.unwatch(path)
+      && !matches!(error.kind, notify::ErrorKind::WatchNotFound)
+    {
+      tracing::warn!(target: "rspack_watcher::disk_watcher", ?path, "failed to unwatch context directory: {error:?}");
+    }
   }
 
   pub fn close(&mut self) {

@@ -1,4 +1,6 @@
 mod analyzer;
+#[cfg(target_os = "linux")]
+mod canonical_watcher;
 mod disk_watcher;
 mod executor;
 mod ignored;
@@ -148,7 +150,7 @@ pub struct FsWatcher {
 
 struct FsWatcherInner {
   path_manager: Arc<PathManager>,
-  disk_watcher: DiskWatcher,
+  disk_watcher: Arc<Mutex<DiskWatcher>>,
   executor: Executor,
   scanner: Scanner,
   analyzer: Arc<RecommendedAnalyzer>,
@@ -164,11 +166,17 @@ impl FsWatcher {
       Arc::new(PathManager::new(ignored).with_follow_symlinks(options.follow_symlinks));
     let trigger = Arc::new(Trigger::new(Arc::clone(&path_manager), tx));
     let analyzer = Arc::clone(&trigger.analyzer);
-    let disk_watcher = DiskWatcher::new(
+    let disk_watcher = Arc::new(Mutex::new(DiskWatcher::new(
       options.follow_symlinks,
       options.poll_interval,
       trigger.clone(),
-    );
+    )));
+    if cfg!(any(
+      feature = "testing",
+      not(any(target_os = "macos", target_os = "windows"))
+    )) {
+      path_manager.set_context_watcher(Arc::downgrade(&disk_watcher));
+    }
     let paused = Arc::new(AtomicBool::new(false));
     let executor = Executor::new(rx, options.aggregate_timeout, Arc::clone(&paused));
     let aggregated = executor.aggregated();
@@ -395,7 +403,11 @@ impl FsWatcherInner {
   }
 
   async fn close(&mut self) -> Result<()> {
-    self.disk_watcher.close();
+    self
+      .disk_watcher
+      .lock()
+      .expect("disk watcher lock poisoned")
+      .close();
     self.scanner.close();
     self.executor.close().await;
     self.trigger.lock().expect("should lock trigger").take();
@@ -435,10 +447,17 @@ impl FsWatcherInner {
     self.record_initial_file_mtimes();
 
     let watch_patterns = self.analyzer.analyze(self.path_manager.access());
-    if let Err(error) = self.disk_watcher.watch(watch_patterns.into_iter()) {
+    let watch_result = self
+      .disk_watcher
+      .lock()
+      .expect("disk watcher lock poisoned")
+      .watch(watch_patterns.into_iter());
+    if let Err(error) = watch_result {
       self.analyzer.invalidate_all();
       return Err(error);
     }
+    // Directory-based backends extend coverage through this filtered scan.
+    // Each directory is watched before enumeration, even when it is empty.
     let changed_in_contexts = self.path_manager.scan_contexts(start_time).await;
     if let Some(trigger) = self.trigger.lock().expect("should lock trigger").clone() {
       for path in &changed_in_contexts {
