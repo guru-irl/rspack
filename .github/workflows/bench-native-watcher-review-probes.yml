@@ -1,0 +1,59 @@
+name: native-watcher review probes
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact source commit
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  normalization:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Probe the actual normalization function
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$PWD/.native-watcher-review"
+          mkdir -p "$R/tmp"
+          export TMPDIR="$R/tmp"
+          python - <<'PYCODE'
+          from pathlib import Path
+          import re,hashlib,json,subprocess
+          source=Path('crates/rspack_watcher/src/paths.rs').read_text()
+          functions=[]
+          for match in re.finditer(r'fn is_normalized\(',source):
+              start=source.rfind('\n',0,match.start())+1
+              previous=source[:start].rstrip('\n').split('\n')[-1]
+              if previous.startswith('#[cfg('):start-=len(previous)+1
+              opening=source.index('{',match.start());depth=1;end=opening+1
+              while depth:
+                  depth+=(source[end]=='{')-(source[end]=='}');end+=1
+              functions.append(source[start:end])
+          assert functions
+          main=r'''fn main() {
+            for raw in ["C:/p/a.css", r"C:\p\a.css", r"C:/p\mixed/a.css", "C:/p//a.css", "C:/p/./a.css", "//server/share/p/a.css"] {
+              let path=PathBuf::from(raw);
+              let key=path.components().collect::<PathBuf>();
+              assert_eq!(path,key,"Windows component equality");
+              assert!(is_normalized(&path),"forward-slash registration entered alias fallback: {}",raw);
+            }
+            println!("N4a Windows forward-slash fast path passed");
+          }'''
+          generated='use std::path::PathBuf;\ntype InternedPath=PathBuf;\n'+'\n'.join(functions)+'\n'+main+'\n'
+          root=Path('.native-watcher-review');(root/'probe.rs').write_text(generated)
+          (root/'source.json').write_text(json.dumps({'head':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'pathsSha256':hashlib.sha256(source.encode()).hexdigest(),'function':functions,'generatedSha256':hashlib.sha256(generated.encode()).hexdigest()},indent=2))
+          PYCODE
+          rustc --edition=2024 "$R/probe.rs" -o "$R/probe.exe"
+          "$R/probe.exe"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-normalization-${{ inputs.source_sha }}
+          path: .native-watcher-review/
