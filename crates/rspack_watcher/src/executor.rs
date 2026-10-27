@@ -37,6 +37,7 @@ pub(crate) type Aggregated = Arc<std::sync::Mutex<FilesData>>;
 /// a configurable aggregate timeout. It receives events from a channel, tracks changed and
 /// deleted files, and coordinates the event handling logic.
 pub struct Executor {
+  pub(crate) timing_id: usize,
   aggregate_timeout: u32,
   rx: ThreadSafetyReceiver<EventBatch>,
   files_data: Aggregated,
@@ -82,6 +83,7 @@ impl Executor {
     let (exec_tx, exec_rx) = mpsc::unbounded_channel::<ExecEvent>();
 
     Self {
+      timing_id: 0,
       start_waiting: false,
       aggregate_running: Arc::new(AtomicBool::new(false)),
       paused,
@@ -207,7 +209,7 @@ impl Executor {
       event_aggregate_handler,
       Arc::clone(&self.exec_aggregate_rx),
       Arc::clone(&self.files_data),
-      self.aggregate_timeout as u64,
+      (self.aggregate_timeout as u64, self.timing_id),
       Arc::clone(&self.aggregate_running),
     ));
 
@@ -256,7 +258,7 @@ fn create_execute_aggregate_task(
   event_handler: Box<dyn EventAggregateHandler + Send>,
   exec_aggregate_rx: ThreadSafetyReceiver<ExecAggregateEvent>,
   files: Aggregated,
-  aggregate_timeout: u64,
+  (aggregate_timeout, timing_id): (u64, usize),
   running: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
   let future = async move {
@@ -274,7 +276,9 @@ fn create_execute_aggregate_task(
       if let ExecAggregateEvent::Execute = aggregate_rx {
         running.store(true, Ordering::Relaxed);
         // Wait for the aggregate timeout before executing the handler
-        tokio::time::sleep(tokio::time::Duration::from_millis(aggregate_timeout)).await;
+        let sleep = tokio::time::sleep(tokio::time::Duration::from_millis(aggregate_timeout));
+        let deadline = crate::timing::enabled().then(|| sleep.deadline());
+        sleep.await;
 
         // Get the files to process
         let files = {
@@ -286,6 +290,20 @@ fn create_execute_aggregate_task(
           std::mem::take(&mut *files)
         };
 
+        if let Some(deadline) = deadline {
+          let emit = std::time::Instant::now();
+          crate::timing::emit(
+            timing_id,
+            format_args!(
+              "phase=aggregate deadline_ms={:.3} emit_ms={:.3} lateness_ms={:.3} changed={} removed={} ticket=0",
+              crate::timing::timestamp(deadline.into_std()),
+              crate::timing::timestamp(emit),
+              crate::timing::ms(emit.saturating_duration_since(deadline.into_std())),
+              files.changed.len(),
+              files.deleted.len()
+            ),
+          );
+        }
         // A path is in one set only: `Trigger` reports each event by the
         // path's state on disk, and a later event replaces an earlier one.
         event_handler.on_event_handle(files.changed, files.deleted);

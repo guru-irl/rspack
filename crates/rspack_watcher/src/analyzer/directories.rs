@@ -49,6 +49,7 @@ struct DirectoryAnalyzerState {
 
 impl Analyzer for WatcherDirectoriesAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
+    let timing = crate::timing::start();
     #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     path_accessor.take_insertions();
     let mut state = self.state.lock().expect("directory analyzer lock poisoned");
@@ -65,6 +66,7 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     ];
     let is_registered =
       |path: &InternedPath| subscriptions.iter().any(|(all, _, _)| all.contains(path));
+    let mut symlink_rescans = timing.map(|_| state.symlink_dependent_paths.len());
     for path in &state.symlink_dependent_paths {
       path_accessor.rescan(path);
     }
@@ -87,6 +89,7 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
       }
     }
 
+    let dirty_paths = timing.map(|_| dirty.len());
     let mut resolutions = InternedPathMap::default();
     let mut symlink_ancestors = InternedPathMap::default();
     for path in dirty {
@@ -104,6 +107,9 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
           find_existing_directory(path.clone(), &mut resolutions, &mut symlink_ancestors).map(
             |(dir, depth, recheck, non_directory_symlink)| {
               if recheck || non_directory_symlink {
+                if let Some(count) = &mut symlink_rescans {
+                  *count += 1;
+                }
                 state.symlink_dependent_paths.insert(path.clone());
                 path_accessor.rescan(&path);
               }
@@ -128,6 +134,18 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
         }
         state.paths.insert(path, pattern);
       }
+    }
+    if let Some(start) = timing {
+      crate::timing::emit(
+        path_accessor.timing_id(),
+        format_args!(
+          "phase=analyze backend=directories duration_ms={:.3} dirty={} symlink_rescans={} patterns={}",
+          crate::timing::ms(start.elapsed()),
+          dirty_paths.unwrap_or_default(),
+          symlink_rescans.unwrap_or_default(),
+          state.patterns.len()
+        ),
+      );
     }
     state.patterns.keys().cloned().collect()
   }

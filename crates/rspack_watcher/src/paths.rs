@@ -87,6 +87,10 @@ impl<'a> PathAccessor<'a> {
     }
   }
 
+  pub(crate) fn timing_id(&self) -> usize {
+    self.files.all_ptr()
+  }
+
   /// Returns references to the sets of files, including added and removed files.
   pub fn files(
     &self,
@@ -255,6 +259,10 @@ struct PathTracker {
 }
 
 impl PathTracker {
+  fn all_ptr(&self) -> usize {
+    &self.all as *const _ as usize
+  }
+
   fn reset(&self) {
     self.added.clear();
     self.removed.clear();
@@ -1066,6 +1074,15 @@ impl PathManager {
       impl Iterator<Item = InternedPath>,
     ),
   ) -> Result<()> {
+    let timing = crate::timing::start().map(|start| {
+      (
+        start,
+        [&self.files, &self.directories, &self.missing]
+          .iter()
+          .map(|tracker| tracker.pending_scan.len())
+          .sum::<usize>(),
+      )
+    });
     let mut registered = Vec::new();
     let mut unregistered = Vec::new();
     for (paths, tracker, track_aliases) in [
@@ -1094,11 +1111,17 @@ impl PathManager {
       self.release_registered_ancestors(path);
     }
 
+    let registration_ms = timing
+      .as_ref()
+      .map(|(start, _)| crate::timing::ms(start.elapsed()));
     let rescan_all = self.rescan_all.swap(false, Ordering::Relaxed);
     for tracker in [&self.files, &self.directories, &self.missing] {
       tracker.apply_pending_scans(rescan_all);
     }
 
+    let backfill_ms = timing
+      .as_ref()
+      .map(|(start, _)| crate::timing::ms(start.elapsed()) - registration_ms.unwrap_or_default());
     for dir in self.directories.added.iter() {
       if dir.exists() {
         self.absent_directories.remove(&*dir);
@@ -1161,6 +1184,26 @@ impl PathManager {
       self.forget_context_entries_under(dir);
     }
 
+    if let Some((start, pending_scans)) = timing {
+      crate::timing::emit(
+        self.timing_id(),
+        format_args!(
+          "phase=update duration_ms={:.3} added={} removed={} missing_backfill={} pending_scans={pending_scans} registered_files={} registered_contexts={} registered_missing={} scan_files={} scan_contexts={} scan_missing={} registration_ms={:.3} backfill_ms={:.3}",
+          crate::timing::ms(start.elapsed()),
+          registered.len(),
+          unregistered.len(),
+          0,
+          self.files.all.len(),
+          self.directories.all.len(),
+          self.missing.all.len(),
+          self.files.added.len(),
+          self.directories.added.len(),
+          self.missing.added.len(),
+          registration_ms.unwrap_or_default(),
+          backfill_ms.unwrap_or_default()
+        ),
+      );
+    }
     Ok(())
   }
 
@@ -1193,6 +1236,10 @@ impl PathManager {
         self.unlink_unrecorded(path);
       }
     }
+  }
+
+  pub(crate) fn timing_id(&self) -> usize {
+    self.files.all_ptr()
   }
 
   /// Create a new `PathAccessor` to access the current state of paths, directories, and missing paths.
