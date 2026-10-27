@@ -1052,7 +1052,10 @@ impl SplitChunksPlugin {
     module_group_map.swap_remove_index(best_entry_index)
   }
 
-  fn can_prepare_native_cache_groups(&self, cache_groups: &[IndexedCacheGroup<'_>]) -> bool {
+  pub(super) fn can_prepare_native_cache_groups(
+    &self,
+    cache_groups: &[IndexedCacheGroup<'_>],
+  ) -> bool {
     cache_groups.iter().all(|indexed| {
       let group = indexed.cache_group;
       let has_name_batch_getter = self.name_batch_getters.as_deref().is_some_and(|getters| {

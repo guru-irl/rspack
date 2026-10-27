@@ -229,32 +229,40 @@ impl SplitChunksPlugin {
     module_chunks: &[SsoHashSet<ChunkUkey>],
     module_indices: &IdentifierMap<usize>,
     compilation: &Compilation,
-  ) -> Result<ModuleChunkMap> {
+  ) -> Result<(ModuleChunkMap, bool)> {
+    let mut external_selection = false;
     if item.uses_shared_module_chunks() {
       debug_assert!(original_chunks.is_subset(&item.chunks));
       let chunks = original_chunks.clone();
       let mut modules = IdentifierSet::default();
       for mid in &item.modules {
-        if let Some(module) = compilation.module_by_identifier(mid)
-          && module_chunk_condition(module.as_ref(), &new_chunk, compilation)
+        if let Some(module) = compilation.module_by_identifier(mid) {
+          external_selection |= module.as_external_module().is_some();
+          if module_chunk_condition(module.as_ref(), &new_chunk, compilation)
             .await?
             .is_some_and(|condition| !condition)
-        {
-          continue;
+          {
+            continue;
+          }
         }
         modules.insert(*mid);
       }
-      return Ok(ModuleChunkMap::Shared { modules, chunks });
+      return Ok((
+        ModuleChunkMap::Shared { modules, chunks },
+        external_selection,
+      ));
     }
 
     let mut placements = IdentifierMap::default();
     for mid in &item.modules {
-      if let Some(module) = compilation.module_by_identifier(mid)
-        && module_chunk_condition(module.as_ref(), &new_chunk, compilation)
+      if let Some(module) = compilation.module_by_identifier(mid) {
+        external_selection |= module.as_external_module().is_some();
+        if module_chunk_condition(module.as_ref(), &new_chunk, compilation)
           .await?
           .is_some_and(|condition| !condition)
-      {
-        continue;
+        {
+          continue;
+        }
       }
 
       // This set excludes both removed sources and claimed original destinations, and never
@@ -269,7 +277,7 @@ impl SplitChunksPlugin {
         placements.insert(*mid, chunks);
       }
     }
-    Ok(ModuleChunkMap::ByModule(placements))
+    Ok((ModuleChunkMap::ByModule(placements), external_selection))
   }
 
   /// Moves `modules` into `new_chunk` and removes their selected source placements.

@@ -386,7 +386,7 @@ impl SplitChunksPlugin {
     let native_matches =
       self.prepare_native_cache_group_matches(&all_modules, &stages, compilation);
     let priority_len = priority_cache_groups.len();
-    let mut earlier_callbacks_fresh = false;
+    let mut js_may_have_run = false;
     for (index, ((_, cache_groups), native_matches)) in priority_cache_groups
       .into_iter()
       .zip(native_matches)
@@ -429,7 +429,8 @@ impl SplitChunksPlugin {
       {
         logger.info(format!("structure key: phase={index} digest={digest:032x}"));
       }
-      let shape_guarded = earlier_callbacks_fresh;
+      let can_call_js = !self.can_prepare_native_cache_groups(&cache_groups);
+      let shape_guarded = js_may_have_run && can_call_js;
       let mut cached = structure
         .zip(phase_digest)
         .and_then(|(structure, digest)| structure.phase(index, digest))
@@ -452,8 +453,8 @@ impl SplitChunksPlugin {
       }
       let mut fresh = None;
       if cached.is_none() || cache::verification_enabled() {
-        // Fresh callbacks can change module shapes after the compilation-wide check.
-        earlier_callbacks_fresh = true;
+        // Only JavaScript preparation can change module shapes after the initial check.
+        js_may_have_run |= can_call_js;
         let build_start = Instant::now();
         let reads =
           structure.map(|_| rspack_core::ModuleReadSession::new(compilation.compiler_id()));
@@ -645,7 +646,6 @@ impl SplitChunksPlugin {
       };
       if !matches!(outcome, cache::PhaseOutcome::Disabled) {
         logger.info(format!("structure reads: phase={index} recorded={recorded_reads} calls={recorded_calls} validated={validated_reads} validate={validation_ms:.6} ms"));
-        logger.info(format!("structure cache: phase={index} outcome={} key={phase_key_ms:.3} build={build_ms:.3} clone={clone_ms:.3} ms size_check_skipped={size_check_skipped}", outcome.label()));
       }
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
@@ -654,6 +654,7 @@ impl SplitChunksPlugin {
         .for_each(|(_, module_group)| module_group.prepare_modules_for_sizes_and_compare());
       self.ensure_min_size_fit(&mut module_group_map, &module_sizes);
 
+      let mut phase_external_selection = false;
       while let Some((module_group_key, mut module_group)) =
         self.find_best_module_group(&mut module_group_map)
       {
@@ -708,7 +709,7 @@ impl SplitChunksPlugin {
         // Validate each module against its own selected sources before committing any placements;
         // max-request pruning must not let an unrelated source qualify a module for extraction.
         let mut used_chunks = used_chunks;
-        let mut placed_module_chunks = self
+        let (mut placed_module_chunks, external_selection) = self
           .get_module_chunks_to_move(
             &module_group,
             new_chunk,
@@ -718,6 +719,10 @@ impl SplitChunksPlugin {
             compilation,
           )
           .await?;
+        // Selection runs live on hits too. An external chunk condition can call JavaScript
+        // and change module objects before a later phase prepares or restores candidates.
+        phase_external_selection |= external_selection;
+        js_may_have_run |= external_selection;
         {
           let chunk_graph = &compilation.build_chunk_graph_artifact.chunk_graph;
           if is_reuse_existing_chunk {
@@ -978,6 +983,9 @@ impl SplitChunksPlugin {
             }
           }
         }
+      }
+      if !matches!(outcome, cache::PhaseOutcome::Disabled) {
+        logger.info(format!("structure cache: phase={index} outcome={} js={can_call_js} external_selection={phase_external_selection} key={phase_key_ms:.3} build={build_ms:.3} clone={clone_ms:.3} ms size_check_skipped={size_check_skipped}", outcome.label()));
       }
     }
     logger.time_end(start);
