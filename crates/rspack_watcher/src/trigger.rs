@@ -117,6 +117,7 @@ struct EventProcessor {
 pub struct Trigger {
   pending: UnboundedSender<(InternedPath, FsEventKind, Origin)>,
   pub(crate) analyzer: Arc<RecommendedAnalyzer>,
+  path_manager: Arc<PathManager>,
 }
 
 /// Where an event comes from.
@@ -137,7 +138,7 @@ impl Trigger {
     let (pending, mut incoming) = unbounded_channel::<(InternedPath, FsEventKind, Origin)>();
     let analyzer = Arc::default();
     let processor = EventProcessor {
-      path_manager,
+      path_manager: Arc::clone(&path_manager),
       tx,
       analyzer: Arc::clone(&analyzer),
     };
@@ -163,7 +164,16 @@ impl Trigger {
       })
       .expect("spawn watcher event filter thread");
 
-    Self { pending, analyzer }
+    Self {
+      pending,
+      analyzer,
+      path_manager,
+    }
+  }
+
+  pub(crate) fn request_rescan(&self) {
+    self.path_manager.request_rescan();
+    self.analyzer.invalidate_all();
   }
 
   /// Hands a raw event to the filter thread. Never blocks — this runs straight
@@ -226,6 +236,7 @@ impl EventProcessor {
   /// - `/path/to`
   async fn process(&self, path: &InternedPath, kind: FsEventKind, origin: Origin) {
     let appeared = matches!(origin, Origin::Disk { appeared: true });
+    let observed_deletion = matches!(origin, Origin::Disk { .. });
     // Drop events inside ignored subtrees. The recursive-root watch delivers
     // events for unregistered paths (e.g. the build-output dir); left through,
     // `find_associated_event` bubbles them to a registered parent and triggers
@@ -261,9 +272,11 @@ impl EventProcessor {
     // hold records is swept, so deleting many unrelated files stays cheap.
     if removed || kind == FsEventKind::Remove {
       let may_contain_records = self.path_manager.may_contain_records(path);
-      self.path_manager.remove_file_time(path);
+      self.path_manager.remove_file_time(path, observed_deletion);
       if may_contain_records {
-        self.path_manager.remove_file_times_under(path);
+        self
+          .path_manager
+          .remove_file_times_under(path, observed_deletion);
       }
       if kind == FsEventKind::Remove && is_watched_path {
         self.path_manager.set_reported_file_removal(path);
@@ -306,9 +319,13 @@ impl EventProcessor {
         *associated_kind = FsEventKind::Remove;
         self.analyzer.invalidate_path(associated);
         let may_contain_records = self.path_manager.may_contain_records(associated);
-        self.path_manager.remove_file_time(associated);
+        self
+          .path_manager
+          .remove_file_time(associated, observed_deletion);
         if may_contain_records {
-          self.path_manager.remove_file_times_under(associated);
+          self
+            .path_manager
+            .remove_file_times_under(associated, observed_deletion);
         }
       }
     }
