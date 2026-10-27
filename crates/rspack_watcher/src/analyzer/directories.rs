@@ -5,7 +5,7 @@ use rspack_paths::{InternedPath, InternedPathMap, InternedPathSet};
 use rspack_util::fx_hash::FxHashMap;
 
 use super::{Analyzer, WatchPattern};
-use crate::paths::PathAccessor;
+use crate::{path_prefixes::PathPrefixes, paths::PathAccessor};
 
 /// `WatcherDirectoriesAnalyzer` analyzes the path register and determines
 ///
@@ -77,14 +77,12 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
         }
       }
     }
+    let mut invalidated_paths = invalidated.paths.into_iter().collect();
+    let prefixes = PathPrefixes::new(&mut invalidated_paths);
     let is_invalidated = |path: &InternedPath| {
-      invalidated.all
-        || invalidated
-          .paths
-          .iter()
-          .any(|root| path.starts_with(root.as_path()))
+      invalidated.all || prefixes.contains(path.as_path())
     };
-    if invalidated.all || !invalidated.paths.is_empty() {
+    if invalidated.all || !invalidated_paths.is_empty() {
       for path in path_accessor.all() {
         if is_invalidated(&path) {
           dirty.insert(path);

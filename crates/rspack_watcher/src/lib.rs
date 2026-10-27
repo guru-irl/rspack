@@ -2,6 +2,7 @@ mod analyzer;
 mod disk_watcher;
 mod executor;
 mod ignored;
+mod path_prefixes;
 mod paths;
 mod scanner;
 mod trigger;
