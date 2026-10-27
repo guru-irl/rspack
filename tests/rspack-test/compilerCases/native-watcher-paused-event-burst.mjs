@@ -38,6 +38,26 @@ export default {
 		const runs = [];
 		const values = [];
 		const writes = [];
+		const events = [];
+		const builds = [];
+		const timeline = [];
+		const record = (event, details = {}) =>
+			timeline.push({ at: Date.now(), event, ...details });
+		const observe = (child) => {
+			child.hooks.afterEnvironment.tap(CASE_NAME, () => {
+				for (const event of ['change', 'remove'])
+					child.watchFileSystem.on(event, (file) =>
+						record(event, { compiler: child.name, file: path.basename(file) }),
+					);
+				child.watchFileSystem.on('aggregated', (changes, removals) =>
+					record('aggregated', {
+						compiler: child.name,
+						changes: [...changes].map((file) => path.basename(file)),
+						removals: [...removals].map((file) => path.basename(file)),
+					}),
+				);
+			});
+		};
 		const configs = ['client', 'ssr'].map((name) => ({
 			name,
 			...(name === 'ssr' ? { dependencies: ['client'] } : {}),
@@ -56,6 +76,7 @@ export default {
 			plugins: [
 				{
 					apply(child) {
+						observe(child);
 						child.hooks.watchRun.tap(CASE_NAME, () => {
 							if (recording && name === 'client')
 								runs.push({
@@ -71,6 +92,7 @@ export default {
 							if (recording && name === 'client' && !failure) {
 								delete require.cache[require.resolve(bundle)];
 								values.push(require(bundle));
+								record('build', { compiler: name, values: values.at(-1) });
 							}
 						});
 					},
@@ -103,7 +125,10 @@ export default {
 		let ready = false;
 		writer.on('message', (message) => {
 			if (message === 'ready') ready = true;
-			else writes.push(message);
+			else {
+				writes.push(message);
+				record('save', message);
+			}
 		});
 		writer.on('error', (error) => {
 			failure = error;
@@ -113,7 +138,10 @@ export default {
 			const deadline = Date.now() + 10_000;
 			while (!condition()) {
 				if (failure) throw failure;
-				if (Date.now() > deadline) throw new Error('Watch did not settle');
+				if (Date.now() > deadline)
+					throw new Error(
+						`Watch did not settle: ${JSON.stringify({ callbacks, events, runs, values, writes, builds, timeline })}`,
+					);
 				await wait(25);
 			}
 			if (failure) throw failure;
@@ -125,6 +153,7 @@ export default {
 					if (error || stats.hasErrors())
 						failure = error || new Error(stats.toString());
 					callbacks++;
+					record('callback', { callbacks });
 				},
 			);
 			await until(() => ready && callbacks > 0 && Date.now() - lastDone > 750);
@@ -151,7 +180,6 @@ export default {
 				compiler.close((error) => (error ? reject(error) : resolve())),
 			);
 
-			const events = [];
 			let singleRecording = false;
 			callbacks = 0;
 			compiler = rspack({
@@ -159,7 +187,9 @@ export default {
 				plugins: [
 					{
 						apply(single) {
+							observe(single);
 							single.hooks.invalid.tap(CASE_NAME, (file) => {
+								record('invalid', { file: file && path.basename(file) });
 								if (singleRecording)
 									events.push(`invalid:${path.basename(file)}`);
 							});
@@ -169,11 +199,13 @@ export default {
 									path.basename(file),
 								);
 								events.push(`build:${modified.join(',')}`);
+								record('watchRun', { modified });
 								if (modified.includes('a.js')) {
 									fs.writeFileSync(
 										path.join(directory, 'b.js'),
 										'module.exports = "b-during-build";',
 									);
+									record('save', { file: 'b.js', value: 'b-during-build' });
 									await wait(600);
 								}
 							});
@@ -188,6 +220,16 @@ export default {
 						failure = error || new Error(stats.toString());
 					callbacks++;
 					lastDone = Date.now();
+					if (!failure) {
+						delete require.cache[require.resolve(bundle)];
+						builds.push({
+							modified: [...(compiler.modifiedFiles || [])].map((file) =>
+								path.basename(file),
+							),
+							values: require(bundle),
+						});
+					}
+					record('callback', { callbacks, build: builds.at(-1) });
 				},
 			);
 			await until(() => callbacks > 0 && Date.now() - lastDone > 750);
@@ -196,6 +238,7 @@ export default {
 				path.join(directory, 'a.js'),
 				'module.exports = "a-trigger";',
 			);
+			record('save', { file: 'a.js', value: 'a-trigger' });
 			await until(() => callbacks >= 3 && Date.now() - lastDone > 750);
 			expect(events).toEqual([
 				'invalid:a.js',
