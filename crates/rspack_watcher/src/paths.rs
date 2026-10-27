@@ -5,7 +5,7 @@ use std::{
   path::{Path, PathBuf},
   sync::{
     Mutex, OnceLock, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
   },
   time::SystemTime,
 };
@@ -22,7 +22,14 @@ use super::{
   FsWatcherIgnored, TimeInfoEntries, TimeInfoEntry, disk_watcher::DiskWatcher,
   ignored::IgnoredMatcher,
 };
-use crate::registered_paths::{RegisteredPaths, collapse_deleted_paths};
+fn collapse_deleted_paths(paths: &mut Vec<InternedPath>) {
+  paths.sort_unstable_by(|left, right| left.as_path().cmp(right.as_path()));
+  paths.dedup_by(|path, ancestor| path.starts_with(ancestor.as_path()));
+}
+
+fn is_normalized(path: &InternedPath) -> bool {
+  path.as_os_str() == path.components().collect::<PathBuf>().as_os_str()
+}
 
 /// An iterator that chains together references to all files, directories, and missing paths
 /// stored in the [`PathTracker`]. This allows iteration over all registered paths as a single sequence.
@@ -218,8 +225,6 @@ struct PathTracker {
   added: InternedPathDashSet,
   removed: InternedPathDashSet,
   all: InternedPathDashSet,
-  /// Ordered membership used only for deletion recovery.
-  registered: Mutex<RegisteredPaths>,
   /// Recovery work that must survive the next watch cycle's reset.
   pending_scan: InternedPathDashSet,
 }
@@ -233,25 +238,10 @@ impl PathTracker {
   /// Adds a path to the tracker; whether it was not tracked before.
   fn add(&self, path: InternedPath) -> bool {
     if self.all.insert(path.clone()) {
-      self
-        .registered
-        .lock()
-        .expect("lock registered paths")
-        .insert(path.clone());
       self.added.insert(path);
       true
     } else {
       false
-    }
-  }
-
-  fn request_scans_under(&self, deleted: &[InternedPath], mut on_path: impl FnMut(&InternedPath)) {
-    let registered = self.registered.lock().expect("lock registered paths");
-    for root in deleted {
-      registered.for_each_under(root, |path| {
-        self.pending_scan.insert(path.clone());
-        on_path(path);
-      });
     }
   }
 
@@ -274,13 +264,6 @@ impl PathTracker {
   /// Removes a path from the tracker; whether it was tracked.
   fn remove(&self, path: InternedPath) -> bool {
     let tracked = self.all.remove(&path).is_some();
-    if tracked {
-      self
-        .registered
-        .lock()
-        .expect("lock registered paths")
-        .remove(&path);
-    }
     self.removed.insert(path);
     tracked
   }
@@ -374,6 +357,8 @@ pub(crate) struct PathManager {
   /// counts the registrations directly in it plus its subdirectories here,
   /// and goes once that count is back to zero.
   registered_ancestors: InternedPathDashMap<usize>,
+  /// Raw spellings that cannot use normalized membership lookups.
+  non_normalized_registrations: AtomicUsize,
   /// Every path holding a record (in `file_times`, the context sets or
   /// `last_watch_events`) under its parent directory, ancestors included up
   /// to the first one already indexed: a removed directory's records are
@@ -410,6 +395,7 @@ impl PathManager {
       context_files: InternedPathDashSet::default(),
       context_directories: InternedPathDashSet::default(),
       registered_ancestors: InternedPathDashMap::default(),
+      non_normalized_registrations: AtomicUsize::new(0),
       absent_directories: InternedPathDashSet::default(),
       recorded_children: InternedPathDashMap::default(),
       index_lock: std::sync::Mutex::default(),
@@ -446,11 +432,42 @@ impl PathManager {
       return;
     }
     collapse_deleted_paths(&mut deleted);
-    self.files.request_scans_under(&deleted, |_| {});
-    self.directories.request_scans_under(&deleted, |path| {
-      self.absent_directories.insert(path.clone());
-    });
-    self.missing.request_scans_under(&deleted, |_| {});
+    let aliases = self.non_normalized_registrations.load(Ordering::Relaxed) != 0;
+    let mut leaves = Vec::new();
+    let mut directories = Vec::new();
+    for root in &deleted {
+      let key = InternedPath::from(root.components().collect::<PathBuf>());
+      if aliases || self.registered_ancestors.contains_key(&key) {
+        directories.push(root);
+      } else {
+        leaves.push(key);
+      }
+    }
+    for (tracker, is_context) in [(&self.files, false), (&self.directories, true)] {
+      let request = |path: &InternedPath| {
+        tracker.pending_scan.insert(path.clone());
+        if is_context {
+          self.absent_directories.insert(path.clone());
+        }
+      };
+      for path in &leaves {
+        if tracker.all.contains(path) {
+          request(path);
+        }
+      }
+      // Directory removals are rare. Scan membership once for the collapsed
+      // roots, including registrations that no longer hold a timestamp record.
+      if !directories.is_empty() {
+        for path in tracker.all.iter() {
+          if directories
+            .iter()
+            .any(|root| path.starts_with(root.as_path()))
+          {
+            request(&path);
+          }
+        }
+      }
+    }
   }
 
   pub fn request_rescan(&self) {
@@ -1022,12 +1039,22 @@ impl PathManager {
   ) -> Result<()> {
     let mut registered = Vec::new();
     let mut unregistered = Vec::new();
-    for (paths, tracker) in [
-      (PathUpdater::from(files), &self.files),
-      (PathUpdater::from(directories), &self.directories),
-      (PathUpdater::from(missing), &self.missing),
+    for (paths, tracker, track_aliases) in [
+      (PathUpdater::from(files), &self.files, true),
+      (PathUpdater::from(directories), &self.directories, true),
+      (PathUpdater::from(missing), &self.missing, false),
     ] {
       let (added, removed) = paths.update(tracker, &self.ignored).await?;
+      if track_aliases {
+        self.non_normalized_registrations.fetch_add(
+          added.iter().filter(|path| !is_normalized(path)).count(),
+          Ordering::Relaxed,
+        );
+        self.non_normalized_registrations.fetch_sub(
+          removed.iter().filter(|path| !is_normalized(path)).count(),
+          Ordering::Relaxed,
+        );
+      }
       registered.extend(added);
       unregistered.extend(removed);
     }
