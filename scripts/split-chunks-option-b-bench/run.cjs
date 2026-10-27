@@ -84,6 +84,8 @@ async function missingHeavy() {
   return { missing: missing.length, unchangedApplications: rounds.length, missingHeavyMs: median(rounds), applicationMs: rounds, steadyMiB: rss() };
  } finally { await watcher.close(); }
 }
+/** @param {import("../../crates/node_binding/napi-binding").NativeTimeInfoTable} table */
+function presentPaths(table) { return new Set(table.entries.map(entry=>entry.path)); }
 async function latency() {
  assert(['offset0-edit','files-only','contexts-only','rewrite600'].includes(scenario));
  const useFiles=scenario!=='contexts-only', useContexts=scenario!=='files-only';
@@ -110,11 +112,12 @@ async function latency() {
  }]};
  const started=ns();const compiler=rspack(options);
  const watching=compiler.watch({aggregateTimeout:50},(e,stats)=>{failure=e||(stats?.hasErrors()?new Error(stats.toString()):failure);builds++;});
+ let timeInfoReads=0;
  const ready=marker=>{
   if(failure)throw failure;if(!native)return false;
-  const info=native.collectTimeInfoEntries();const f=new Map(info.fileTimestamps),d=new Map(info.directoryTimestamps);
-  const present=p=>f.has(p)&&f.get(p)!==null;
-  return present(entry)&&present(marker)&&(!useFiles||files.every(p=>present(p)))&&(!useContexts||contexts.every(p=>d.has(p)&&d.get(p)!==null));
+  timeInfoReads++;const info=native.collectTimeInfoEntries();const f=presentPaths(info.fileTimestamps),d=presentPaths(info.directoryTimestamps);
+  const present=p=>f.has(p);
+  return present(entry)&&present(marker)&&(!useFiles||files.every(p=>present(p)))&&(!useContexts||contexts.every(p=>d.has(p)));
  };
  try {
   await until(()=>builds>=1&&ready(path.join(fixture,'ready-1.txt')),'first registration');
@@ -127,7 +130,7 @@ async function latency() {
   assert.deepEqual(emitted,['original','original','value-1','value-2'].map(value=>targets.map(()=>value).join('\n')));
   assert.equal(fs.readFileSync(path.join(options.output.path,'snapshot.txt'),'utf8'),targets.map(()=>'value-2').join('\n'));
   const afterThreeMiB=rss();global.gc();const steadyMiB=rss();
-  return {rewrittenFiles:targets.length,files:useFiles?files.length:0,contexts:useContexts?contexts.length:0,firstReadyMs,startupReadyMs,afterRegistrationMiB,afterGcMiB,afterThreeMiB,steadyMiB,rebuildLatencyMs:median(latencies),latencies,writes,rebuilds:builds-1,outputParity:true};
+  return {timeInfoReads,rewrittenFiles:targets.length,files:useFiles?files.length:0,contexts:useContexts?contexts.length:0,firstReadyMs,startupReadyMs,afterRegistrationMiB,afterGcMiB,afterThreeMiB,steadyMiB,rebuildLatencyMs:median(latencies),latencies,writes,rebuilds:builds-1,outputParity:true};
  } finally {await new Promise((resolve,reject)=>watching.close(e=>e?reject(e):resolve()));await new Promise((resolve,reject)=>compiler.close(e=>e?reject(e):resolve()));NativeWatcher.prototype.watch=watch;}
 }
 (async()=>{
