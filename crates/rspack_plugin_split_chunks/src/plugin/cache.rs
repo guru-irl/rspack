@@ -5,7 +5,7 @@ use std::{
 
 use rspack_collections::{IdentifierMap, SsoHashSet};
 use rspack_core::{ChunkUkey, Compilation, ModuleIdentifier};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh64::Xxh64;
 
 use super::{
@@ -23,6 +23,35 @@ static VERIFY: LazyLock<bool> = LazyLock::new(|| {
 });
 pub(super) fn verification_enabled() -> bool {
   *VERIFY
+}
+
+// Original chunks retain their graph identity. Destinations allocated by this run use
+// their creation order so equivalent later phases do not depend on allocation counters.
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord)]
+enum PhaseChunkKey {
+  Original(ChunkUkey),
+  Created(usize),
+}
+
+#[derive(Default)]
+pub(super) struct PhaseChunkKeys {
+  created: FxHashMap<ChunkUkey, usize>,
+}
+
+impl PhaseChunkKeys {
+  pub fn record_created(&mut self, chunk: ChunkUkey) {
+    let ordinal = self.created.len();
+    self.created.entry(chunk).or_insert(ordinal);
+  }
+
+  fn key(&self, chunk: ChunkUkey) -> PhaseChunkKey {
+    self
+      .created
+      .get(&chunk)
+      .map_or(PhaseChunkKey::Original(chunk), |ordinal| {
+        PhaseChunkKey::Created(*ordinal)
+      })
+  }
 }
 
 pub(super) struct CacheStructure {
@@ -356,6 +385,7 @@ impl SplitChunksPlugin {
     })
   }
 
+  #[allow(clippy::too_many_arguments)]
   pub(super) fn phase_digest(
     &self,
     root: u128,
@@ -363,12 +393,15 @@ impl SplitChunksPlugin {
     compilation: &Compilation,
     modules: &[ModuleIdentifier],
     available: &[SsoHashSet<ChunkUkey>],
-    indices: &rustc_hash::FxHashMap<ChunkUkey, u32>,
+    indices: &FxHashMap<ChunkUkey, u32>,
+    chunk_keys: &PhaseChunkKeys,
   ) -> u128 {
     let mut hash = DigestHasher::default();
     root.hash(&mut hash);
     if phase != 0 {
-      self.entry_digest(compilation).hash(&mut hash);
+      self
+        .entry_digest_with_chunk_keys(compilation, chunk_keys)
+        .hash(&mut hash);
     }
     modules.hash(&mut hash);
     let module_graph = compilation.get_module_graph();
@@ -396,8 +429,10 @@ impl SplitChunksPlugin {
     ordered_indices.sort_unstable_by_key(|(chunk, _)| **chunk);
     ordered_indices.hash(&mut hash);
     let graph = &compilation.build_chunk_graph_artifact;
-    for chunk in graph.chunk_by_ukey.values() {
-      chunk.ukey().hash(&mut hash);
+    let mut chunks = graph.chunk_by_ukey.values().collect::<Vec<_>>();
+    chunks.sort_unstable_by_key(|chunk| chunk_keys.key(chunk.ukey()));
+    for chunk in chunks {
+      chunk_keys.key(chunk.ukey()).hash(&mut hash);
       chunk.id().hash(&mut hash);
       chunk
         .filename_template()
@@ -432,24 +467,35 @@ impl SplitChunksPlugin {
         group.hash(&mut hash);
       }
     }
-    for (name, chunk) in graph.named_chunks.iter() {
+    let mut names = graph.named_chunks.iter().collect::<Vec<_>>();
+    names.sort_unstable_by_key(|(name, _)| *name);
+    names.len().hash(&mut hash);
+    for (name, chunk) in names {
       name.hash(&mut hash);
-      chunk.hash(&mut hash);
+      chunk_keys.key(*chunk).hash(&mut hash);
     }
     hash.digest()
   }
 
   pub(super) fn entry_digest(&self, compilation: &Compilation) -> u128 {
+    self.entry_digest_with_chunk_keys(compilation, &PhaseChunkKeys::default())
+  }
+
+  fn entry_digest_with_chunk_keys(
+    &self,
+    compilation: &Compilation,
+    chunk_keys: &PhaseChunkKeys,
+  ) -> u128 {
     let graph = &compilation.build_chunk_graph_artifact;
     let module_graph = compilation.get_module_graph();
     let mut digest = DigestHasher::default();
     let mut module_hashes = IdentifierMap::default();
     let used_exports = self.cache_groups.iter().any(|group| group.used_exports);
     let mut chunks = graph.chunk_by_ukey.values().collect::<Vec<_>>();
-    chunks.sort_unstable_by_key(|chunk| chunk.ukey());
+    chunks.sort_unstable_by_key(|chunk| chunk_keys.key(chunk.ukey()));
     chunks.len().hash(&mut digest);
     for chunk in chunks {
-      chunk.ukey().hash(&mut digest);
+      chunk_keys.key(chunk.ukey()).hash(&mut digest);
       chunk.name().hash(&mut digest);
       chunk.runtime().hash(&mut digest);
       chunk
@@ -509,7 +555,10 @@ impl SplitChunksPlugin {
       group.is_initial().hash(&mut digest);
       group.name().hash(&mut digest);
       group.index.hash(&mut digest);
-      group.chunks.hash(&mut digest);
+      group.chunks.len().hash(&mut digest);
+      for chunk in &group.chunks {
+        chunk_keys.key(*chunk).hash(&mut digest);
+      }
       let mut parents = group.parents.iter().copied().collect::<Vec<_>>();
       parents.sort_unstable();
       parents.hash(&mut digest);
@@ -520,7 +569,11 @@ impl SplitChunksPlugin {
     }
     let mut names = graph.named_chunks.iter().collect::<Vec<_>>();
     names.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    names.hash(&mut digest);
+    names.len().hash(&mut digest);
+    for (name, chunk) in names {
+      name.hash(&mut digest);
+      chunk_keys.key(*chunk).hash(&mut digest);
+    }
     digest.digest()
   }
 }

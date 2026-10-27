@@ -387,6 +387,7 @@ impl SplitChunksPlugin {
       self.prepare_native_cache_group_matches(&all_modules, &stages, compilation);
     let priority_len = priority_cache_groups.len();
     let mut js_may_have_run = false;
+    let mut phase_chunk_keys = cache::PhaseChunkKeys::default();
     for (index, ((_, cache_groups), native_matches)) in priority_cache_groups
       .into_iter()
       .zip(native_matches)
@@ -421,6 +422,7 @@ impl SplitChunksPlugin {
           &all_modules,
           available_module_chunks,
           &chunk_index_map,
+          &phase_chunk_keys,
         )
       });
       let phase_key_ms = key_start.elapsed().as_secs_f64() * 1000.0;
@@ -673,6 +675,9 @@ impl SplitChunksPlugin {
           &mut is_reuse_existing_chunk,
           &mut is_reuse_existing_chunk_with_all_modules,
         );
+        if !is_reuse_existing_chunk {
+          phase_chunk_keys.record_created(new_chunk);
+        }
 
         tracing::trace!(
           "{module_group_key}, get Chunk {:?} with is_reuse_existing_chunk: {is_reuse_existing_chunk:?} and {is_reuse_existing_chunk_with_all_modules:?}",
