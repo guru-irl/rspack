@@ -177,49 +177,79 @@ impl CanonicalWatcher {
       }
       stale
     };
+    let mut errors = Vec::new();
+    let mut retained = Vec::new();
     for watch in stale {
-      self.remove_native_watch(&watch.path, watch.mode(), true)?;
+      if let Err(error) = self.remove_native_watch(&watch.path, watch.mode(), true) {
+        errors.push(error);
+      }
+      retained.extend(
+        watch
+          .aliases
+          .into_iter()
+          .filter(|(alias, _)| *alias != path),
+      );
     }
-    let (native_path, native_mode, covered, needs_watch) = {
+    // Preserve notify's recursive coverage when refreshing a covered child.
+    let (native_path, native_mode) = {
       let aliases = self.aliases.lock().expect("watch aliases lock poisoned");
       let key = aliases.file_ids.get(&file_id).unwrap_or(&canonical);
       if let Some(watch) = aliases.watches.get(key) {
         (
           watch.path.clone(),
-          if watch.mode() == RecursiveMode::Recursive {
+          if watch.mode() == RecursiveMode::Recursive || aliases.covered(&watch.path) {
             RecursiveMode::Recursive
           } else {
             mode
           },
-          aliases.covered(&watch.path),
-          watch.mode() != RecursiveMode::Recursive && mode == RecursiveMode::Recursive,
         )
       } else {
-        let covered = aliases.covered(&canonical);
-        (canonical, mode, covered, true)
+        let native_mode = if aliases.covered(&canonical) {
+          RecursiveMode::Recursive
+        } else {
+          mode
+        };
+        (canonical, native_mode)
       }
     };
     // Never hold the aliases lock across notify's blocking round trip. Its
     // event reader needs that lock to translate paths.
-    if !covered && needs_watch {
-      self.inner.watch(&native_path, native_mode)?;
+    // A matching identity does not prove that the kernel watch survived deletion
+    // and recreation: the same path can immediately reuse its old inode.
+    let registered = match self.inner.watch(&native_path, native_mode) {
+      Ok(()) => true,
+      Err(error) => {
+        errors.push(error);
+        false
+      }
+    };
+    if registered {
+      let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
+      aliases.paths.insert(path.clone(), native_path.clone());
+      aliases.file_ids.insert(file_id, native_path.clone());
+      let watch = aliases
+        .watches
+        .entry(native_path.clone())
+        .or_insert_with(|| CanonicalWatch {
+          path: native_path,
+          file_id,
+          aliases: InternedPathMap::default(),
+        });
+      let before = !watch.aliases.is_empty() && watch.needs_mapping();
+      watch.aliases.insert(path, mode);
+      let after = watch.needs_mapping();
+      aliases.update_mapping(before, after);
     }
-    let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
-    aliases.paths.insert(path.clone(), native_path.clone());
-    aliases.file_ids.insert(file_id, native_path.clone());
-    let watch = aliases
-      .watches
-      .entry(native_path.clone())
-      .or_insert_with(|| CanonicalWatch {
-        path: native_path,
-        file_id,
-        aliases: InternedPathMap::default(),
-      });
-    let before = !watch.aliases.is_empty() && watch.needs_mapping();
-    watch.aliases.insert(path, mode);
-    let after = watch.needs_mapping();
-    aliases.update_mapping(before, after);
-    Ok(())
+    // The disk watcher still owns these logical requirements. Resolve them again
+    // after removing the stale native path, even if another restore failed.
+    for (alias, mode) in retained {
+      if alias.metadata().is_ok()
+        && let Err(error) = self.watch(&alias, mode)
+      {
+        errors.push(error);
+      }
+    }
+    Self::finish_operations(errors)
   }
 
   pub fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
@@ -298,6 +328,10 @@ impl CanonicalWatcher {
         }
       }
     }
+    Self::finish_operations(errors)
+  }
+
+  fn finish_operations(mut errors: Vec<notify::Error>) -> notify::Result<()> {
     if errors.is_empty() {
       Ok(())
     } else if errors.len() == 1 {
