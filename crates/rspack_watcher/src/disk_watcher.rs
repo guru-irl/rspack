@@ -361,7 +361,7 @@ impl DiskWatcher {
   pub(crate) fn watch_context_directory(
     &mut self,
     path: &InternedPath,
-  ) -> rspack_error::Result<bool> {
+  ) -> notify::Result<bool> {
     #[cfg(target_os = "linux")]
     let context_watch_limit_reached = CONTEXTS_DISABLED.load(Ordering::Acquire);
     #[cfg(not(target_os = "linux"))]
@@ -376,9 +376,7 @@ impl DiskWatcher {
       mode: NonRecursive,
     };
     if !self.watch_patterns.contains(&pattern) {
-      self.watch_pattern(&pattern).map_err(|error| {
-        rspack_error::error!("failed to watch context directory {path:?}: {error}")
-      })?;
+      self.watch_pattern(&pattern)?;
       self.watch_patterns.insert(pattern);
     }
     Ok(self.context_paths.insert(path.clone()))
