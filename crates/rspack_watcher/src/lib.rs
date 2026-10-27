@@ -5,6 +5,7 @@ mod disk_watcher;
 mod executor;
 mod ignored;
 mod paths;
+mod registered_paths;
 mod scanner;
 mod trigger;
 
