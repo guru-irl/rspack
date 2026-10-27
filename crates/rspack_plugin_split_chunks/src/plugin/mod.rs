@@ -12,7 +12,7 @@ use std::{
   borrow::Cow,
   cmp::Ordering,
   fmt::Debug,
-  sync::{Arc, Mutex},
+  sync::{Arc, Mutex, OnceLock},
   time::Instant,
 };
 
@@ -36,6 +36,19 @@ use crate::{
 };
 
 type ModuleGroupMap = FxIndexMap<ModuleGroupKey, ModuleGroup>;
+
+fn experimental_cache_enabled(config: bool) -> bool {
+  static OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
+  OVERRIDE
+    .get_or_init(
+      || match std::env::var("RSPACK_SPLIT_CHUNKS_EXPERIMENTAL_CACHE").as_deref() {
+        Ok("1") => Some(true),
+        Ok("0") => Some(false),
+        _ => None,
+      },
+    )
+    .unwrap_or(config)
+}
 
 #[doc(hidden)]
 pub type SplitChunksNameBatchFn = Arc<
@@ -90,7 +103,8 @@ pub struct SplitChunksPlugin {
 }
 
 impl SplitChunksPlugin {
-  pub fn new(options: PluginOptions) -> Self {
+  pub fn new(mut options: PluginOptions) -> Self {
+    options.experimental_cache = experimental_cache_enabled(options.experimental_cache);
     tracing::debug!("Create `SplitChunksPlugin` with {:#?}", options);
     Self::new_inner(
       options.dedup_depth,
@@ -107,7 +121,7 @@ impl SplitChunksPlugin {
 
   #[doc(hidden)]
   pub fn new_with_name_batch_getters(
-    options: PluginOptions,
+    mut options: PluginOptions,
     name_batch_getters: Vec<Option<SplitChunksNameBatchFn>>,
   ) -> Self {
     assert_eq!(
@@ -115,6 +129,7 @@ impl SplitChunksPlugin {
       name_batch_getters.len(),
       "name batch getters should align with cache groups"
     );
+    options.experimental_cache = experimental_cache_enabled(options.experimental_cache);
     let name_batch_getters = name_batch_getters
       .iter()
       .any(Option::is_some)
