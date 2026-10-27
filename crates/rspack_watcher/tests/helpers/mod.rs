@@ -343,6 +343,7 @@ impl TestHelper {
         &self,
         changed_files: FxHashSet<String>,
         deleted_files: FxHashSet<String>,
+        _ticket: u64,
       ) {
         let _ = self.0.send(Event::Aggregated(AggregatedEvent {
           changed_files,
