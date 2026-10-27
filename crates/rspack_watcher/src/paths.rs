@@ -774,6 +774,11 @@ impl PathManager {
       // Install the non-recursive watch before enumerating, including empty
       // directories. Children pass the ignored filter before reaching this walk.
       if let Err(error) = self.watch_context_directory(&dir) {
+        for context in self.directories.all.iter() {
+          if dir.starts_with(context.as_path()) {
+            self.directories.pending_scan.insert(context.clone());
+          }
+        }
         watch_errors += 1;
         first_watch_error.get_or_insert(error);
       }
