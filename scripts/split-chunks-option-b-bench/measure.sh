@@ -10,7 +10,7 @@ rustup toolchain install nightly-2026-04-16 --profile minimal --component rust-s
 rustup default nightly-2026-04-16
 rustup target add "$RUST_TARGET"
 for arm in restack final; do
- if [[ "$arm" == restack ]]; then REF=95c672a381ed713e582265e637badec09372eda3; else REF=afc02802ce48e5ef83a0b5761d80139a1436f4e5; fi
+ if [[ "$arm" == restack ]]; then REF=95c672a381ed713e582265e637badec09372eda3; else REF=ab0d71011539025cc03db06a8ac7788ce42c7c6a; fi
  git checkout "$REF" -- crates/rspack_watcher
  node - "$ROOT" "$arm" <<'JS'
 const fs=require('node:fs'),path=require('node:path');
@@ -29,11 +29,11 @@ JS
  PLATFORM="$RUNNER_OS"
  DEST="$ROOT/bindings/optb-binding-$PLATFORM-$arm"
  if [[ "$RUNNER_OS" == Windows ]]; then cp "$ROOT/method-target/$RUST_TARGET/release/native-watcher-event-cost.exe" "$DEST/event-cost.exe"; else cp "$ROOT/method-target/$RUST_TARGET/release/native-watcher-event-cost" "$DEST/event-cost"; fi
- git checkout afc02802ce48e5ef83a0b5761d80139a1436f4e5 -- crates/rspack_watcher
+ git checkout ab0d71011539025cc03db06a8ac7788ce42c7c6a -- crates/rspack_watcher
  # The generated binary source is not tracked and is separate from the release binding.
 done
 node scripts/split-chunks-option-b-bench/run.cjs --prepare > "$ROOT/results/fixture.log" 2>&1
-for scenario in offset0-edit files-only contexts-only missing-heavy method; do
+for scenario in offset0-edit files-only contexts-only rewrite600 missing-heavy method; do
  for rep in 1 2 3 4 5; do
   if (( rep % 2 )); then arms="restack final"; else arms="final restack"; fi
   for arm in $arms; do

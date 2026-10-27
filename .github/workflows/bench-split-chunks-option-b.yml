@@ -16,11 +16,11 @@ jobs:
       matrix:
         include:
           - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: final, ref: afc02802ce48e5ef83a0b5761d80139a1436f4e5 }
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: final, ref: ab0d71011539025cc03db06a8ac7788ce42c7c6a }
           - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: final, ref: afc02802ce48e5ef83a0b5761d80139a1436f4e5 }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: final, ref: ab0d71011539025cc03db06a8ac7788ce42c7c6a }
           - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: restack, ref: 95c672a381ed713e582265e637badec09372eda3 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: final, ref: afc02802ce48e5ef83a0b5761d80139a1436f4e5 }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: final, ref: ab0d71011539025cc03db06a8ac7788ce42c7c6a }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:

@@ -13,7 +13,7 @@ const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest(
 const ns = () => process.hrtime.bigint();
 const elapsed = start => Number(ns() - start) / 1e6;
 const median = values => [...values].sort((a,b) => a-b)[Math.floor(values.length / 2)];
-const refs = { restack: '95c672a381ed713e582265e637badec09372eda3', final: 'afc02802ce48e5ef83a0b5761d80139a1436f4e5' };
+const refs = { restack: '95c672a381ed713e582265e637badec09372eda3', final: 'ab0d71011539025cc03db06a8ac7788ce42c7c6a' };
 if (process.argv[2] === '--prepare') {
  fs.mkdirSync(path.join(root, 'results'), { recursive: true });
  fs.mkdirSync(fixture, { recursive: true });
@@ -85,10 +85,10 @@ async function missingHeavy() {
  } finally { await watcher.close(); }
 }
 async function latency() {
- assert(['offset0-edit','files-only','contexts-only'].includes(scenario));
+ assert(['offset0-edit','files-only','contexts-only','rewrite600'].includes(scenario));
  const useFiles=scenario!=='contexts-only', useContexts=scenario!=='files-only';
- const target=files[0], entry=path.join(fixture,'index.js');
- const old=new Date(Date.now()-60000);fs.writeFileSync(target,'original');fs.utimesSync(target,old,old);
+ const targets=scenario==='rewrite600'?files.slice(0,600):[files[0]], entry=path.join(fixture,'index.js');
+ const old=new Date(Date.now()-60000);for(const target of targets){fs.writeFileSync(target,'original');fs.utimesSync(target,old,old);}
  fs.writeFileSync(entry,'module.exports = 1;');fs.utimesSync(entry,old,old);
  let native, firstWatch, watchCount=0, builds=0, readBuild=0, failure, enabled=false, lastWrite, expected='original';
  const emitted=[], latencies=[], writes=[];
@@ -101,11 +101,11 @@ async function latency() {
    if(useFiles)for(const file of files)compilation.fileDependencies.add(file);
    if(useContexts)for(const dir of contexts)compilation.contextDependencies.add(dir);
    compilation.fileDependencies.add(path.join(fixture,`ready-${Math.min(readBuild,7)}.txt`));
-   const value=fs.readFileSync(target,'utf8');emitted.push(value);
+   const value=targets.map(target=>fs.readFileSync(target,'utf8')).join('\n');emitted.push(value);
    compilation.emitAsset('snapshot.txt',new sources.RawSource(value));
   });
   compiler.hooks.done.tap('Measurements',()=>{
-   if(enabled && readBuild>=2 && readBuild<4){expected=`value-${readBuild-1}`;lastWrite=ns();writes.push({build:readBuild,value:expected});fs.writeFileSync(target,expected);}
+   if(enabled && readBuild>=2 && readBuild<4){expected=`value-${readBuild-1}`;lastWrite=ns();writes.push({build:readBuild,value:expected});for(const target of targets)fs.writeFileSync(target,expected);}
   });
  }]};
  const started=ns();const compiler=rspack(options);
@@ -124,10 +124,10 @@ async function latency() {
   enabled=true;fs.writeFileSync(entry,'module.exports = 2;');
   await until(()=>builds>=4&&watchCount>=4&&ready(path.join(fixture,'ready-4.txt')),'three rebuilds');
   assert.equal(builds,4,'exactly three rebuilds');assert.equal(latencies.length,2,'two offset-zero writes');
-  assert.deepEqual(emitted,['original','original','value-1','value-2']);
-  assert.equal(fs.readFileSync(path.join(options.output.path,'snapshot.txt'),'utf8'),'value-2');
+  assert.deepEqual(emitted,['original','original','value-1','value-2'].map(value=>targets.map(()=>value).join('\n')));
+  assert.equal(fs.readFileSync(path.join(options.output.path,'snapshot.txt'),'utf8'),targets.map(()=>'value-2').join('\n'));
   const afterThreeMiB=rss();global.gc();const steadyMiB=rss();
-  return {files:useFiles?files.length:0,contexts:useContexts?contexts.length:0,firstReadyMs,startupReadyMs,afterRegistrationMiB,afterGcMiB,afterThreeMiB,steadyMiB,rebuildLatencyMs:median(latencies),latencies,writes,rebuilds:builds-1,outputParity:true};
+  return {rewrittenFiles:targets.length,files:useFiles?files.length:0,contexts:useContexts?contexts.length:0,firstReadyMs,startupReadyMs,afterRegistrationMiB,afterGcMiB,afterThreeMiB,steadyMiB,rebuildLatencyMs:median(latencies),latencies,writes,rebuilds:builds-1,outputParity:true};
  } finally {await new Promise((resolve,reject)=>watching.close(e=>e?reject(e):resolve()));await new Promise((resolve,reject)=>compiler.close(e=>e?reject(e):resolve()));NativeWatcher.prototype.watch=watch;}
 }
 (async()=>{
@@ -138,7 +138,7 @@ async function latency() {
    const binary=path.join(artifact,process.platform==='win32'?'event-cost.exe':'event-cost');
    const p=spawnSync(binary,[fixture],{encoding:'utf8'});assert.equal(p.status,0,p.stderr);
    const data=JSON.parse(p.stdout.trim().split('\n').at(-1));assert.equal(data.files,80000);assert.equal(data.contexts,3000);
-   metrics={...data,harnessSha256:hash(binary)};
+   metrics={...data,harnessSha256:hash(binary),memoryScope:"controller-only; sidecar memory not measured"};
   } else metrics=await latency();
   const usage=process.resourceUsage();const result={arm,scenario,rep,platform,arch:process.arch,identity,...metrics,peakMiB:peak(),userCpuMs:(usage.userCPUTime-usageStart.userCPUTime)/1000,systemCpuMs:(usage.systemCPUTime-usageStart.systemCPUTime)/1000};
   fs.writeFileSync(output,JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));
