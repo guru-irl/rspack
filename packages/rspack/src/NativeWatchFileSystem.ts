@@ -298,7 +298,10 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
           this.#events.emit('change', event.path, mtime);
           watcher.emit('change', event.path, mtime);
         } else {
-          callbackUndelayed(event.path, Date.now());
+          if (!paused) {
+            reported = true;
+            callbackUndelayed(event.path, Date.now());
+          }
           this.#events.emit('remove', event.path);
           watcher.emit('remove', event.path);
         }
