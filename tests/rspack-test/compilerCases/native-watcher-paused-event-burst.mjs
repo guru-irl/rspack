@@ -12,7 +12,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** @type {import("@rspack/test-tools").TCompilerCaseConfig} */
 export default {
 	description:
-		'should compile a blocked save burst once with dependent compilers',
+		'should compile a paused save once and report invalid before rebuilding',
 	async run() {
 		const directory = fs.realpathSync(
 			fs.mkdtempSync(path.join(os.tmpdir(), CASE_NAME)),
@@ -38,47 +38,46 @@ export default {
 		const runs = [];
 		const values = [];
 		const writes = [];
-		const compiler = rspack(
-			['client', 'ssr'].map((name) => ({
-				name,
-				...(name === 'ssr' ? { dependencies: ['client'] } : {}),
-				context: directory,
-				mode: 'development',
-				devtool: false,
-				target: 'node',
-				entry: `./${name}.js`,
-				output: {
-					path: path.join(directory, 'dist', name),
-					filename: 'bundle.cjs',
-					library: { type: 'commonjs2' },
-				},
-				experiments: { nativeWatcher: true },
-				watchOptions: { aggregateTimeout: 200, ignored: /node_modules/ },
-				plugins: [
-					{
-						apply(child) {
-							child.hooks.watchRun.tap(CASE_NAME, () => {
-								if (recording && name === 'client')
-									runs.push({
-										modified: [...(child.modifiedFiles || [])]
-											.map((file) => path.basename(file))
-											.sort(),
-										removed: [...(child.removedFiles || [])],
-									});
-							});
-							child.hooks.done.tap(CASE_NAME, (stats) => {
-								lastDone = Date.now();
-								if (stats.hasErrors()) failure = new Error(stats.toString());
-								if (recording && name === 'client' && !failure) {
-									delete require.cache[require.resolve(bundle)];
-									values.push(require(bundle));
-								}
-							});
-						},
+		const configs = ['client', 'ssr'].map((name) => ({
+			name,
+			...(name === 'ssr' ? { dependencies: ['client'] } : {}),
+			context: directory,
+			mode: 'development',
+			devtool: false,
+			target: 'node',
+			entry: `./${name}.js`,
+			output: {
+				path: path.join(directory, 'dist', name),
+				filename: 'bundle.cjs',
+				library: { type: 'commonjs2' },
+			},
+			experiments: { nativeWatcher: true },
+			watchOptions: { aggregateTimeout: 200, ignored: /node_modules/ },
+			plugins: [
+				{
+					apply(child) {
+						child.hooks.watchRun.tap(CASE_NAME, () => {
+							if (recording && name === 'client')
+								runs.push({
+									modified: [...(child.modifiedFiles || [])]
+										.map((file) => path.basename(file))
+										.sort(),
+									removed: [...(child.removedFiles || [])],
+								});
+						});
+						child.hooks.done.tap(CASE_NAME, (stats) => {
+							lastDone = Date.now();
+							if (stats.hasErrors()) failure = new Error(stats.toString());
+							if (recording && name === 'client' && !failure) {
+								delete require.cache[require.resolve(bundle)];
+								values.push(require(bundle));
+							}
+						});
 					},
-				],
-			})),
-		);
+				},
+			],
+		}));
+		let compiler = rspack(configs);
 		const writer = spawn(
 			process.execPath,
 			[
@@ -144,6 +143,65 @@ export default {
 			expect(values).toEqual([['a-new', 'b-new', 'c-new']]);
 			expect(runs).toEqual([
 				{ modified: ['a.js', 'b.js', 'c.js'], removed: [] },
+			]);
+
+			await new Promise((resolve) => watching.close(resolve));
+			watching = undefined;
+			await new Promise((resolve, reject) =>
+				compiler.close((error) => (error ? reject(error) : resolve())),
+			);
+
+			const events = [];
+			let singleRecording = false;
+			callbacks = 0;
+			compiler = rspack({
+				...configs[0],
+				plugins: [
+					{
+						apply(single) {
+							single.hooks.invalid.tap(CASE_NAME, (file) => {
+								if (singleRecording)
+									events.push(`invalid:${path.basename(file)}`);
+							});
+							single.hooks.watchRun.tapPromise(CASE_NAME, async () => {
+								if (!singleRecording) return;
+								const modified = [...single.modifiedFiles].map((file) =>
+									path.basename(file),
+								);
+								events.push(`build:${modified.join(',')}`);
+								if (modified.includes('a.js')) {
+									fs.writeFileSync(
+										path.join(directory, 'b.js'),
+										'module.exports = "b-during-build";',
+									);
+									await wait(600);
+								}
+							});
+						},
+					},
+				],
+			});
+			watching = compiler.watch(
+				compiler.options.watchOptions,
+				(error, stats) => {
+					if (error || stats.hasErrors())
+						failure = error || new Error(stats.toString());
+					callbacks++;
+					lastDone = Date.now();
+				},
+			);
+			await until(() => callbacks > 0 && Date.now() - lastDone > 750);
+			singleRecording = true;
+			fs.writeFileSync(
+				path.join(directory, 'a.js'),
+				'module.exports = "a-trigger";',
+			);
+			await until(() => callbacks >= 3 && Date.now() - lastDone > 750);
+			expect(events).toEqual([
+				'invalid:a.js',
+				'build:a.js',
+				'invalid:b.js',
+				'build:b.js',
 			]);
 		} finally {
 			writer.kill();
