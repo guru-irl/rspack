@@ -29,52 +29,33 @@ impl fmt::Display for Mutations {
   }
 }
 
+/// Records surviving consumers of groups whose ordered chunk IDs changed or
+/// that were removed, compared after chunk IDs against the previous compilation.
+/// The chunk-graph affected-set readers use these sets to select module hashes,
+/// chunk runtime requirements, and chunk hashes. Removed groups only exist in
+/// the previous graph, so this records their consumers rather than group keys.
+#[derive(Debug)]
+pub struct ChunkGroupChanges {
+  pub modules: IdentifierSet,
+  pub chunks: FxHashSet<ChunkUkey>,
+}
+
 #[derive(Debug)]
 pub enum Mutation {
-  ModuleAdd {
-    module: ModuleIdentifier,
-  },
-  ModuleUpdate {
-    module: ModuleIdentifier,
-  },
-  ModuleRemove {
-    module: ModuleIdentifier,
-  },
-  DependencyUpdate {
-    dependency: DependencyId,
-  },
-  ModuleSetAsync {
-    module: ModuleIdentifier,
-  },
-  ModuleSetId {
-    module: ModuleIdentifier,
-  },
-  ModuleSetHashes {
-    module: ModuleIdentifier,
-  },
-  ChunkSetId {
-    chunk: ChunkUkey,
-  },
-  ChunkAdd {
-    chunk: ChunkUkey,
-  },
-  ChunkSplit {
-    from: ChunkUkey,
-    to: ChunkUkey,
-  },
-  ChunksIntegrate {
-    to: ChunkUkey,
-  },
-  ChunkRemove {
-    chunk: ChunkUkey,
-  },
-  ChunkSetHashes {
-    chunk: ChunkUkey,
-  },
-  ChunkGroupChunksChanged {
-    modules: Box<IdentifierSet>,
-    chunks: Box<FxHashSet<ChunkUkey>>,
-  },
+  ModuleAdd { module: ModuleIdentifier },
+  ModuleUpdate { module: ModuleIdentifier },
+  ModuleRemove { module: ModuleIdentifier },
+  DependencyUpdate { dependency: DependencyId },
+  ModuleSetAsync { module: ModuleIdentifier },
+  ModuleSetId { module: ModuleIdentifier },
+  ModuleSetHashes { module: ModuleIdentifier },
+  ChunkSetId { chunk: ChunkUkey },
+  ChunkAdd { chunk: ChunkUkey },
+  ChunkSplit { from: ChunkUkey, to: ChunkUkey },
+  ChunksIntegrate { to: ChunkUkey },
+  ChunkRemove { chunk: ChunkUkey },
+  ChunkSetHashes { chunk: ChunkUkey },
+  ChunkGroupChunksChanged { changes: Box<ChunkGroupChanges> },
 }
 
 impl fmt::Display for Mutation {
@@ -97,11 +78,11 @@ impl fmt::Display for Mutation {
       Mutation::ChunksIntegrate { to } => write!(f, "integrate chunks to {}", to.as_u32()),
       Mutation::ChunkRemove { chunk } => write!(f, "remove chunk {}", chunk.as_u32()),
       Mutation::ChunkSetHashes { chunk } => write!(f, "set hashes chunk {}", chunk.as_u32()),
-      Mutation::ChunkGroupChunksChanged { modules, chunks } => write!(
+      Mutation::ChunkGroupChunksChanged { changes } => write!(
         f,
         "change chunk group chunks affecting {} modules and {} chunks",
-        modules.len(),
-        chunks.len()
+        changes.modules.len(),
+        changes.chunks.len()
       ),
     }
   }
@@ -192,10 +173,8 @@ impl Mutations {
         let mut chunks = FxHashSet::default();
         for mutation in self.iter() {
           match mutation {
-            Mutation::ChunkGroupChunksChanged {
-              modules: affected, ..
-            } => {
-              modules.extend(affected.iter().copied());
+            Mutation::ChunkGroupChunksChanged { changes } => {
+              modules.extend(changes.modules.iter().copied());
             }
             Mutation::ModuleSetAsync { module } => {
               modules.insert(*module);
@@ -255,8 +234,8 @@ impl Mutations {
       .get_or_init(|| {
         self.iter().fold(FxHashSet::default(), |mut acc, mutation| {
           match mutation {
-            Mutation::ChunkGroupChunksChanged { chunks, .. } => {
-              acc.extend(chunks.iter().copied());
+            Mutation::ChunkGroupChunksChanged { changes } => {
+              acc.extend(changes.chunks.iter().copied());
             }
             Mutation::ModuleSetHashes { module } => {
               acc.extend(

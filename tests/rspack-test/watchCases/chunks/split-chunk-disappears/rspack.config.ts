@@ -3,6 +3,7 @@ import { defineConfig } from '@rspack/cli';
 export default defineConfig({
   target: 'node',
   output: {
+    // [contenthash] makes the stale request fail as selected.undefined.js on main.
     chunkFilename: '[name].[contenthash].js',
   },
   optimization: {
