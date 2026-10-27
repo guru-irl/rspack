@@ -49,7 +49,10 @@ impl Scanner {
       let missing = accessor.missing().0.clone();
       let files_tx = tx.clone();
       let files_path_manager = Arc::clone(&self.path_manager);
+      let scheduled = crate::timing::start();
+      let timing_id = self.path_manager.timing_id();
       tokio::spawn(async move {
+        let timing = scheduled.map(|scheduled| (std::time::Instant::now(), scheduled));
         // A file is there as `lstat` sees it, so a dangling link counts.
         let mut removed = absent_paths(&files, &missing, |path| {
           std::fs::symlink_metadata(path).is_ok()
@@ -68,8 +71,20 @@ impl Scanner {
             files_path_manager.set_reported_file_time(path, mtime);
           }
         }
+        let counts = timing.map(|_| (files.len(), removed.len() + changed.len()));
         _ = send_events(removed, FsEventKind::Remove, &files_tx);
         _ = send_events(changed, FsEventKind::Change, &files_tx);
+        if let Some((start, scheduled)) = timing {
+          let (paths, events_emitted) = counts.unwrap_or_default();
+          crate::timing::emit(
+            timing_id,
+            format_args!(
+              "phase=scanner kind=files duration_ms={:.3} queue_ms={:.3} paths={paths} events_emitted={events_emitted}",
+              crate::timing::ms(start.elapsed()),
+              crate::timing::ms(start.duration_since(scheduled))
+            ),
+          );
+        }
       });
 
       let directories = accessor
@@ -81,17 +96,35 @@ impl Scanner {
       let missing = accessor.missing().0.clone();
       let dirs_tx = tx.clone();
       let dirs_path_manager = Arc::clone(&self.path_manager);
+      let scheduled = crate::timing::start();
+      let timing_id = self.path_manager.timing_id();
       tokio::spawn(async move {
+        let timing = scheduled.map(|scheduled| (std::time::Instant::now(), scheduled));
         // A directory is there only through a link that resolves, like
         // watchpack's `readdir`.
         let mut removed = absent_paths(&directories, &missing, |path| path.exists());
         removed.retain(|path| !dirs_path_manager.is_known_absent(path));
+        let removed_count = timing.map(|_| removed.len());
+        let paths_count = timing.map(|_| directories.len());
         _ = send_events(removed, FsEventKind::Remove, &dirs_tx);
         let changed = directories
           .into_iter()
           .filter(|p| changed_since(p, start_time))
           .collect::<Vec<_>>();
+        let events_emitted = timing.map(|_| removed_count.unwrap_or_default() + changed.len());
         _ = send_events(changed, FsEventKind::Change, &dirs_tx);
+        if let Some((start, scheduled)) = timing {
+          crate::timing::emit(
+            timing_id,
+            format_args!(
+              "phase=scanner kind=directories duration_ms={:.3} queue_ms={:.3} paths={} events_emitted={}",
+              crate::timing::ms(start.elapsed()),
+              crate::timing::ms(start.duration_since(scheduled)),
+              paths_count.unwrap_or_default(),
+              events_emitted.unwrap_or_default()
+            ),
+          );
+        }
       });
 
       // Backfill registered-missing dependencies created in the gap before this
@@ -103,11 +136,15 @@ impl Scanner {
         .map(|p| p.deref().clone())
         .collect::<Vec<_>>();
       let path_manager = Arc::clone(&self.path_manager);
+      let scheduled = crate::timing::start();
+      let timing_id = self.path_manager.timing_id();
       tokio::spawn(async move {
+        let timing = scheduled.map(|scheduled| (std::time::Instant::now(), scheduled));
         // Record the file time of every one found on disk and, like
         // watchpack's initial scan, notify only those changed since
         // `start_time`. A record for one not notified is time info only: it
         // must not deduplicate that path's own event.
+        let paths_count = timing.map(|_| missing_added.len());
         let mut created = Vec::new();
         for path in missing_added {
           let Some(mtime) = disk_mtime(&path) else {
@@ -120,7 +157,20 @@ impl Scanner {
             path_manager.set_file_time(&path, mtime, true, true);
           }
         }
+        let events_emitted = timing.map(|_| created.len());
         _ = send_events(created, FsEventKind::Create, &tx);
+        if let Some((start, scheduled)) = timing {
+          crate::timing::emit(
+            timing_id,
+            format_args!(
+              "phase=scanner kind=missing duration_ms={:.3} queue_ms={:.3} paths={} events_emitted={}",
+              crate::timing::ms(start.elapsed()),
+              crate::timing::ms(start.duration_since(scheduled)),
+              paths_count.unwrap_or_default(),
+              events_emitted.unwrap_or_default()
+            ),
+          );
+        }
       });
     }
   }

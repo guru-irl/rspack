@@ -7,6 +7,7 @@ mod ignored;
 mod path_prefixes;
 mod paths;
 mod scanner;
+mod timing;
 mod trigger;
 
 #[cfg(feature = "testing")]
@@ -186,7 +187,10 @@ impl FsWatcher {
       path_manager.set_context_watcher(Arc::downgrade(&disk_watcher));
     }
     let paused = Arc::new(AtomicBool::new(false));
-    let executor = Executor::new(rx, options.aggregate_timeout, Arc::clone(&paused));
+    let mut executor = Executor::new(rx, options.aggregate_timeout, Arc::clone(&paused));
+    if crate::timing::enabled() {
+      executor.timing_id = path_manager.timing_id();
+    }
     let aggregated = executor.aggregated();
     let scanner = Scanner::new(trigger.backfill_sender(), Arc::clone(&path_manager));
     let trigger = Arc::new(Mutex::new(Some(trigger)));
@@ -443,7 +447,17 @@ impl FsWatcherInner {
     event_aggregate_handler: Box<dyn EventAggregateHandler + Send>,
     event_handler: Box<dyn EventHandler + Send>,
   ) {
+    let watch_timing = crate::timing::start();
     self.path_manager.reset();
+    if let Some(start) = watch_timing {
+      crate::timing::emit(
+        self.path_manager.timing_id(),
+        format_args!(
+          "phase=reset duration_ms={:.3}",
+          crate::timing::ms(start.elapsed())
+        ),
+      );
+    }
 
     if let Err(e) = self
       .wait_for_event(files, directories, missing, start_time)
@@ -453,10 +467,29 @@ impl FsWatcherInner {
       event_aggregate_handler.on_error(e);
     };
 
+    let handler_timing = crate::timing::start();
     self
       .executor
       .wait_for_execute(event_aggregate_handler, event_handler)
       .await;
+    if let Some(start) = handler_timing {
+      crate::timing::emit(
+        self.path_manager.timing_id(),
+        format_args!(
+          "phase=handlers duration_ms={:.3}",
+          crate::timing::ms(start.elapsed())
+        ),
+      );
+    }
+    if let Some(start) = watch_timing {
+      crate::timing::emit(
+        self.path_manager.timing_id(),
+        format_args!(
+          "phase=watch duration_ms={:.3}",
+          crate::timing::ms(start.elapsed())
+        ),
+      );
+    }
   }
 
   async fn close(&mut self) -> Result<()> {
@@ -501,21 +534,52 @@ impl FsWatcherInner {
     //     landed in the gap between aggregate and rewatch would have its
     //     post-write mtime become the new baseline, and the FSEvent still
     //     in flight for that write would then be suppressed as a duplicate.
+    let timing = crate::timing::start();
     self.record_initial_file_mtimes();
+    if let Some(start) = timing {
+      crate::timing::emit(
+        self.path_manager.timing_id(),
+        format_args!(
+          "phase=baseline duration_ms={:.3}",
+          crate::timing::ms(start.elapsed())
+        ),
+      );
+    }
 
     let watch_patterns = self.analyzer.analyze(self.path_manager.access());
+    let timing = crate::timing::start();
     let watch_result = self
       .disk_watcher
       .lock()
       .expect("disk watcher lock poisoned")
       .watch(watch_patterns.into_iter());
+    if let Some(start) = timing {
+      crate::timing::emit(
+        self.path_manager.timing_id(),
+        format_args!(
+          "phase=disk_watch duration_ms={:.3}",
+          crate::timing::ms(start.elapsed())
+        ),
+      );
+    }
     if let Err(error) = watch_result {
       self.analyzer.invalidate_all();
       return Err(error);
     }
     // Directory-based backends extend coverage through this filtered scan.
     // Each directory is watched before enumeration, even when it is empty.
+    let timing = crate::timing::start();
     let changed_in_contexts = self.path_manager.scan_contexts(start_time).await;
+    if let Some(start) = timing {
+      crate::timing::emit(
+        self.path_manager.timing_id(),
+        format_args!(
+          "phase=context_scan duration_ms={:.3} events_emitted={}",
+          crate::timing::ms(start.elapsed()),
+          changed_in_contexts.len()
+        ),
+      );
+    }
     if let Some(trigger) = self.trigger.lock().expect("should lock trigger").clone() {
       for path in &changed_in_contexts {
         trigger.on_scanned_change(path);

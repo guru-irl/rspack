@@ -171,6 +171,7 @@ impl IgnoredMatcher {
   /// Whether `path` is ignored — directly or by living inside an ignored
   /// directory. Single regex test against the normalized path.
   pub async fn is_ignored(&self, path: &str) -> bool {
+    crate::timing::ignored(matches!(self, Self::Function(_)));
     match self {
       IgnoredMatcher::None => false,
       IgnoredMatcher::Globs(re) => re.is_match(&normalize_path(path)),

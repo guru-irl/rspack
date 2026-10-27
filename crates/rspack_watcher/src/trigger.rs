@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use rspack_paths::{InternedPath, InternedPathDashSet};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -115,7 +115,7 @@ struct EventProcessor {
 /// It only buffers: the OS watcher callback hands an event over and returns
 /// immediately, and a dedicated thread drains the buffer one event at a time.
 pub struct Trigger {
-  pending: UnboundedSender<(InternedPath, FsEventKind, Origin)>,
+  pending: UnboundedSender<(InternedPath, FsEventKind, Origin, Option<Instant>)>,
   pub(crate) analyzer: Arc<RecommendedAnalyzer>,
   path_manager: Arc<PathManager>,
 }
@@ -135,7 +135,8 @@ enum Origin {
 impl Trigger {
   /// Create a new `Trigger` with the given path register and event sender.
   pub fn new(path_manager: Arc<PathManager>, tx: UnboundedSender<EventBatch>) -> Self {
-    let (pending, mut incoming) = unbounded_channel::<(InternedPath, FsEventKind, Origin)>();
+    let (pending, mut incoming) =
+      unbounded_channel::<(InternedPath, FsEventKind, Origin, Option<Instant>)>();
     let analyzer = Arc::default();
     let processor = EventProcessor {
       path_manager: Arc::clone(&path_manager),
@@ -159,11 +160,15 @@ impl Trigger {
         runtime.block_on(async move {
           let mut batch = Vec::new();
           while incoming.recv_many(&mut batch, 256).await != 0 {
+            let mut timing = crate::timing::Batch::start(batch.len());
             let mut events = Vec::new();
             let mut deleted = Vec::new();
             let mut dispatch = false;
-            for (path, kind, origin) in &batch {
+            for (index, (path, kind, origin, receipt)) in batch.iter().enumerate() {
               if let Some(mut next) = processor.process(path, *kind, *origin, &mut deleted).await {
+                if let Some(timing) = &mut timing {
+                  timing.dispatched(*receipt, index);
+                }
                 dispatch = true;
                 if events.is_empty() {
                   events = next;
@@ -172,11 +177,18 @@ impl Trigger {
                 }
               }
             }
+            let classification_ms = timing.as_ref().map(|timing| timing.classification_ms());
             batch.clear();
             // Recovery is queued before this batch can start another build.
             processor.path_manager.request_deleted_scans(deleted);
             if dispatch {
               processor.trigger_events(events);
+            }
+            if let Some(timing) = timing {
+              timing.finish(
+                processor.path_manager.timing_id(),
+                classification_ms.unwrap_or_default(),
+              );
             }
           }
         });
@@ -205,18 +217,24 @@ impl Trigger {
   /// Preserves whether an OS event created or renamed a path into place,
   /// without treating ordinary directory changes as appearances.
   pub(crate) fn on_disk_event(&self, path: &InternedPath, kind: FsEventKind, appeared: bool) {
-    let _ = self
-      .pending
-      .send((path.clone(), kind, Origin::Disk { appeared }));
+    let _ = self.pending.send((
+      path.clone(),
+      kind,
+      Origin::Disk { appeared },
+      crate::timing::start(),
+    ));
   }
 
   /// A context's initial scan found `path` changed since the start time, while
   /// the watch was not active yet: like watchpack's initial scan, it is
   /// reported as found, never taken for an attribute-only event.
   pub(crate) fn on_scanned_change(&self, path: &InternedPath) {
-    let _ = self
-      .pending
-      .send((path.clone(), FsEventKind::Change, Origin::Scan));
+    let _ = self.pending.send((
+      path.clone(),
+      FsEventKind::Change,
+      Origin::Scan,
+      crate::timing::start(),
+    ));
   }
 
   /// A sender for the scanner's backfilled events. They queue with the live
@@ -230,7 +248,7 @@ impl Trigger {
       .spawn(move || {
         while let Some(batch) = batches.blocking_recv() {
           for event in batch {
-            let _ = pending.send((event.path, event.kind, Origin::Scan));
+            let _ = pending.send((event.path, event.kind, Origin::Scan, crate::timing::start()));
           }
         }
       })
