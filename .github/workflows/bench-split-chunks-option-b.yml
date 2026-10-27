@@ -1,65 +1,23 @@
-name: Native watcher final release costs
+name: Native watcher Windows release measurements
 on:
   push:
-    branches: [bench/pr62-final-costs]
+    branches: [bench/pr62-windows-measure]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr62-final-costs
+  group: pr62-windows-measure
   cancel-in-progress: false
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: base, ref: 2810c7fc89a82850f7bb29388c961fd5c77534f6 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: final, ref: 3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: base, ref: 2810c7fc89a82850f7bb29388c961fd5c77534f6 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: final, ref: 3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: base, ref: 2810c7fc89a82850f7bb29388c961fd5c77534f6 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: final, ref: 3065e7ac0a3f1f9c48b61ce644cab1b588ebdfba }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-      - name: Check useful build window
-        shell: bash
-        run: test "$(date -u +%s)" -lt 1793142000
-      - name: Build exact production release source
-        shell: bash
-        env:
-          SOURCE_REF: ${{ matrix.ref }}
-          RUST_TARGET: ${{ matrix.target }}
-        run: bash scripts/split-chunks-option-b-bench/build.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: optb-binding-${{ matrix.platform }}-${{ matrix.label }}
-          path: .bench-split-chunks-option-b/artifact/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
   measure:
-    needs: build
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin }
           - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -72,6 +30,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: optb-binding-${{ matrix.platform }}-*
+          run-id: 40578412745
+          github-token: ${{ github.token }}
           path: .bench-split-chunks-option-b/bindings/
       - name: Reuse the unchanged restack release binding
         uses: actions/download-artifact@v4
@@ -80,6 +40,18 @@ jobs:
           run-id: 40563637829
           github-token: ${{ github.token }}
           path: .bench-split-chunks-option-b/bindings/
+      - name: Verify the three real Windows binding identities before instrumentation
+        shell: bash
+        run: |
+          node - <<'JS'
+          const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
+          const helper=path.resolve('scripts/split-chunks-option-b-bench/loaded-binding-identity.cjs');
+          const pins=require('./scripts/split-chunks-option-b-bench/expected-windows-bindings.json');
+          for(const [arm,sha] of Object.entries(pins)){
+            const addon=path.resolve('.bench-split-chunks-option-b/bindings/optb-binding-Windows-'+arm+'/binding.node');
+            const result=spawnSync(process.execPath,[helper,addon,sha],{stdio:'inherit'});assert.equal(result.status,0,arm+' identity preflight');
+          }
+          JS
       - name: Measure interleaved release processes
         shell: bash
         env:
@@ -92,4 +64,11 @@ jobs:
           path: .bench-split-chunks-option-b/results/
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: optb-instrumentation-Windows
+          path: .bench-split-chunks-option-b/bindings/*/event-cost.exe
+          if-no-files-found: warn
           retention-days: 14

@@ -38,13 +38,8 @@ process.env.NAPI_RS_NATIVE_LIBRARY_PATH = addon;
 const req = createRequire(path.join(artifact, 'core/package.json'));
 const { rspack, sources } = req('./dist/index.js');
 const { NativeWatcher } = req('@rspack/binding');
-const objects = process.platform === 'linux'
- ? [...new Set(fs.readFileSync('/proc/self/maps', 'utf8').split('\n').filter(l => /\.node(?:$| \(deleted\))/.test(l)).map(l => l.slice(l.indexOf('/'))))]
- : process.report.getReport().sharedObjects;
-assert(Array.isArray(objects), 'loaded-object report required');
-const mapped = objects.filter(p => p === addon || /(?:rspack[^/\\]*|binding)\.node$/i.test(p)).map(p => fs.realpathSync(p));
-assert.deepEqual([...new Set(mapped)], [addon], 'exactly the selected binding must be loaded');
-const identity = { source: refs[arm], sha256: hash(addon), mapped: [...new Set(mapped)], report: process.platform === 'linux' ? '/proc/self/maps' : 'process.report.sharedObjects' };
+const expectedSha = process.platform === 'win32' ? require('./expected-windows-bindings.json')[arm] : hash(addon);
+const identity = { source: refs[arm], ...require('./loaded-binding-identity.cjs').read(addon, expectedSha) };
 console.log(JSON.stringify({ kind: 'binding-identity', arm, scenario, rep, ...identity }));
 const output = path.join(root, 'results', `${arm}-${scenario}-${rep}.json`);
 assert(!fs.existsSync(output), 'never overwrite a sample');
