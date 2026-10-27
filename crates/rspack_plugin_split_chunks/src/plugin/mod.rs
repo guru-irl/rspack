@@ -50,6 +50,16 @@ fn experimental_cache_enabled(config: bool) -> bool {
     .unwrap_or(config)
 }
 
+fn size_check_skipped() -> bool {
+  static SKIP: OnceLock<bool> = OnceLock::new();
+  *SKIP.get_or_init(|| {
+    matches!(
+      std::env::var("RSPACK_SPLIT_CHUNKS_CACHE_SKIP_SIZE_CHECK").as_deref(),
+      Ok("1")
+    )
+  })
+}
+
 #[doc(hidden)]
 pub type SplitChunksNameBatchFn = Arc<
   dyn for<'a> Fn(Vec<ChunkNameGetterFnCtx<'a>>) -> BoxFuture<'static, Result<Vec<Option<String>>>>
@@ -274,11 +284,14 @@ impl SplitChunksPlugin {
     all_modules.sort_unstable_by_key(|module| (module.precomputed_hash(), *module));
 
     let module_sizes = get_module_sizes(all_modules.par_iter().copied(), compilation);
+    let size_check_skipped = size_check_skipped();
     let fallback = if let Some(structure) = structure {
-      if !cache::exact_size_arithmetic(
-        &module_sizes,
-        compilation.build_chunk_graph_artifact.chunk_by_ukey.len(),
-      ) {
+      if !size_check_skipped
+        && !cache::exact_size_arithmetic(
+          &module_sizes,
+          compilation.build_chunk_graph_artifact.chunk_by_ukey.len(),
+        )
+      {
         Some(cache::PhaseOutcome::SizeSafety)
       } else if !structure.order_safe(self, &all_modules, compilation) {
         Some(cache::PhaseOutcome::Ordering)
@@ -632,7 +645,7 @@ impl SplitChunksPlugin {
       };
       if !matches!(outcome, cache::PhaseOutcome::Disabled) {
         logger.info(format!("structure reads: phase={index} recorded={recorded_reads} calls={recorded_calls} validated={validated_reads} validate={validation_ms:.6} ms"));
-        logger.info(format!("structure cache: phase={index} outcome={} key={phase_key_ms:.3} build={build_ms:.3} clone={clone_ms:.3} ms", outcome.label()));
+        logger.info(format!("structure cache: phase={index} outcome={} key={phase_key_ms:.3} build={build_ms:.3} clone={clone_ms:.3} ms size_check_skipped={size_check_skipped}", outcome.label()));
       }
       tracing::trace!("prepared module_group_map {:#?}", module_group_map);
 
