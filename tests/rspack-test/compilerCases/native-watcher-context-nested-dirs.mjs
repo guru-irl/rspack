@@ -195,6 +195,21 @@ export default {
 					"module.exports = 3;\n"
 				);
 			});
+			await wait(500);
+			const recreated = nextBuild();
+			fs.rmSync(path.join(source, "ctx", "real", "sub"), { recursive: true });
+			fs.mkdirSync(path.join(source, "ctx", "real", "sub"));
+			fs.writeFileSync(
+				path.join(source, "ctx", "real", "sub", "a.js"),
+				"module.exports = 3;\n"
+			);
+			await recreated;
+			await step("recreated directory while alias remains", () => {
+				fs.writeFileSync(
+					path.join(source, "ctx", "real", "sub", "recreated.js"),
+					"module.exports = 6;\n"
+				);
+			});
 			await step("remove symlink alias", () =>
 				fs.unlinkSync(path.join(source, "ctx", "link"))
 			);
@@ -244,7 +259,8 @@ export default {
 			"./moved/new.js",
 			"./real/c.js",
 			"./real/sub/a.js",
-			"./real/sub/b.js"
+			"./real/sub/b.js",
+			"./real/sub/recreated.js"
 		]);
 	}
 };
