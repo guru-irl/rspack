@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - arm: treatment-a
-            source: 4b44df2ba04892be178bb686ca2d19362c57b8b5
+            source: c452b918fc2bde46d613c8e66c7f166e66549024
     steps:
       - uses: actions/checkout@v4
         with:
