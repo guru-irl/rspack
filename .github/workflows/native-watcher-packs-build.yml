@@ -1,7 +1,7 @@
-name: Native watcher release v5
+name: Native watcher release v6
 on:
   push:
-    branches: [bench/native-watcher-v5-build]
+    branches: [bench/native-watcher-v6-build]
 permissions:
   contents: read
 defaults:
@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - arm: native
-            source: 51f7a87b83980e5ac1ef00cc2b433ba5ff27f8bc
+            source: 3329851a5f5523e60c52a56530aea6f5e8985cae
     steps:
       - uses: actions/checkout@v4
         with:
