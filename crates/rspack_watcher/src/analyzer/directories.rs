@@ -19,25 +19,9 @@ pub struct WatcherDirectoriesAnalyzer {
 }
 
 #[derive(Default)]
-pub(super) struct InvalidatedPaths {
-  pub(super) paths: InternedPathSet,
-  pub(super) all: bool,
-}
-
-impl InvalidatedPaths {
-  pub(super) fn invalidate_path(&mut self, path: &InternedPath) {
-    if self.all {
-      return;
-    }
-    self.paths.insert(path.clone());
-    // Filtered events may never trigger another analyze, so bound retained path names.
-    if self.paths.len() >= MAX_INVALIDATED_PATHS {
-      *self = Self {
-        all: true,
-        ..Default::default()
-      };
-    }
-  }
+struct InvalidatedPaths {
+  paths: InternedPathSet,
+  all: bool,
 }
 
 #[derive(Default)]
@@ -63,9 +47,6 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     ];
     let is_registered =
       |path: &InternedPath| subscriptions.iter().any(|(all, _, _)| all.contains(path));
-    for path in &state.symlink_dependent_paths {
-      path_accessor.rescan(path);
-    }
     let mut dirty = state.symlink_dependent_paths.clone();
     for (_, added, removed) in subscriptions {
       dirty.extend(added.iter().map(|path| path.clone()));
@@ -102,9 +83,12 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
         let pattern =
           find_existing_directory(path.clone(), &mut resolutions, &mut symlink_ancestors).map(
             |(dir, depth, recheck, non_directory_symlink)| {
-              if recheck || non_directory_symlink {
+              if recheck
+                || (non_directory_symlink
+                  && (path_accessor.directories().0.contains(&path)
+                    || path_accessor.missing().0.contains(&path)))
+              {
                 state.symlink_dependent_paths.insert(path.clone());
-                path_accessor.rescan(&path);
               }
               WatchPattern {
                 path: dir,
@@ -126,11 +110,21 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
   }
 
   fn invalidate_path(&self, path: &InternedPath) {
-    self
+    let mut invalidated = self
       .invalidated
       .lock()
-      .expect("directory invalidation lock poisoned")
-      .invalidate_path(path);
+      .expect("directory invalidation lock poisoned");
+    if invalidated.all {
+      return;
+    }
+    invalidated.paths.insert(path.clone());
+    // Filtered events may never trigger another analyze, so bound retained path names.
+    if invalidated.paths.len() >= MAX_INVALIDATED_PATHS {
+      *invalidated = InvalidatedPaths {
+        all: true,
+        ..Default::default()
+      };
+    }
   }
 
   fn invalidate_all(&self) {
@@ -185,7 +179,7 @@ fn find_existing_directory(
   resolution
 }
 
-pub(super) fn has_symlink_ancestor(
+fn has_symlink_ancestor(
   path: &InternedPath,
   symlink_ancestors: &mut InternedPathMap<bool>,
 ) -> bool {

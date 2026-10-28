@@ -3,10 +3,7 @@ use std::{
   fmt::Debug,
   ops::Deref,
   path::{Path, PathBuf},
-  sync::{
-    Mutex, OnceLock, Weak,
-    atomic::{AtomicBool, Ordering},
-  },
+  sync::{Mutex, OnceLock, Weak},
   time::SystemTime,
 };
 
@@ -113,15 +110,6 @@ impl<'a> PathAccessor<'a> {
     )
   }
 
-  /// Rescan a registration whose symlink target may have changed without an event.
-  pub fn rescan(&self, path: &InternedPath) {
-    for tracker in [self.files, self.directories, self.missing] {
-      if tracker.all.contains(path) {
-        tracker.added.insert(path.clone());
-      }
-    }
-  }
-
   /// Returns an iterator that combines all files, directories, and missing paths into a single sequence.
   pub fn all(&self) -> impl Iterator<Item = InternedPath> + '_ {
     All::new(&self.files.all, &self.directories.all, &self.missing.all)
@@ -205,11 +193,10 @@ impl PathUpdater {
 #[derive(Debug, Default)]
 /// `PathTracker` is responsible for tracking the state of file system paths for the watcher.
 ///
-/// It maintains registration deltas and scan recovery work:
-/// - `added`: New registrations or recovery scans for the current watch cycle.
+/// It maintains three sets:
+/// - `added`: Paths that have been recently added and are being watched.
 /// - `removed`: Paths that have been removed from watching.
 /// - `all`: All currently watched paths.
-/// - `pending_scan`: Recovery scans retained for the next watch cycle.
 ///
 /// This struct enables efficient updates and queries for the file system watcher,
 /// ensuring that changes to the set of watched paths are tracked and managed correctly.
@@ -217,8 +204,6 @@ struct PathTracker {
   added: InternedPathDashSet,
   removed: InternedPathDashSet,
   all: InternedPathDashSet,
-  /// Recovery work that must survive the next watch cycle's reset.
-  pending_scan: InternedPathDashSet,
 }
 
 impl PathTracker {
@@ -229,34 +214,8 @@ impl PathTracker {
 
   /// Adds a path to the tracker; whether it was not tracked before.
   fn add(&self, path: InternedPath) -> bool {
-    if self.all.insert(path.clone()) {
-      self.added.insert(path);
-      true
-    } else {
-      false
-    }
-  }
-
-  fn retry_scans(&self) {
-    for path in self.added.iter() {
-      self.pending_scan.insert(path.clone());
-    }
-  }
-
-  fn apply_pending_scans(&self, all: bool) {
-    if all {
-      for path in self.all.iter() {
-        self.added.insert(path.clone());
-      }
-    }
-    let pending: Vec<_> = self.pending_scan.iter().map(|path| path.clone()).collect();
-    for path in pending {
-      // Move the request into this cycle. A later request stays pending, and
-      // a failed registration puts this cycle's work back before reset.
-      if self.pending_scan.remove(&path).is_some() && self.all.contains(&path) {
-        self.added.insert(path);
-      }
-    }
+    self.added.insert(path.clone());
+    self.all.insert(path)
   }
 
   /// Removes a path from the tracker; whether it was tracked.
@@ -323,8 +282,6 @@ pub(crate) struct PathManager {
   files: PathTracker,
   directories: PathTracker,
   missing: PathTracker,
-  /// An overflow has no affected subtree. Scan every registration once.
-  rescan_all: AtomicBool,
   ignored: IgnoredMatcher,
   /// watchpack's `files` map: the last observation of each registered file,
   /// each registered-missing path found on disk, and each file found below a
@@ -383,7 +340,6 @@ impl PathManager {
       files: PathTracker::default(),
       directories: PathTracker::default(),
       missing: PathTracker::default(),
-      rescan_all: AtomicBool::default(),
       ignored: IgnoredMatcher::new(ignored),
       file_times: InternedPathDashMap::default(),
       baselines: InternedPathDashMap::default(),
@@ -420,16 +376,6 @@ impl PathManager {
     self.files.reset();
     self.directories.reset();
     self.missing.reset();
-  }
-
-  pub fn request_rescan(&self) {
-    self.rescan_all.store(true, Ordering::Relaxed);
-  }
-
-  pub fn retry_scans(&self) {
-    for tracker in [&self.files, &self.directories, &self.missing] {
-      tracker.retry_scans();
-    }
   }
 
   /// Record an initial baseline mtime for `path`, but only if no present
@@ -516,9 +462,10 @@ impl PathManager {
 
   /// Drop a removed path's time info and present baseline. A reported absence
   /// survives later removals until the path reappears or is unregistered.
-  pub fn remove_file_time(&self, path: &InternedPath, observed_deletion: bool) {
+  pub fn remove_file_time(&self, path: &InternedPath) {
     self.remove_context_watch(path, true);
-    self.remove_file_record(path, observed_deletion);
+    self.file_times.remove(path);
+    self.baselines.remove_if(path, |_, time| time.is_some());
     self.context_files.remove(path);
     if self.context_directories.remove(path).is_some() {
       self.last_watch_events.remove(path);
@@ -526,20 +473,9 @@ impl PathManager {
     self.unindex_record(path);
   }
 
-  fn remove_file_record(&self, path: &InternedPath, observed_deletion: bool) {
-    let removed_time = self.file_times.remove(path).is_some();
-    let removed_baseline = self
-      .baselines
-      .remove_if(path, |_, time| time.is_some())
-      .is_some();
-    if observed_deletion && (removed_time || removed_baseline) && self.files.all.contains(path) {
-      self.files.pending_scan.insert(path.clone());
-    }
-  }
-
   /// Drop the records of every path inside the directory `dir` (watchpack's
   /// `onDirectoryRemoved` marks them all missing), walking only its subtree.
-  pub fn remove_file_times_under(&self, dir: &InternedPath, observed_deletion: bool) {
+  pub fn remove_file_times_under(&self, dir: &InternedPath) {
     let _index = self.lock_index();
     let mut pending = vec![dir.clone()];
     while let Some(path) = pending.pop() {
@@ -547,9 +483,8 @@ impl PathManager {
       if let Some((_, children)) = self.recorded_children.remove(&path) {
         pending.extend(children);
       }
-      // The existing record walk selects affected files without searching the
-      // full registration set. Only an observed deletion queues their backfill.
-      self.remove_file_record(&path, observed_deletion);
+      self.file_times.remove(&path);
+      self.baselines.remove_if(&path, |_, time| time.is_some());
       self.context_files.remove(&path);
       self.context_directories.remove(&path);
       if !self.directories.all.contains(&path) {
@@ -560,7 +495,6 @@ impl PathManager {
     for context in self.directories.all.iter() {
       if context.starts_with(dir.as_ref() as &Path) {
         self.absent_directories.insert(context.clone());
-        self.directories.pending_scan.insert(context.clone());
       }
     }
   }
@@ -1019,15 +953,6 @@ impl PathManager {
     }
     for path in &unregistered {
       self.release_registered_ancestors(path);
-    }
-
-    let rescan_all = self.rescan_all.swap(false, Ordering::Relaxed);
-    for tracker in [&self.files, &self.directories, &self.missing] {
-      tracker.apply_pending_scans(rescan_all);
-    }
-    // Missing dependencies retain their per-cycle backfill, even when re-added.
-    for path in self.missing.all.iter() {
-      self.missing.added.insert(path.clone());
     }
 
     for dir in self.directories.added.iter() {
