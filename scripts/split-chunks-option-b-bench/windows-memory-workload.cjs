@@ -84,12 +84,12 @@ module.exports = async function ({fixture, arm, rep, rspack, sources, NativeWatc
   });
   async function until(predicate, label) {
     const end = Date.now() + 300000;
-    while (!predicate() && Date.now() < end) {
+    while (Date.now() < end) {
       if (failure) throw failure;
+      if (predicate()) return;
       await delay(50);
     }
-    if (failure) throw failure;
-    assert(predicate(), label);
+    assert.fail(label);
   }
   // collectTimeInfoEntries alone is not an applied barrier: initial file mtimes
   // are recorded before analyze/watch/scan. A current aggregate callback proves
