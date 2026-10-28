@@ -38,7 +38,7 @@ module.exports = async function ({fixture, arm, rep, rspack, sources, NativeWatc
       if (error) failure = error;
       if (result?.changedFiles.includes(probe)) {
         probeGeneration = currentGeneration;
-        result = {...result, changedFiles: result.changedFiles.filter(file => file !== probe)};
+        result = {changedFiles: result.changedFiles.filter(file => file !== probe), removedFiles: result.removedFiles};
         if (!error && !result.changedFiles.length && !result.removedFiles.length) return;
       }
       if (active && result?.changedFiles.includes(target) && active.receiptAt === undefined) {
