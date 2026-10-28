@@ -26,7 +26,7 @@ const watchdog = setTimeout(() => { console.error('FAILED: process exceeded 12 m
  try {
   const metrics = await require('./windows-memory-workload.cjs')({fixture: path.join(root, 'resend'), arm, rep, rspack, sources, NativeWatcher});
   assert(metrics.outputParity && metrics.steadyPrivateMiB > 0);
-  const result = {arm, rep, platform: 'Windows', arch: process.arch, identity, mimallocShowStats: process.env.MIMALLOC_SHOW_STATS, ...metrics};
+  const result = {arm, rep, platform: 'Windows', arch: process.arch, identity, mimallocShowStats: process.env.MIMALLOC_SHOW_STATS, allocatorPolicy: process.env.MEMORY_ALLOCATOR_POLICY || 'default', mimallocPurgeDelay: process.env.MIMALLOC_PURGE_DELAY || 'default', ...metrics};
   fs.writeFileSync(output, JSON.stringify(result, null, 2) + '\n');
   console.log(JSON.stringify({kind: 'completed-sample', arm, rep, files: metrics.files, contexts: metrics.contexts, applications: metrics.applications, steadyPrivateMiB: metrics.steadyPrivateMiB, steadyMiB: metrics.steadyMiB, steadyHandles: metrics.steadyHandles, collected: metrics.collected}));
  } finally { clearTimeout(watchdog); }

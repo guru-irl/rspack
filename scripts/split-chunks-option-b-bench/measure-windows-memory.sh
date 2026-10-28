@@ -19,7 +19,7 @@ for(const arm of ['base','final']){
  fs.symlinkSync(path.resolve('crates/node_binding'),path.join(peer,'binding'),'junction');
 }
 JS
-for script in prepare-windows-memory windows-memory-process windows-memory-workload windows-memory-driver summarize-windows-memory; do
+for script in prepare-windows-memory windows-memory-process windows-memory-workload windows-memory-driver summarize-windows-memory allocator-evidence; do
  node --check "$S/$script.cjs"
 done
 node "$S/summarize-windows-memory.cjs" --self-test
@@ -37,3 +37,4 @@ for rep in 1 2 3 4 5; do
  done
 done
 node "$S/summarize-windows-memory.cjs" "$ROOT/results"
+node "$S/allocator-evidence.cjs" "$ROOT/results"

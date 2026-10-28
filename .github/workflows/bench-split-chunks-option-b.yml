@@ -1,5 +1,6 @@
 name: PR66 Windows memory ownership
 on:
+  workflow_dispatch:
   push:
     branches: [bench/native-watcher-pr66-windows-memory]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
@@ -7,10 +8,11 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr66-windows-memory
+  group: pr66-windows-memory-${{ github.event_name }}
   cancel-in-progress: false
 jobs:
   measure:
+    if: github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +60,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   summarize:
+    if: github.event_name == 'push'
     needs: measure
     runs-on: windows-2025
     timeout-minutes: 10
@@ -77,6 +80,51 @@ jobs:
         with:
           name: pr66-memory-summary
           path: .bench-pr66-memory-summary/memory-summary.*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  allocator-control:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { policy: default, delay: 1000 }
+          - { policy: immediate, delay: 0 }
+          - { policy: deferred, delay: 60000 }
+    runs-on: windows-2025
+    timeout-minutes: 100
+    env:
+      M2_FILES: 80000
+      M2_FOLDERS: 3000
+      M2_APPLICATIONS: 4
+      MIMALLOC_SHOW_STATS: 1
+      MIMALLOC_VERBOSE: 1
+      MIMALLOC_PURGE_DELAY: ${{ matrix.delay }}
+      MEMORY_ALLOCATOR_POLICY: ${{ matrix.policy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: optb-binding-Windows-*
+          run-id: 40578412745
+          github-token: ${{ github.token }}
+          path: .bench-pr66-merge-costs/bindings/
+      - name: Measure allocator-only control without rebuilding
+        shell: bash
+        run: bash scripts/split-chunks-option-b-bench/measure-windows-memory.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr66-allocator-${{ matrix.policy }}
+          path: .bench-pr66-merge-costs/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
