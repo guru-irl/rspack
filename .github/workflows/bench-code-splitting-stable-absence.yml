@@ -97,11 +97,11 @@ jobs:
       matrix:
         include:
           - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: base, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr, ref: 4b6f33e73e4e36b923fdf5910894b50e7891603a }
+          - { platform: Linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, label: pr, ref: 776277ac1a28c7316c6bfbda051a1778e2f73530 }
           - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: base, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr, ref: 4b6f33e73e4e36b923fdf5910894b50e7891603a }
+          - { platform: macOS, runner: macos-15, target: aarch64-apple-darwin, label: pr, ref: 776277ac1a28c7316c6bfbda051a1778e2f73530 }
           - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: base, ref: cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8 }
-          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr, ref: 4b6f33e73e4e36b923fdf5910894b50e7891603a }
+          - { platform: Windows, runner: windows-2025, target: x86_64-pc-windows-msvc, label: pr, ref: 776277ac1a28c7316c6bfbda051a1778e2f73530 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -155,7 +155,7 @@ jobs:
       - name: Measure ten alternating pairs and same-binding calibration
         shell: bash
         env:
-          EXPECTED_PR_SHA: 4b6f33e73e4e36b923fdf5910894b50e7891603a
+          EXPECTED_PR_SHA: 776277ac1a28c7316c6bfbda051a1778e2f73530
           CHECK_STOCK: '1'
         run: bash scripts/stable-absence-bench/measure.sh
       - uses: actions/upload-artifact@v4
