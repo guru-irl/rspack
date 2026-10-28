@@ -1,13 +1,13 @@
-name: PR base and head watch measurements
+name: PR66 Windows memory ownership
 on:
   push:
-    branches: [bench/pr66-merge-costs]
+    branches: [bench/native-watcher-pr66-windows-memory]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr66-merge-costs
+  group: pr66-windows-memory
   cancel-in-progress: false
 jobs:
   measure:
@@ -15,11 +15,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-24.04 }
-          - { platform: macOS, runner: macos-15 }
-          - { platform: Windows, runner: windows-2025 }
+          - { platform: Windows, runner: windows-2025, files: 40000, folders: 3000, applications: 4 }
+          - { platform: Windows, runner: windows-2025, files: 80000, folders: 1000, applications: 4 }
+          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 4 }
+          - { platform: Windows, runner: windows-2025, files: 80000, folders: 6000, applications: 4 }
+          - { platform: Windows, runner: windows-2025, files: 160000, folders: 3000, applications: 4 }
+          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 1 }
+          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 5 }
+          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 20 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 100
+    env:
+      M2_FILES: ${{ matrix.files }}
+      M2_FOLDERS: ${{ matrix.folders }}
+      M2_APPLICATIONS: ${{ matrix.applications }}
+      MIMALLOC_SHOW_STATS: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -38,12 +48,35 @@ jobs:
           path: .bench-pr66-merge-costs/bindings/
       - name: Measure without rebuilding
         shell: bash
-        run: bash scripts/split-chunks-option-b-bench/measure-merge.sh
+        run: bash scripts/split-chunks-option-b-bench/measure-windows-memory.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: merge-costs-${{ matrix.platform }}
+          name: pr66-memory-${{ matrix.files }}-${{ matrix.folders }}-${{ matrix.applications }}
           path: .bench-pr66-merge-costs/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  summarize:
+    needs: measure
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pr66-memory-*
+          path: .bench-pr66-memory-summary
+      - name: Summarize all five-pair cells
+        shell: bash
+        run: node scripts/split-chunks-option-b-bench/summarize-windows-memory.cjs .bench-pr66-memory-summary --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr66-memory-summary
+          path: .bench-pr66-memory-summary/memory-summary.*
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
