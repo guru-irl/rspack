@@ -27,7 +27,13 @@ node "$S/prepare-windows-memory.cjs" "$ROOT/resend" > "$ROOT/results/resend-fixt
 for rep in 1 2 3 4 5; do
  if ((rep%2)); then arms='base final'; else arms='final base'; fi
  for arm in $arms; do
-  node --expose-gc "$S/windows-memory-driver.cjs" "$arm" "$rep" > "$ROOT/results/$arm-memory-$rep.log" 2>&1
+  if node --expose-gc "$S/windows-memory-driver.cjs" "$arm" "$rep" > "$ROOT/results/$arm-memory-$rep.log" 2>&1; then
+   echo "COMPLETED arm=$arm rep=$rep"
+  else
+   echo "FAILED arm=$arm rep=$rep"
+   cat "$ROOT/results/$arm-memory-$rep.log"
+   exit 1
+  fi
  done
 done
 node "$S/summarize-windows-memory.cjs" "$ROOT/results"
