@@ -104,6 +104,12 @@ jobs:
           run-id: 40769591875
           github-token: ${{ github.token }}
           path: .bench-pr66-main-inspect/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pr66-allocator-*
+          run-id: 40771470049
+          github-token: ${{ github.token }}
+          path: .bench-pr66-main-inspect/
       - name: Inspect recorded heap and thread counters
         shell: bash
         run: node scripts/split-chunks-option-b-bench/inspect-windows-memory.cjs .bench-pr66-main-inspect
