@@ -1,4 +1,4 @@
-name: Native watcher coalescing release comparison
+name: Native watcher coalescing three-head comparison
 on:
   push:
     branches: [bench/native-watcher-coalesce-xplat]
@@ -15,12 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: main, ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f }
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: pr, ref: 48af3db18a9aafd3077cf963fd7647e68e078b65 }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: main, ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: pr, ref: 48af3db18a9aafd3077cf963fd7647e68e078b65 }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: main, ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: pr, ref: 48af3db18a9aafd3077cf963fd7647e68e078b65 }
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: new, ref: 2062b30908ff9a4099f7802dcbb3f011de5422a6 }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: new, ref: 2062b30908ff9a4099f7802dcbb3f011de5422a6 }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: new, ref: 2062b30908ff9a4099f7802dcbb3f011de5422a6 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 220
     steps:
@@ -92,9 +89,17 @@ jobs:
         with:
           node-version: 22.23.3
           cache: pnpm
-      - uses: actions/download-artifact@v4
+      - name: Reuse the two completed release arms
+        uses: actions/download-artifact@v4
         with:
           pattern: coalesce-binding-${{ matrix.platform }}-*
+          run-id: 40870153481
+          github-token: ${{ github.token }}
+          path: .bench-coalesce/bindings/
+      - name: Download the new release arm
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coalesce-binding-${{ matrix.platform }}-new
           path: .bench-coalesce/bindings/
       - name: Measure five alternating runs per arm and scenario
         shell: bash

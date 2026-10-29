@@ -2,7 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const sources = {main: 'e04e75e8a56d1a1d0a920e34e166dd91617b118f', pr: '48af3db18a9aafd3077cf963fd7647e68e078b65'};
+const sources = {main: 'e04e75e8a56d1a1d0a920e34e166dd91617b118f', pr: '48af3db18a9aafd3077cf963fd7647e68e078b65', new: '2062b30908ff9a4099f7802dcbb3f011de5422a6'};
+const arms = ['main','pr','new'];
 const median = xs => { const s = [...xs].sort((a,b) => a-b); return s[Math.floor(s.length/2)]; };
 const basename = file => file.replaceAll('\\', '/').split('/').pop();
 function validate(row, identities) {
@@ -64,31 +65,33 @@ function controls(rows, identities) {
  rejects('wrong binding', r => r.nodeHash = '0'.repeat(64));
  rejects('wrong compiler assignment', r => r.events.find(e => e.kind === 'compilations' && e.name === 'target').name = 'blocker');
  rejects('missing raw event', r => r.events.splice(r.events.findIndex(e => e.kind === 'raw'), 1));
+ rejects('wrong aggregate count', r => r.totals.deliveries++);
+ rejects('wrong peak RSS', r => r.peakBytes++);
  rejects('wrong steady median', r => r.steadyBytes++);
  rejects('missing RSS sample', r => r.rssSamples.pop());
  assert.throws(() => complete(rows.slice(1)), undefined, 'missing run accepted');
  assert.throws(() => complete([...rows, rows[0]]), undefined, 'duplicate run accepted');
- return '9 negative controls rejected';
+ return '11 negative controls rejected';
 }
 function complete(rows) {
- assert.equal(rows.length, 20);
- for (const scenario of ['single','multi']) for (const arm of ['main','pr']) for (let run=1; run<=5; run++) assert.equal(rows.filter(r => r.scenario === scenario && r.arm === arm && r.run === run).length, 1);
+ assert.equal(rows.length, 30);
+ for (const scenario of ['single','multi']) for (const arm of arms) for (let run=1; run<=5; run++) assert.equal(rows.filter(r => r.scenario === scenario && r.arm === arm && r.run === run).length, 1);
  for (const scenario of ['single','multi']) {
   const ordered = rows.filter(r => r.scenario === scenario).sort((a,b) => a.events[0].t-b.events[0].t);
   const wanted = [];
-  for (let run=1; run<=5; run++) for (const arm of run%2 ? ['main','pr'] : ['pr','main']) wanted.push(`${arm}-${run}`);
+  for (let run=1; run<=5; run++) for (const arm of run%2 ? arms : [...arms].reverse()) wanted.push(`${arm}-${run}`);
   assert.deepEqual(ordered.map(r => `${r.arm}-${r.run}`), wanted, 'arm order differs');
  }
 }
 function main() {
  const dir = path.resolve(process.argv[2]);
- const identities = Object.fromEntries(['main','pr'].map(arm => [arm, JSON.parse(fs.readFileSync(path.join(dir, `identity-${arm}.json`), 'utf8'))]));
- const rows = fs.readdirSync(dir).filter(file => /^(single|multi)-(main|pr)-[1-5]\.json$/.test(file)).map(file => JSON.parse(fs.readFileSync(path.join(dir,file), 'utf8')));
+ const identities = Object.fromEntries(arms.map(arm => [arm, JSON.parse(fs.readFileSync(path.join(dir, `identity-${arm}.json`), 'utf8'))]));
+ const rows = fs.readdirSync(dir).filter(file => /^(single|multi)-(main|pr|new)-[1-5]\.json$/.test(file)).map(file => JSON.parse(fs.readFileSync(path.join(dir,file), 'utf8')));
  complete(rows);
  for (const row of rows) validate(row, identities);
  const controlResult = controls(rows, identities);
  const summary = {platform: rows[0].platform, identities, validation: controlResult, scenarios: {}};
- const lines = [`# ${summary.platform}`, '', 'Medians [minimum, maximum] from five alternating runs per arm. RSS is MiB.', '', '| Scenario and metric | Main | PR | PR minus main |', '|---|---:|---:|---:|'];
+ const lines = [`# ${summary.platform}`, '', 'Medians [minimum, maximum] from five alternating runs per arm. RSS is MiB.', '', '| Scenario and metric | Main e04e75e8 | Old head 48af3db1 | New head 2062b309 | New minus main |', '|---|---:|---:|---:|---:|'];
  for (const scenario of ['single','multi']) {
   const stats = {};
   const metrics = {compilations: r => r.totals.compilations, targetCompilations: r => r.counters.target.compilations, deliveries: r => r.totals.deliveries, raw: r => r.totals.raw, correctBundles: r => r.correctBundles, peakMiB: r => r.peakBytes/1048576, steadyMiB: r => r.steadyBytes/1048576};
@@ -100,13 +103,13 @@ function main() {
     const n = x => metric.endsWith('MiB') ? x.toFixed(2) : String(x);
     return `${n(s.median)} [${n(s.min)}, ${n(s.max)}]`;
    };
-   const a = fmt('main'), b = fmt('pr');
-   const delta = stats[metric].pr.median - stats[metric].main.median;
-   lines.push(`| ${scenario}, ${metric} | ${a} | ${b} | ${delta >= 0 ? '+' : ''}${metric.endsWith('MiB') ? delta.toFixed(2) : delta} |`);
+   const a = fmt('main'), b = fmt('pr'), c = fmt('new');
+   const delta = stats[metric].new.median - stats[metric].main.median;
+   lines.push(`| ${scenario}, ${metric} | ${a} | ${b} | ${c} | ${delta >= 0 ? '+' : ''}${metric.endsWith('MiB') ? delta.toFixed(2) : delta} |`);
   }
   summary.scenarios[scenario] = stats;
  }
- lines.push('', `Validation passed for all 20 traces. ${controlResult}.`, '');
+ lines.push('', `Validation passed for all 30 traces. ${controlResult}.`, '');
  fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
  fs.writeFileSync(path.join(dir, 'summary.md'), lines.join('\n'));
  console.log(lines.join('\n'));

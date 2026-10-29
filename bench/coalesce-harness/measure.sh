@@ -14,7 +14,7 @@ node - "$ROOT" <<'JS'
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const root = process.argv[2], platform = {linux: 'Linux', darwin: 'macOS', win32: 'Windows'}[process.platform];
 let coreHash;
-for (const arm of ['main', 'pr']) {
+for (const arm of ['main', 'pr', 'new']) {
  const folder = path.join(root, 'bindings', `coalesce-binding-${platform}-${arm}`), core = path.join(folder, 'core');
  const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'identity.json'), 'utf8'));
  assert.deepEqual(manifest.features, ['plugin', 'info-level']);
@@ -31,7 +31,7 @@ fs.writeFileSync(path.join(root, 'results', 'host.json'), JSON.stringify({platfo
 JS
 for scenario in single multi; do
  for rep in 1 2 3 4 5; do
-  if ((rep%2)); then arms='main pr'; else arms='pr main'; fi
+  if ((rep%2)); then arms='main pr new'; else arms='new pr main'; fi
   for arm in $arms; do
    test "$(date -u +%s)" -lt 1793293200
    node "$S/burst.mjs" "$arm" "$scenario" "$rep" > "$ROOT/results/$scenario-$arm-$rep.log" 2>&1

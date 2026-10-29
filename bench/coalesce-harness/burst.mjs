@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const [arm, scenario, runText] = process.argv.slice(2);
-assert(["main", "pr"].includes(arm));
+assert(["main", "pr", "new"].includes(arm));
 assert(["single", "multi"].includes(scenario));
 const base = path.resolve(".bench-coalesce");
 const platform = { linux: "Linux", darwin: "macOS", win32: "Windows" }[process.platform];
@@ -16,7 +16,7 @@ const nodeFile = path.join(artifact, "binding.node");
 const digest = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const manifest = JSON.parse(fs.readFileSync(path.join(artifact, "identity.json"), "utf8"));
 const expected = manifest.sha256;
-const sourceSha = { main: "e04e75e8a56d1a1d0a920e34e166dd91617b118f", pr: "48af3db18a9aafd3077cf963fd7647e68e078b65" }[arm];
+const sourceSha = { main: "e04e75e8a56d1a1d0a920e34e166dd91617b118f", pr: "48af3db18a9aafd3077cf963fd7647e68e078b65", new: "2062b30908ff9a4099f7802dcbb3f011de5422a6" }[arm];
 assert.equal(manifest.source, sourceSha);
 assert.equal(manifest.profile, "release");
 assert.equal(manifest.platform, process.platform);
@@ -24,11 +24,16 @@ assert.equal(manifest.arch, process.platform === "darwin" ? "arm64" : "x64");
 process.env.NAPI_RS_NATIVE_LIBRARY_PATH = nodeFile;
 const require = createRequire(path.resolve("source/package.json"));
 const binding = require(path.resolve("source/crates/node_binding/binding.js"));
+const memoryPhases = [];
+const memoryPhase = phase => memoryPhases.push({ phase, t: Date.now(), ...process.memoryUsage(), maxRSSKiB: process.resourceUsage().maxRSS });
+memoryPhase("binding-loaded");
 const identity = require(path.join(import.meta.dirname, "loaded-binding-identity.cjs")).read(nodeFile, expected);
 const mapped = identity.mapped;
+memoryPhase("identity-checked");
 const coreIndex = path.join(artifact, "core/dist/index.js");
 assert.equal(digest(coreIndex), manifest.coreIndexHash);
 const { rspack } = await import(pathToFileURL(coreIndex).href);
+memoryPhase("core-loaded");
 const root = fs.realpathSync(fs.mkdtempSync(path.join(base, "fixtures", `${scenario}-${arm}-${runText}-`)));
 const targetNames = scenario === "multi" ? ["blocker", "target"] : ["target"];
 const source = Object.fromEntries(targetNames.map(name => [name, `${root}/${name}/src`]));
@@ -127,6 +132,7 @@ try {
   }
  });
  await until(() => targetNames.every(name => initial[name] >= 1 && watches[name] >= 1) && Date.now() - lastActivity >= 3000 && compilers.every(c => !c.watching.running), "initial watcher quiet");
+ memoryPhase("initial-quiet");
  if (scenario === "single") burst();
  else {
   readyBlock = true;
@@ -143,6 +149,7 @@ try {
   if (failure) throw failure;
   rssSamples.push({ t: Date.now(), quietMs: Date.now() - lastActivity, bytes: process.memoryUsage.rss() });
  }
+ memoryPhase("final-quiet");
  assert(counters.target.deliveries > 0, "native watcher instrumentation did not observe delivery");
  const bundle = `${root}/target/dist/bundle.cjs`;
  delete require.cache[bundle];
@@ -166,7 +173,7 @@ try {
  const osPeakBytes = peakBytes;
  peakBytes = Math.max(peakBytes, ...rssSamples.map(sample => sample.bytes));
  const steadyBytes = rssSamples.map(sample => sample.bytes).sort((a, b) => a - b)[2];
- result = { arm, scenario, run: Number(runText), sourceSha, platform, arch: process.arch, nodeVersion: process.version, profile: manifest.profile, nodeHash: expected, mapped, identityReport: identity.report, coreIndexHash: digest(coreIndex), aggregateTimeout: 200, blockMs: unblock - blockStarted, quietMs: Date.now() - lastActivity, counters, totals, values, correct: true, correctBundles: targetNames.length, root, events, peakBytes, osPeakBytes, peakSource, steadyBytes, rssSamples }; 
+ result = { arm, scenario, run: Number(runText), sourceSha, platform, arch: process.arch, nodeVersion: process.version, profile: manifest.profile, nodeHash: expected, mapped, identityReport: identity.report, coreIndexHash: digest(coreIndex), aggregateTimeout: 200, blockMs: unblock - blockStarted, quietMs: Date.now() - lastActivity, counters, totals, values, correct: true, correctBundles: targetNames.length, root, events, peakBytes, osPeakBytes, peakSource, steadyBytes, rssSamples, memoryPhases };
 } finally {
  if (waiting) await new Promise((resolve, reject) => waiting.close(error => error ? reject(error) : resolve()));
  await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
