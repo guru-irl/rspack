@@ -6,7 +6,16 @@ function stripNamespace(file, platform = process.platform) {
   if (file.startsWith('\\\\?\\UNC\\')) return '\\\\' + file.slice(8);
   return file.startsWith('\\\\?\\') ? file.slice(4) : file;
 }
-function hash(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+function hash(file) {
+  const digest = crypto.createHash('sha256');
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  const fd = fs.openSync(file, 'r');
+  try {
+    let size;
+    while ((size = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) digest.update(chunk.subarray(0, size));
+  } finally { fs.closeSync(fd); }
+  return digest.digest('hex');
+}
 function fromObjects(objects, addon, expectedSha, platform = process.platform) {
   assert(Array.isArray(objects), 'loaded-object report required');
   assert.match(expectedSha, /^[a-f0-9]{64}$/);

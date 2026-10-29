@@ -9,6 +9,7 @@ if [[ "$RUNNER_OS" == Windows ]]; then
  export TEMP="$TMPDIR" TMP="$TMPDIR"
 fi
 unset RSPACK_BINDING NAPI_RS_NATIVE_LIBRARY_PATH RAYON_NUM_THREADS TOKIO_WORKER_THREADS
+node "$S/identity-check.cjs" "$ROOT/tmp" > "$ROOT/results/identity-control.log" 2>&1
 pnpm --dir source install --frozen-lockfile > "$ROOT/results/runtime-install.log" 2>&1
 node - "$ROOT" <<'JS'
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');

@@ -26,6 +26,10 @@ function validate(row, identities) {
  assert.equal(row.mapped.length, 1);
  assert(['process.report.sharedObjects', '/proc/self/maps'].includes(row.identityReport));
  assert.equal(row.rssSamples.length, 5);
+ assert.equal(row.rssBaseline.phase, 'identity-checked');
+ assert(row.rssBaseline.external < 8 * 1048576, 'binary-sized hash buffer retained at RSS baseline');
+ assert(row.rssBaseline.t <= row.events[0].t);
+ assert(row.rssBaseline.rss > 0);
  const unblock = row.events.find(e => e.kind === 'unblock').t;
  const writes = row.events.filter(e => e.kind === 'write');
  assert.deepEqual(writes.map(e => e.file), ['a.js', 'b.js', 'c.js']);
@@ -65,13 +69,14 @@ function controls(rows, identities) {
  rejects('wrong binding', r => r.nodeHash = '0'.repeat(64));
  rejects('wrong compiler assignment', r => r.events.find(e => e.kind === 'compilations' && e.name === 'target').name = 'blocker');
  rejects('missing raw event', r => r.events.splice(r.events.findIndex(e => e.kind === 'raw'), 1));
+ rejects('binary-sized hash buffer at baseline', r => r.rssBaseline.external = 64 * 1048576);
  rejects('wrong aggregate count', r => r.totals.deliveries++);
  rejects('wrong peak RSS', r => r.peakBytes++);
  rejects('wrong steady median', r => r.steadyBytes++);
  rejects('missing RSS sample', r => r.rssSamples.pop());
  assert.throws(() => complete(rows.slice(1)), undefined, 'missing run accepted');
  assert.throws(() => complete([...rows, rows[0]]), undefined, 'duplicate run accepted');
- return '11 negative controls rejected';
+ return '12 negative controls rejected';
 }
 function complete(rows) {
  assert.equal(rows.length, 30);

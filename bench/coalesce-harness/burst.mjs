@@ -30,6 +30,7 @@ memoryPhase("binding-loaded");
 const identity = require(path.join(import.meta.dirname, "loaded-binding-identity.cjs")).read(nodeFile, expected);
 const mapped = identity.mapped;
 memoryPhase("identity-checked");
+const rssBaseline = memoryPhases.at(-1);
 const coreIndex = path.join(artifact, "core/dist/index.js");
 assert.equal(digest(coreIndex), manifest.coreIndexHash);
 const { rspack } = await import(pathToFileURL(coreIndex).href);
@@ -173,7 +174,7 @@ try {
  const osPeakBytes = peakBytes;
  peakBytes = Math.max(peakBytes, ...rssSamples.map(sample => sample.bytes));
  const steadyBytes = rssSamples.map(sample => sample.bytes).sort((a, b) => a - b)[2];
- result = { arm, scenario, run: Number(runText), sourceSha, platform, arch: process.arch, nodeVersion: process.version, profile: manifest.profile, nodeHash: expected, mapped, identityReport: identity.report, coreIndexHash: digest(coreIndex), aggregateTimeout: 200, blockMs: unblock - blockStarted, quietMs: Date.now() - lastActivity, counters, totals, values, correct: true, correctBundles: targetNames.length, root, events, peakBytes, osPeakBytes, peakSource, steadyBytes, rssSamples, memoryPhases };
+ result = { arm, scenario, run: Number(runText), sourceSha, platform, arch: process.arch, nodeVersion: process.version, profile: manifest.profile, nodeHash: expected, mapped, identityReport: identity.report, coreIndexHash: digest(coreIndex), aggregateTimeout: 200, blockMs: unblock - blockStarted, quietMs: Date.now() - lastActivity, counters, totals, values, correct: true, correctBundles: targetNames.length, root, events, peakBytes, osPeakBytes, peakSource, steadyBytes, rssSamples, rssBaseline, memoryPhases };
 } finally {
  if (waiting) await new Promise((resolve, reject) => waiting.close(error => error ? reject(error) : resolve()));
  await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));
