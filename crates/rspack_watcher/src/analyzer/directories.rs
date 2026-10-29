@@ -56,13 +56,15 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
         }
       }
     }
+    let is_invalidated = |path: &InternedPath| {
+      invalidated.all
+        || path
+          .ancestors()
+          .any(|ancestor| invalidated.paths.contains(&InternedPath::from(ancestor)))
+    };
     if invalidated.all || !invalidated.paths.is_empty() {
       for path in path_accessor.all() {
-        if invalidated.all
-          || path
-            .ancestors()
-            .any(|ancestor| invalidated.paths.contains(&InternedPath::from(ancestor)))
-        {
+        if is_invalidated(&path) {
           dirty.insert(path);
         }
       }
@@ -80,6 +82,11 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
         }
       }
       if is_registered(&path) {
+        if path_accessor.missing().0.contains(&path) && is_invalidated(&path) {
+          // Reinstalling the same watch pathname cannot recover child creates
+          // missed while its directory was absent. Scan only invalidated paths.
+          path_accessor.missing().1.insert(path.clone());
+        }
         let pattern =
           find_existing_directory(path.clone(), &mut resolutions, &mut symlink_ancestors).map(
             |(dir, depth, recheck, non_directory_symlink)| {
