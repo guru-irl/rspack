@@ -1,7 +1,7 @@
-name: Treatment A release pack
+name: Treatment A2 release pack
 on:
   push:
-    branches: [bench/treatment-a-build]
+    branches: [bench/treatment-a2-build]
 permissions:
   contents: read
 defaults:
@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - arm: treatment-a
-            source: 2e8d32be5c856974dfa60ec32aa0f0517c447da5
+            source: c77bd77bce3c5f5980744dbd0a5339fed2d3df66
     steps:
       - uses: actions/checkout@v4
         with:
