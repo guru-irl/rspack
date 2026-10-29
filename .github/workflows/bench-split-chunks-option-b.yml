@@ -1,82 +1,109 @@
-name: PR66 Windows memory ownership
+name: Native watcher coalescing release comparison
 on:
   push:
-    branches: [bench/native-watcher-pr66-windows-memory]
-    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'scripts/split-chunks-option-b-bench/**']
+    branches: [bench/native-watcher-coalesce-xplat]
+    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/coalesce-harness/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr66-windows-memory
+  group: native-watcher-coalesce-xplat
   cancel-in-progress: false
 jobs:
-  measure:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: Windows, runner: windows-2025, files: 40000, folders: 3000, applications: 4 }
-          - { platform: Windows, runner: windows-2025, files: 80000, folders: 1000, applications: 4 }
-          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 4 }
-          - { platform: Windows, runner: windows-2025, files: 80000, folders: 6000, applications: 4 }
-          - { platform: Windows, runner: windows-2025, files: 160000, folders: 3000, applications: 4 }
-          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 1 }
-          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 5 }
-          - { platform: Windows, runner: windows-2025, files: 80000, folders: 3000, applications: 20 }
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: main, ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f }
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: pr, ref: 48af3db18a9aafd3077cf963fd7647e68e078b65 }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: main, ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: pr, ref: 48af3db18a9aafd3077cf963fd7647e68e078b65 }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: main, ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: pr, ref: 48af3db18a9aafd3077cf963fd7647e68e078b65 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 100
-    env:
-      M2_FILES: ${{ matrix.files }}
-      M2_FOLDERS: ${{ matrix.folders }}
-      M2_APPLICATIONS: ${{ matrix.applications }}
-      MIMALLOC_SHOW_STATS: 1
+    timeout-minutes: 220
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-coalesce/tmp"
+          P="$PWD/.bench-coalesce/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
+          ref: ${{ matrix.ref }}
+          path: source
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.3
           cache: pnpm
-      - name: Reuse the two production bindings
-        uses: actions/download-artifact@v4
+      - name: Free disk cache
+        if: runner.os == 'Linux'
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
-          pattern: optb-binding-${{ matrix.platform }}-*
-          run-id: 40578412745
-          github-token: ${{ github.token }}
-          path: .bench-pr66-merge-costs/bindings/
-      - name: Measure without rebuilding
+          tool-cache: false
+      - name: Build exact release source
         shell: bash
-        run: bash scripts/split-chunks-option-b-bench/measure-windows-memory.sh
+        env:
+          SOURCE_REF: ${{ matrix.ref }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: bash bench/coalesce-harness/build.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pr66-memory-${{ matrix.files }}-${{ matrix.folders }}-${{ matrix.applications }}
-          path: .bench-pr66-merge-costs/results/
+          name: coalesce-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-coalesce/artifact/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
-  summarize:
-    needs: measure
-    runs-on: windows-2025
-    timeout-minutes: 10
+  measure:
+    needs: build
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-latest }
+          - { platform: macOS, runner: macos-latest }
+          - { platform: Windows, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-coalesce/tmp"
+          P="$PWD/.bench-coalesce/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f
+          path: source
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.3
+          cache: pnpm
       - uses: actions/download-artifact@v4
         with:
-          pattern: pr66-memory-*
-          path: .bench-pr66-memory-summary
-      - name: Summarize all five-pair cells
+          pattern: coalesce-binding-${{ matrix.platform }}-*
+          path: .bench-coalesce/bindings/
+      - name: Measure five alternating runs per arm and scenario
         shell: bash
-        run: node scripts/split-chunks-option-b-bench/summarize-windows-memory.cjs .bench-pr66-memory-summary --all
+        run: bash bench/coalesce-harness/measure.sh
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: pr66-memory-summary
-          path: .bench-pr66-memory-summary/memory-summary.*
+          name: coalesce-results-${{ matrix.platform }}
+          path: .bench-coalesce/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
