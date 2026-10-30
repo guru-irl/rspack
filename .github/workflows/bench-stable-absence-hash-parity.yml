@@ -1,7 +1,7 @@
-name: Stable absence compilation hash parity
+name: Stable absence c3 compilation hash parity
 on:
   push:
-    branches: [bench/stable-absence-hash-parity]
+    branches: [bench/stable-absence-hash-parity-c3]
 permissions:
   contents: read
   actions: read
@@ -36,11 +36,11 @@ jobs:
           mkdir -p "$ROOT/tmp" "$ROOT/hash-results" "$ROOT/bindings"
           export TMPDIR="$ROOT/tmp"
           while :; do
-            if ! gh run view 40316541665 --repo guru-irl/rspack --json headSha,jobs,status,conclusion > "$ROOT/hash-results/build-status.json"; then sleep 60; continue; fi
+            if ! gh run view 41078180608 --repo guru-irl/rspack --json headSha,jobs,status,conclusion > "$ROOT/hash-results/build-status.json"; then sleep 60; continue; fi
             rc=0
             python - "$ROOT/hash-results/build-status.json" "$PLATFORM" <<'PY' || rc=$?
           import json,sys
-          j=json.load(open(sys.argv[1]));assert j['headSha']=='8d80008b154763ccce6009e57fc29e0fe0a69fb1'
+          j=json.load(open(sys.argv[1]));assert j['headSha']=='574f3bde4a4344b566204990a947becd06bfc732'
           builds=[x for x in j['jobs'] if x['name'].startswith('build ('+sys.argv[2]+',')]
           assert len(builds)<=2
           assert all(x['status']!='completed' or x['conclusion']=='success' for x in builds),builds
@@ -51,7 +51,7 @@ jobs:
             sleep 60
           done
           for label in base pr; do
-            gh run download 40316541665 --repo guru-irl/rspack -n "absence-binding-$PLATFORM-$label" -D "$ROOT/bindings/absence-binding-$PLATFORM-$label"
+            gh run download 41078180608 --repo guru-irl/rspack -n "absence-binding-$PLATFORM-$label" -D "$ROOT/bindings/absence-binding-$PLATFORM-$label"
           done
       - name: Compare every compilation hash and emitted output
         shell: bash

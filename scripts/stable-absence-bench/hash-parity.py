@@ -2,7 +2,7 @@ from pathlib import Path
 import hashlib,json,os,subprocess,sys
 root=Path(sys.argv[1]).resolve();repo=Path(sys.argv[2]).resolve();system=sys.argv[3]
 out=root/'hash-results';data={};identity={}
-for label,commit in [('base','cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8'),('pr','c20248001119fe523dcd8876c4c985c3fd2dd39c')]:
+for label,commit in [('base','cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8'),('pr','4e2ab244c21ec39d3e5748df18c8a5ca20bd488e')]:
  art=root/'bindings'/f'absence-binding-{system}-{label}'
  assert (art/'commit.sha').read_text().strip()==commit
  identity[label]=hashlib.sha256((art/'binding.node').read_bytes()).hexdigest()
@@ -31,5 +31,5 @@ summary={'platform':system,'replay':'off in both arms','identities':identity,'ro
 source=(repo/'scripts/stable-absence-bench/run.mjs').read_text()
 (out/'case-run.mjs').write_text(source)
 for name in ('prepare.mjs','add-barrel.mjs'):(out/name).write_bytes((repo/'scripts/stable-absence-bench'/name).read_bytes())
-(out/'case.json').write_text(json.dumps({'generatorSource':'a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc','mode':'development','sideEffects':'flag','usedExports':False,'incremental':True,'target':'node','entry':'./entry.js','replay':'off','steps':['cold','barrel/constants.js becomes export const value = "edited";','barrel/constants.js restored to export const value = "cold";'],'absenceOffSource':'cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8','absenceOnSource':'c20248001119fe523dcd8876c4c985c3fd2dd39c'},indent=2)+'\n')
+(out/'case.json').write_text(json.dumps({'generatorSource':'a4ca7fd6ff8bc31a48de4ef91922fcb1af1e53dc','mode':'development','sideEffects':'flag','usedExports':False,'incremental':True,'target':'node','entry':'./entry.js','replay':'off','steps':['cold','barrel/constants.js becomes export const value = "edited";','barrel/constants.js restored to export const value = "cold";'],'absenceOffSource':'cc2f2fa5cf1b910b7e0aaf379aba834e935c32c8','absenceOnSource':'4e2ab244c21ec39d3e5748df18c8a5ca20bd488e'},indent=2)+'\n')
 print(json.dumps(summary,indent=2))
