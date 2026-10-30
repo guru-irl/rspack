@@ -17,6 +17,8 @@ struct WatchDiagnostics {
   native_ns: u128,
   canonical_count: usize,
   canonical_ns: u128,
+  covered: usize,
+  uncovered_after_root: usize,
   watch_count: usize,
   watch_ns: u128,
 }
@@ -65,8 +67,26 @@ replace('watcher.watch(&path, mode)', `{
         }
         result
       }`);
-const sizes = `let aliases = self.aliases.lock().expect("watch aliases lock poisoned");
-    let sizes = (aliases.native_paths.len(), aliases.native_paths.capacity(), aliases.patterns.len(), aliases.patterns.capacity(), aliases.patterns.values().map(|p| p.len()).sum::<usize>());`;
+replace('      if covered {\n        return Ok(());', `      if self.diagnostics.enabled {
+        if pattern.mode == Recursive {
+          eprintln!("WATCH_ROOT logical={:?} canonical={:?}", pattern.path, path);
+        }
+        if covered {
+          self.diagnostics.covered += 1;
+        } else if pattern.mode == NonRecursive && self.diagnostics.recursive > 0 {
+          self.diagnostics.uncovered_after_root += 1;
+          if self.diagnostics.uncovered_after_root <= 5 {
+            eprintln!("WATCH_UNCOVERED logical={:?} canonical={:?} recursive={:?}", pattern.path, path,
+              aliases.patterns.iter().filter(|(_, patterns)| patterns.iter().any(|p| p.mode == Recursive)).collect::<Vec<_>>());
+          }
+        }
+      }
+      if covered {
+        return Ok(());`);
+const sizes = `let sizes = {
+      let aliases = self.aliases.lock().expect("watch aliases lock poisoned");
+      (aliases.native_paths.len(), aliases.native_paths.capacity(), aliases.patterns.len(), aliases.patterns.capacity(), aliases.patterns.values().map(|p| p.len()).sum::<usize>())
+    };`;
 replace('  pub fn close(&mut self) {', `  fn report_diagnostics(&self, phase: &str) {
     if !self.diagnostics.enabled { return; }
     ${cross ? sizes : `#[cfg(target_os = "linux")]
@@ -75,6 +95,7 @@ replace('  pub fn close(&mut self) {', `  fn report_diagnostics(&self, phase: &s
     let sizes = (0, 0, 0, 0, 0);`}
     let d = &self.diagnostics;
     eprintln!("WATCH_DIAG {{\\"phase\\":\\"{}\\",\\"ordered\\":{},\\"recursive\\":{},\\"nonRecursive\\":{},\\"nativeNs\\":{},\\"canonicalCount\\":{},\\"canonicalNs\\":{},\\"watchCount\\":{},\\"watchNs\\":{},\\"nativePaths\\":{},\\"nativeCapacity\\":{},\\"patternKeys\\":{},\\"patternCapacity\\":{},\\"patterns\\":{},\\"requirements\\":{},\\"contexts\\":{}}}", phase, d.order, d.recursive, d.non_recursive, d.native_ns, d.canonical_count, d.canonical_ns, d.watch_count, d.watch_ns, sizes.0, sizes.1, sizes.2, sizes.3, sizes.4, self.watch_patterns.len(), self.context_paths.len());
+    eprintln!("WATCH_COVERAGE covered={} uncoveredAfterRoot={}", d.covered, d.uncovered_after_root);
   }
 
   pub fn close(&mut self) {

@@ -1,8 +1,9 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const root=path.resolve('.bench-wide'),results=path.join(root,'results');
-const arms=['main','before','fix','wp'],scenarios=['wide','modules','symlink'];
+const arms=['cost','before','fix','wp'],scenarios=['wide','modules','symlink'];
 const refs={main:'79c650c24e4b468e743ebfe6454b3b2bc6650938',before:'b87c553ce76f2055d2ee19de589f5bbc106ff23d',fix:'90f41a8ac8200533cdc96aa31b4b818bf8a75561',wp:'79c650c24e4b468e743ebfe6454b3b2bc6650938'};
+assert.match(process.env.COST_SOURCE_SHA,/^[0-9a-f]{40}$/);refs.cost=process.env.COST_SOURCE_SHA;
 const median=xs=>{if(!xs.length)return null;const a=[...xs].sort((a,b)=>a-b),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2;};
 const digest=v=>crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const specs=Object.fromEntries(scenarios.map(s=>[s,JSON.parse(fs.readFileSync(path.join(root,'fixtures',s,'fixture.json'),'utf8'))]));
@@ -14,7 +15,7 @@ function expectedHash(scenario,rep,version,changed) {
  return digest({value:version,count:entries.length,entries:entries.map(([key,value])=>[key,key===s.targetKey?version:values.has(key)?values.get(key):value])});
 }
 const platform={linux:'Linux',darwin:'macOS',win32:'Windows'}[process.platform];
-const pins=Object.fromEntries(['main','before','fix'].map(arm=>[arm,JSON.parse(fs.readFileSync(path.join(root,'bindings',`wide-binding-${platform}-${arm}`,'identity.json'),'utf8'))]));
+const pins=Object.fromEntries(['main','before','fix','cost'].map(arm=>[arm,JSON.parse(fs.readFileSync(path.join(root,'bindings',`wide-binding-${platform}-${arm}`,'identity.json'),'utf8'))]));
 function validate(rows,complete=true) {
  const seen=new Set();
  for(const row of rows) {
@@ -70,7 +71,7 @@ function validate(rows,complete=true) {
  if(complete)for(const scenario of scenarios)for(const arm of arms)for(let rep=1;rep<=5;rep++)assert(seen.has(`${scenario}/${arm}/${rep}`),`missing sample ${scenario}/${arm}/${rep}`);
  return true;
 }
-const rows=fs.readdirSync(results).filter(n=>/^(wide|modules|symlink)-(main|before|fix|wp)-[1-5]\.json$/.test(n)).map(n=>JSON.parse(fs.readFileSync(path.join(results,n),'utf8')));
+const rows=fs.readdirSync(results).filter(n=>/^(wide|modules|symlink)-(cost|before|fix|wp)-[1-5]\.json$/.test(n)).map(n=>JSON.parse(fs.readFileSync(path.join(results,n),'utf8')));
 validate(rows,false);let complete=true;
 try{validate(rows,true);}catch(e){complete=false;console.error(e.message);}
 const controls=[];
@@ -88,16 +89,16 @@ const stats=values=>({median:median(values),min:Math.min(...values),max:Math.max
 const data={},large=[];
 const format=(value,digits=2)=>value===null?'not exposed':value.toFixed(digits),signed=value=>`${value>=0?'+':''}${value.toFixed(2)}`;
 let md=`# ${platform} wide-tree memory\n\nRun ${process.env.GITHUB_RUN_ID}; five forward/reverse rounds; Watchpack 2.6.3 uses the main compiler with its native watcher disabled.\n\n`;
-md+='| Scenario and metric | Main | Before | Fix | Watchpack | Paired fix minus before | Paired fix minus main |\n|---|---:|---:|---:|---:|---:|---:|\n';
+md+='| Scenario and metric | Cost fix | Before | Original fix | Watchpack | Cost minus before | Cost minus original fix | Cost minus Watchpack |\n|---|---:|---:|---:|---:|---:|---:|---:|\n';
 for(const scenario of scenarios){
  data[scenario]={};const group=Object.fromEntries(arms.map(arm=>[arm,rows.filter(r=>r.arm===arm&&r.scenario===scenario).sort((a,b)=>a.rep-b.rep)]));
  for(const [label,key]of metrics){
   const perArm=Object.fromEntries(arms.map(arm=>{const values=group[arm].map(r=>get(r,key));return [arm,values.length===5&&values.every(v=>v!==null)?stats(values):{median:null,n:values.length,notExposed:values.length===5&&values.every(v=>v===null)}];}));
-  const pairs={};for(const base of ['before','main'])pairs[base]=perArm.fix.median!==null&&perArm[base].median!==null?{delta:stats(group.fix.map((r,i)=>get(r,key)-get(group[base][i],key))),percent:stats(group.fix.map((r,i)=>(get(r,key)/get(group[base][i],key)-1)*100))}:null;
+  const pairs={};for(const base of ['before','fix','wp'])pairs[base]=perArm.cost.median!==null&&perArm[base].median!==null?{delta:stats(group.cost.map((r,i)=>get(r,key)-get(group[base][i],key))),percent:stats(group.cost.map((r,i)=>(get(r,key)/get(group[base][i],key)-1)*100))}:null;
   data[scenario][key]={arms:perArm,pairs};
-  for(const base of ['before','main'])if(pairs[base]&&((key==='readinessMs'&&pairs[base].percent.median>20)||(['readinessPeakMiB','fullPeakMiB'].includes(key)&&pairs[base].percent.median>10)))large.push({scenario,metric:key,base,delta:pairs[base].delta.median,percent:pairs[base].percent.median});
+  for(const base of ['before','fix','wp'])if(pairs[base]&&((key==='readinessMs'&&pairs[base].percent.median>20)||(['readinessPeakMiB','fullPeakMiB'].includes(key)&&pairs[base].percent.median>10)))large.push({scenario,metric:key,base,delta:pairs[base].delta.median,percent:pairs[base].percent.median});
   const cells=arms.map(arm=>arm==='wp'&&['editLatencyMs','watchesIdle.count'].includes(key)?'not requested':perArm[arm].median!==null?`${format(perArm[arm].median,key==='watchesIdle.count'?0:2)} [${format(perArm[arm].min,key==='watchesIdle.count'?0:2)}, ${format(perArm[arm].max,key==='watchesIdle.count'?0:2)}]`:perArm[arm].notExposed?'not exposed':`incomplete ${perArm[arm].n}/5`);
-  const deltas=['before','main'].map(base=>pairs[base]?`${signed(pairs[base].delta.median)} / ${signed(pairs[base].percent.median)}%`:'not available');
+  const deltas=['before','fix','wp'].map(base=>pairs[base]?`${signed(pairs[base].delta.median)} / ${signed(pairs[base].percent.median)}%`:'not available');
   md+=`| ${scenario}, ${label} | ${cells.join(' | ')} | ${deltas.join(' | ')} |\n`;
  }
 }

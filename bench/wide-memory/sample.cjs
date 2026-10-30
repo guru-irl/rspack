@@ -5,6 +5,7 @@ const {read}=require('./loaded-binding-identity.cjs');
 function hash(file){const h=crypto.createHash('sha256'),b=Buffer.allocUnsafe(65536),fd=fs.openSync(file,'r');try{let n;while((n=fs.readSync(fd,b,0,b.length,null))>0)h.update(b.subarray(0,n));}finally{fs.closeSync(fd);}return h.digest('hex');}
 const [arm,scenario,repText,mode]=process.argv.slice(2),rep=Number(repText);
 const refs={main:'79c650c24e4b468e743ebfe6454b3b2bc6650938',before:'b87c553ce76f2055d2ee19de589f5bbc106ff23d',fix:'90f41a8ac8200533cdc96aa31b4b818bf8a75561',wp:'79c650c24e4b468e743ebfe6454b3b2bc6650938'};
+if(process.env.COST_SOURCE_SHA){assert.match(process.env.COST_SOURCE_SHA,/^[0-9a-f]{40}$/);refs.cost=process.env.COST_SOURCE_SHA;}
 assert(arm in refs);
 assert(Date.now()<Date.parse('2026-10-31T07:45:00Z'),'do not start a sample near the hard stop');
 const platform={linux:'Linux',darwin:'macOS',win32:'Windows'}[process.platform],root=path.resolve('.bench-wide');

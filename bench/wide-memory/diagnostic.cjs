@@ -22,7 +22,9 @@ for(const scenario of ['modules','symlink'])for(let rep=1;rep<=3;rep++) {
     const events=fs.readFileSync(path.join(results,`${name}.log`),'utf8').split('\n').filter(l=>l.startsWith('WATCH_DIAG ')).map(l=>JSON.parse(l.slice(11)));
     assert(events.length>0,`missing diagnostics: ${name}`);
     const close=events.filter(e=>e.phase==='close').at(-1);assert(close);
-    const row={scenario,arm,rep,ordered,readinessMs:receipt.readinessMs,firstDoneMs:receipt.firstDoneMs,fullPeakMiB:receipt.fullPeakMiB,idleRssMiB:receipt.idleRssMiB,identity:receipt.identity,close,firstWatch:events.find(e=>e.phase==='watch')};
+    const text=fs.readFileSync(path.join(results,`${name}.log`),'utf8');
+    const coverage=[...text.matchAll(/WATCH_COVERAGE covered=(\d+) uncoveredAfterRoot=(\d+)/g)].at(-1);assert(coverage);
+    const row={scenario,arm,rep,ordered,readinessMs:receipt.readinessMs,firstDoneMs:receipt.firstDoneMs,fullPeakMiB:receipt.fullPeakMiB,idleRssMiB:receipt.idleRssMiB,watchesIdle:receipt.watchesIdle,watchesEdited:receipt.watchesEdited,identity:receipt.identity,close,coverage:{covered:Number(coverage[1]),uncoveredAfterRoot:Number(coverage[2])},firstWatch:events.find(e=>e.phase==='watch')};
     rows.push(row);fs.writeFileSync(path.join(results,'diagnosis.json'),JSON.stringify(rows,null,2)+'\n');
     console.log(JSON.stringify(row));
   }

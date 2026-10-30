@@ -37,9 +37,9 @@ assert(Number.isFinite(diagnostic.rebuildStartEpochMs)&&diagnostic.rebuildStartE
 console.log('PROBE_DIAGNOSTIC_CONTROL_PASSED');
 const schedule=[],failures=[];
 outer:for(const scenario of ['wide','modules','symlink'])for(let rep=1;rep<=5;rep++) {
- const arms=rep%2?['main','before','fix','wp']:['wp','fix','before','main'];
+ const arms=rep%2?['before','fix','cost','wp']:['wp','cost','fix','before'];
  for(const arm of arms) {
-  if(Date.now()>=Date.parse('2026-10-31T03:45:00Z')){failures.push({kind:'hard-stop-guard'});break outer;}
+  if(Date.now()>=Date.parse('2026-10-31T07:40:00Z')){failures.push({kind:'hard-stop-guard'});break outer;}
   const entry={scenario,rep,arm,started:new Date().toISOString()};
   console.log(JSON.stringify({kind:'start-sample',...entry}));
   result=run([script,arm,scenario,String(rep)],`${scenario}-${arm}-${rep}.log`);
