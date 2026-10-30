@@ -16,7 +16,14 @@ impl PassExt for CreateModuleHashesPass {
   }
 
   async fn run_pass(&self, compilation: &mut Compilation) -> Result<()> {
-    create_module_hashes_pass_impl(compilation).await
+    if let Err(error) = create_module_hashes_pass_impl(compilation).await {
+      // Do not recover partial hashes from a failed pass.
+      compilation.cgm_hash_artifact.clear();
+      return Err(error);
+    }
+    // Module hashes now reflect the current chunk ids; make them the baseline.
+    compilation.chunk_ids_diff_artifact.advance_hash_baseline();
+    Ok(())
   }
 }
 
@@ -44,22 +51,23 @@ async fn create_module_hashes_pass_impl(compilation: &mut Compilation) -> Result
     let mut modules = mutations.get_affected_modules_with_chunk_graph(compilation);
 
     // check if module runtime changes
-    let mg = compilation.get_module_graph();
+    let mg = compilation.build_module_graph_artifact.get_module_graph();
     for mi in mg.modules_keys() {
       let module_runtimes = compilation
         .build_chunk_graph_artifact
         .chunk_graph
         .get_module_runtimes(*mi, &compilation.build_chunk_graph_artifact.chunk_by_ukey);
+      if module_runtimes.is_empty() {
+        // Rejoining a chunk must invalidate the old code generation result.
+        compilation.cgm_hash_artifact.remove(mi);
+        continue;
+      }
       let module_runtime_keys = module_runtimes
         .values()
         .map(get_runtime_key)
         .collect::<HashSet<_>>();
 
       if let Some(runtime_map) = compilation.cgm_hash_artifact.get_runtime_map(mi) {
-        if module_runtimes.is_empty() {
-          // module has no runtime, skip
-          continue;
-        }
         if module_runtimes.len() == 1 {
           // single runtime
           if !matches!(runtime_map.mode, RuntimeMode::SingleEntry)
