@@ -38,13 +38,13 @@ jobs:
           printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 5feaeab46c42dadc94772cc779478f129223cb0a
+          ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561
           path: head
       - name: Verify source identity
         run: |
           set -euo pipefail
-          test "$(git -C head rev-parse HEAD)" = 5feaeab46c42dadc94772cc779478f129223cb0a
-          test "$(git -C head rev-parse HEAD^{tree})" = db83df66b5a2bb02b5612937f392c0806867e744
+          test "$(git -C head rev-parse HEAD)" = 90f41a8ac8200533cdc96aa31b4b818bf8a75561
+          test "$(git -C head rev-parse HEAD^{tree})" = 51f2676af734fbbbd3c17df49222e9c59ca65e7c
           git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4

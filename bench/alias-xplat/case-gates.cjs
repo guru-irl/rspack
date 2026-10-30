@@ -32,7 +32,7 @@ try {
         shell: process.platform === 'win32'
       });
     fs.closeSync(fd);
-    const text = fs.readFileSync(log, 'utf8');
+    const text = fs.readFileSync(log, 'utf8').replace(/\u001b\[[0-9;]*m/g, '');
     console.log(text.split('\n').slice(-35).join('\n'));
     if (result.error) throw result.error;
     if (result.status !== 0 || !text.includes('BINDING_IDENTITY') || !/Tests\s+\d+ passed/.test(text)) {
