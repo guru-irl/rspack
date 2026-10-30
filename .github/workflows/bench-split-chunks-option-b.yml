@@ -1,4 +1,4 @@
-name: Native watcher Linux final gates
+name: Native watcher Windows final gates
 on:
   push:
     branches: [bench/pr59-alias-xplat]
@@ -7,14 +7,11 @@ permissions:
   contents: read
   actions: read
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
     env:
-      CARGO_PROFILE_DEV_DEBUG: 0
-      CARGO_INCREMENTAL: 0
-      CARGO_BUILD_JOBS: 3
-      EXPECTED_BINDING_SHA256: d2f2cdfed938f1b451a440117d1ad46ec464de6515e57cd5c52231a29154bb3c
+      EXPECTED_BINDING_SHA256: 7775793553b9ff85fd3289f94cf6f36aab95c8a177a656c9f21cc2dec08a9026
     defaults:
       run:
         shell: bash
@@ -24,7 +21,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$PWD/.bench-alias/tmp" "$PWD/.bench-alias/results"
-          printf 'TMPDIR=%s\nCARGO_TARGET_DIR=%s\n' "$PWD/.bench-alias/tmp" "$PWD/.bench-alias/rust-target" >> "$GITHUB_ENV"
+          P="$(cygpath -w "$PWD/.bench-alias/tmp")"
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561
@@ -43,7 +41,7 @@ jobs:
       - name: Reuse the exact hosted dev binding
         uses: actions/download-artifact@v4
         with:
-          name: alias-fixed-binding-Linux
+          name: alias-fixed-binding-Windows
           run-id: 41098959234
           github-token: ${{ github.token }}
           path: head/crates/node_binding
@@ -53,26 +51,23 @@ jobs:
       - name: Pin and check the reused binding
         run: |
           set -euo pipefail
-          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.realpathSync("head/crates/node_binding/rspack.linux-x64-gnu.node"),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); assert.equal(h,process.env.EXPECTED_BINDING_SHA256); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\n`); console.log(JSON.stringify({binding:p,sha256:h,producer:41098959234}));' | tee .bench-alias/results/binding.json
-      - name: Run compiler, API and watch cases with worker binding proof
-        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates linux
-      - name: Install Rust
-        run: rustup toolchain install nightly-2026-04-16 --profile minimal --component rustfmt --component clippy
-      - name: Rust formatting, clippy and existing tests
-        working-directory: head
+          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.realpathSync.native("head/crates/node_binding/rspack.win32-x64-msvc.node"),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); assert.equal(h,process.env.EXPECTED_BINDING_SHA256); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nALIAS_SOURCE_ROOT=${fs.realpathSync.native("head")}\n`); console.log(JSON.stringify({binding:p,sha256:h,producer:41098959234}));' | tee .bench-alias/results/binding.json
+      - name: Check identity guard positive and wrong-hash controls
         run: |
           set -euo pipefail
-          cargo fmt --all --check > ../.bench-alias/results/fmt.log 2>&1
-          cargo clippy -p rspack_watcher --all-targets -- -D warnings > ../.bench-alias/results/clippy.log 2>&1
-          cargo test -p rspack_watcher > ../.bench-alias/results/rust.log 2>&1
-          grep 'test result:' ../.bench-alias/results/rust.log
-          printf 'PASS\n' > ../.bench-alias/results/rust-checks.txt
+          node -r ./bench/alias-xplat/binding-guard.cjs -e 'require(process.env.ALIAS_SOURCE_ROOT + "/packages/rspack/dist/index.js")' | tee .bench-alias/results/guard-positive.log
+          if EXPECTED_BINDING_SHA256=000 node -r ./bench/alias-xplat/binding-guard.cjs -e 'require(process.env.ALIAS_SOURCE_ROOT + "/packages/rspack/dist/index.js")' > .bench-alias/results/guard-negative.log 2>&1; then
+            echo WRONG_HASH_ACCEPTED; exit 97
+          fi
+          grep -q WRONG_BINDING_HASH .bench-alias/results/guard-negative.log
+      - name: Run native watcher compiler cases with worker binding proof
+        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates compiler
       - name: Check the source stayed unchanged
         run: git -C head diff --exit-code && git -C head diff --exit-code --cached
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alias-linux-final-gates
+          name: alias-windows-final-gates
           path: .bench-alias/results/
           include-hidden-files: true
           if-no-files-found: error

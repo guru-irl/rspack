@@ -6,7 +6,7 @@ const { threadId } = require('node:worker_threads');
 const root = path.resolve(process.env.ALIAS_SOURCE_ROOT);
 const intended = process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
 if (!intended || !process.env.EXPECTED_BINDING_SHA256) throw Error('Missing binding pin');
-const expectedPath = fs.realpathSync(intended);
+const expectedPath = fs.realpathSync.native(intended);
 const sha256 = crypto.createHash('sha256').update(fs.readFileSync(expectedPath)).digest('hex');
 if (sha256 !== process.env.EXPECTED_BINDING_SHA256) throw Error('WRONG_BINDING_HASH ' + sha256);
 delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
@@ -35,7 +35,7 @@ function verify() {
 const original = process.dlopen;
 process.dlopen = function(module, filename, ...args) {
   const result = original.call(this, module, filename, ...args);
-  if (fs.realpathSync(filename) === expectedPath && !verify()) throw Error('Binding not mapped after dlopen');
+  if (fs.realpathSync.native(filename) === expectedPath && !verify()) throw Error('Binding not mapped after dlopen');
   return result;
 };
 module.exports = () => checked && verify();
