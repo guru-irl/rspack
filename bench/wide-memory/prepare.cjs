@@ -14,6 +14,7 @@ const write = (base, file, content) => {
 for (const scenario of ['wide', 'modules', 'symlink']) {
  const base = path.join(root, scenario);
  fs.mkdirSync(base, {recursive: true});
+ write(base, 'package.json', JSON.stringify({name:`wide-fixture-${scenario}`,private:true,type:'commonjs'}));
  let entries = [], target, folders, fillerFiles;
  if (scenario === 'modules') {
   folders = 2200; fillerFiles = 0;

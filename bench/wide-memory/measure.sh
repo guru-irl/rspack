@@ -23,4 +23,8 @@ fs.writeFileSync(path.join(root,'results','host.json'),JSON.stringify({platform:
 JS
 for file in bench/wide-memory/*.cjs; do node --check "$file"; done
 node bench/wide-memory/prepare.cjs > "$ROOT/results/fixtures.jsonl"
+if [[ "$RUNNER_OS" == Windows ]]; then
+ FIXTURE="$(node -p 'require("node:fs").realpathSync.native(".bench-wide/fixtures/wide")')"
+ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File bench/wide-memory/observe.ps1 -SelfControl -Fixture "$FIXTURE" > "$ROOT/results/directory-control.json"
+fi
 node bench/wide-memory/measure.cjs

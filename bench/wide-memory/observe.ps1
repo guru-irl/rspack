@@ -81,6 +81,6 @@ public static class DirectoryHandles {
  $row.fixtureDirectoryHandles = $counts[0]
  $row.allDirectoryHandles = $counts[1]
  $row.inaccessibleHandles = $counts[2]
- $row.directoryMethod = 'SystemExtendedHandleInformation/GetFileInformationByHandleEx'
+ $row.directoryMethod = 'SystemExtendedHandleInformation/GetFinalPathNameByHandle'
 }
 $row | ConvertTo-Json -Compress
