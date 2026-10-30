@@ -52,6 +52,16 @@ function assertObserverAllowed(){assert(!firstDoneSeen||firstProbeWritten,'OBSER
 function readRssMiB(){assertObserverAllowed();return process.memoryUsage.rss()/1048576;}
 function readResourceUsage(){assertObserverAllowed();return process.resourceUsage();}
 function readCpuUsage(){assertObserverAllowed();return process.cpuUsage(cpuStart);}
+function validateInitialAndRelease(initial){
+ const stats=initial.stats;
+ if(mode!=='retained-stats-negative')delete initial.stats;
+ assert(!initial.error,String(initial.error));
+ if(stats.hasErrors())throw new Error(stats.toString({all:false,errors:true}));
+ const module={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(output,'bundle.js'),'utf8'),{module},{timeout:20000});
+ initial.actualHash=digest(module.exports);initial.expectedHash=digest(expected(0,[]));
+ assert.equal(initial.actualHash,initial.expectedHash,'ARM_EDIT_FAILURE initial output');
+ assert(Object.values(initial).every(value=>value==null||typeof value!=='object'),'INITIAL_METADATA_RETAINED_OBJECT');
+}
 function windowsSnapshot(directories=false){
  assertObserverAllowed();
  const args=['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.resolve('bench/wide-memory/observe.ps1'),'-TargetPid',String(process.pid),'-Fixture',fixture];
@@ -141,11 +151,7 @@ function onBuild(error,stats){
   const ready=new Promise((resolve,reject)=>{probeResolve=resolve;probeReject=reject;probeTimer=setTimeout(()=>reject(new Error(`ARM_EDIT_FAILURE readiness probes missing: ${probes.filter(p=>!landed.has(p.key)).map(p=>p.file).join(',')}`)),120000);});
   const rewrite=()=>{try{for(const p of probes)if(!landed.has(p.key)){const n=rewrites.get(p.key)+1;rewrites.set(p.key,n);if(!firstProbeWritten)firstProbeWriteMs=performance.now()-start;fs.writeFileSync(p.absolute,`module.exports = ${p.changedValue}; // probe rewrite ${n}\n`);firstProbeWritten=true;}}catch(error){fail(error);}};
   rewrite();probeWriter=setInterval(rewrite,200);
-  assert(!initial.error,String(initial.error));assert(!initial.stats.hasErrors(),initial.stats.toString({all:false,errors:true}));
-  const initialModule={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(output,'bundle.js'),'utf8'),{module:initialModule},{timeout:20000});
-  initial.actualHash=digest(initialModule.exports);initial.expectedHash=digest(expected(0,[]));
-  assert.equal(initial.actualHash,initial.expectedHash,'ARM_EDIT_FAILURE initial output');
-  assert(Object.values(initial).every(value=>value==null||typeof value!=='object'),'INITIAL_METADATA_RETAINED_OBJECT');
+  validateInitialAndRelease(initial);
   await ready;probeReject=undefined;
   const idleSamples=[];for(let second=1;second<=10;second++){await wait(1000);if(second>=6)idleSamples.push(readRssMiB());}
   if(lastError)throw new Error(lastError);
@@ -161,7 +167,7 @@ function onBuild(error,stats){
   const highWater=(resource,win)=>(win?.peakWorkingSetBytes||resource.maxRSS*1024)/1048576;
   const result={arm,scenario,rep,platform,arch:process.arch,node:process.version,identity,watchpackVersion,
    fixture:{folders:spec.folders,fillerFiles:spec.fillerFiles,moduleCount:entries.length,symlinkFiles:spec.symlinkFiles,probeSeed:probeSet.seed,probeCount:10},baseline,
-   firstDoneMs:initial.arrived-start,firstProbeWriteMs,firstDoneToProbeWriteMs:firstProbeWriteMs-(initial.arrived-start),observerGapGuard:true,
+   firstDoneMs:initial.arrived-start,firstProbeWriteMs,firstDoneToProbeWriteMs:firstProbeWriteMs-(initial.arrived-start),observerGapGuard:true,metadataOnlyInitial:true,
    firstDonePeakMiB:initial.sampledAtDone,firstDonePeakMethod:'10 ms sampled RSS; no observer in the probe gap',firstDoneResource:null,firstDoneCpu:null,
    readinessMs,firstProbeMs,readinessPeakMiB:Math.max(readinessSampledPeak,highWater(readinessResource,readinessWindows)),readinessResource,
    probes:probes.map(p=>({file:p.file,key:p.key,landedMs:landed.get(p.key),rewrites:rewrites.get(p.key)})),probeRebuilds,

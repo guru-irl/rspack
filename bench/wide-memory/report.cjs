@@ -9,7 +9,7 @@ for(const os of systems){
  if(!fs.existsSync(file)){entries[os]={folder,missing:true};continue;}
  const summary=JSON.parse(fs.readFileSync(file,'utf8'));
  assert.equal(summary.platform,os);
- if(summary.complete){assert.equal(summary.sampleCount,60);assert.equal(summary.controls.length,8);assert.match(fs.readFileSync(path.join(folder,'identity-negative.log'),'utf8'),/WRONG_BINDING_HASH/);assert.match(fs.readFileSync(path.join(folder,'observer-negative.log'),'utf8'),/OBSERVER_IN_PROBE_GAP/);}
+ if(summary.complete){assert.equal(summary.sampleCount,60);assert.equal(summary.controls.length,8);assert.match(fs.readFileSync(path.join(folder,'identity-negative.log'),'utf8'),/WRONG_BINDING_HASH/);assert.match(fs.readFileSync(path.join(folder,'observer-negative.log'),'utf8'),/OBSERVER_IN_PROBE_GAP/);assert.match(fs.readFileSync(path.join(folder,'metadata-negative.log'),'utf8'),/INITIAL_METADATA_RETAINED_OBJECT/);}
  entries[os]={folder,summary};
 }
 const signed=(n,d=2)=>`${n>=0?'+':''}${n.toFixed(d)}`;
@@ -17,6 +17,7 @@ const flags=[];
 let report='# PR #59 cross-platform memory and startup\n\n';
 report+='Release sources are main `79c650c24e4b468e743ebfe6454b3b2bc6650938`, before `b87c553ce76f2055d2ee19de589f5bbc106ff23d`, and fix `90f41a8ac8200533cdc96aa31b4b818bf8a75561`. Watchpack is 2.6.3 through the main compiler with its native watcher disabled.\n\n';
 report+='Build run [41106150672](https://github.com/guru-irl/rspack/actions/runs/41106150672) uses nine release builds with `plugin,info-level`. Measurement run is ['+process.env.GITHUB_RUN_ID+'](https://github.com/guru-irl/rspack/actions/runs/'+process.env.GITHUB_RUN_ID+'). All builds and samples use GitHub-hosted runners and Node 22.23.3.\n\n';
+report+=`Bench branch \`bench/pr59-xplat-memory\` is at \`${process.env.GITHUB_SHA}\`.\n\n`;
 report+='Each OS uses one measurement host, fresh processes, five alternating forward/reverse rounds per arm and scenario, and no forced GC. Tables show medians. Delta rows are medians of within-repetition paired deltas, followed by paired percentages. Ranges, phase RSS values, CPU and filesystem counters are retained in the raw receipts. Final lines refer to the wide 20k-folder context.\n\n';
 report+='Readiness is watch start until all ten fixed-seed probe edits appear in rebuild `modifiedFiles`. After first done, each pending probe is rewritten every 200 ms. First probe is watch start until the first such delivery. Linux also samples inotify watches every 200 ms in a separate process and reports the final count confirmed stable for 2.4 seconds. The 200 ms probe cadence and 50 ms aggregate timeout are part of these times.\n\n';
 report+='The wide and symlink contexts have 20,000 filler folders, two text files per folder, and ten selected probe modules per run. The symlink context also has 500 modules under both real and symlink spellings. The module-only case has 2,000 modules in 2,200 nested folders and probes ten existing module folders. Edits used for latency change a non-aliased module.\n\n';
@@ -25,7 +26,8 @@ const sourceLines=fs.readFileSync('bench/wide-memory/sample.cjs','utf8').split('
 const callbackLine=sourceLines.findIndex(line=>line.startsWith('function onBuild('))+1;
 const loopLine=sourceLines.findIndex(line=>line.includes('const rewrite=()=>'))+1;
 const firstWriteLine=sourceLines.findIndex(line=>line.includes('rewrite();probeWriter='))+1;
-report+=`In counted processes the initial callback at \`bench/wide-memory/sample.cjs:${callbackLine}-${callbackLine+8}\` resolves first done without RSS, resource, CPU or bundle reads. The probe loop at \`bench/wide-memory/sample.cjs:${loopLine}-${firstWriteLine}\` writes before any such observer. macOS has no ps, vm_stat or fs_usage call in that gap. A runtime guard rejects any counter or external observer before the first probe write; every OS also runs its negative control.\n\n`;
+const releaseLine=sourceLines.findIndex(line=>line.startsWith('function validateInitialAndRelease('))+1;
+report+=`In counted processes the initial callback at \`bench/wide-memory/sample.cjs:${callbackLine}-${callbackLine+8}\` resolves first done without RSS, resource, CPU or bundle reads. The probe loop at \`bench/wide-memory/sample.cjs:${loopLine}-${firstWriteLine}\` writes before any such observer. macOS has no ps, vm_stat or fs_usage call in that gap. A runtime guard rejects any counter or external observer before the first probe write; every OS also runs its negative control. Initial Stats and VM output are scoped to \`bench/wide-memory/sample.cjs:${releaseLine}-${releaseLine+9}\`; only primitive metadata survives into idle and edit sampling, checked by a retained-Stats negative control.\n\n`;
 for(const os of systems){
  const entry=entries[os];report+=`## ${os}\n\n`;
  if(entry.missing){report+='| State | Result |\n|---|---|\n| Measurements | not run; no complete artifact |\n\n';continue;}
@@ -85,6 +87,7 @@ report+='Comparisons with before isolate this cross-platform fix. Linux costs ve
 report+='## Superseded runs\n\n';
 report+='Run 41115683971 is excluded. Its Windows positive control could not resolve the bare Watchpack development package; the version check now reads the prebundled package used by the compiler. Linux main also failed one symlink probe-output check, with an unexpected export and no recorded value. That failed command was not a sample and does not prove a missed edit. Its log is `wide-results-Linux/symlink-main-4.log`.\n\n';
 report+='Run 41117477873 passed all 180 processes, but its timings are superseded. Windows queried PowerShell synchronously before writing probes. macOS had no external ps/vm_stat/fs_usage call, but the shared callback read RSS and resource counters and validated the initial bundle before the first probe write. The previously reported macOS +878 ms is not used here.\n\n';
+report+='Run 41128483603 removed the observer gap, but retained the initial Stats object through the resolved promise. Stats holds a Compilation reference at `packages/rspack/src/Stats.ts:25-33`. That pass is also excluded. Retention control run 41133253138 reproduced the problem on all three OSes; the counted rerun deletes that reference and scopes VM validation to a short-lived function.\n\n';
 report+='Guard regression run 41127477298 reproduced the pre-probe observer on all three OSes. The counted rerun resolves first done without observers, writes probes, then validates the initial bundle. The guard remains active throughout the first-done-to-first-write gap. All macOS jobs received runners on their first attempt; no no-runner retry was needed.\n\n';
 report+='ESCALATION[warning]: The excluded first run contains an unclassified Linux main probe-output failure. The later counted samples do not erase it.\n\n';
 report+='## Attention\n\n';

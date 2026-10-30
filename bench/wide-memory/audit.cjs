@@ -31,7 +31,7 @@ function validate(rows,complete=true) {
   assert.deepEqual(row.fixture,{folders:fixture.folders,fillerFiles:fixture.fillerFiles,moduleCount:fixture.moduleCount+(scenario==='modules'?0:10),symlinkFiles:fixture.symlinkFiles,probeSeed:probeSet.seed,probeCount:10});
   for(const key of ['firstDoneMs','readinessMs','firstProbeMs','firstDonePeakMiB','readinessPeakMiB','idleRssMiB','editedRssMiB','editLatencyMs','fullPeakMiB'])assert(Number.isFinite(row[key])&&row[key]>0,key);
   assert(row.firstDoneMs<=row.firstProbeMs&&row.firstProbeMs<=row.readinessMs,'phase order');
-  assert.equal(row.observerGapGuard,true);
+  assert.equal(row.observerGapGuard,true);assert.equal(row.metadataOnlyInitial,true);
   assert(Number.isFinite(row.firstProbeWriteMs)&&row.firstProbeWriteMs>=row.firstDoneMs&&row.firstProbeWriteMs<=row.firstProbeMs,'probe write order');
   assert.equal(row.firstDoneToProbeWriteMs,row.firstProbeWriteMs-row.firstDoneMs);
   assert.equal(row.probes.length,10,'missing readiness probe');
