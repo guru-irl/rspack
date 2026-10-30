@@ -52,6 +52,13 @@ function assertObserverAllowed(){assert(!firstDoneSeen||firstProbeWritten,'OBSER
 function readRssMiB(){assertObserverAllowed();return process.memoryUsage.rss()/1048576;}
 function readResourceUsage(){assertObserverAllowed();return process.resourceUsage();}
 function readCpuUsage(){assertObserverAllowed();return process.cpuUsage(cpuStart);}
+function logUnexpectedProbe(p,value,stats,modifiedFiles){
+ const diagnostic={arm,scenario,rep,probeFile:p.absolute,expectedInitialValue:p.initialValue,expectedProbeValue:p.changedValue,actualBundleType:typeof value,actualBundleValue:require('node:util').inspect(value,{depth:3,maxArrayLength:20,breakLength:Infinity}),rewriteCount:rewrites.get(p.key),modifiedFiles};
+ try{diagnostic.diskContent=fs.readFileSync(p.absolute,'utf8');diagnostic.lastWriteEpochMs=fs.statSync(p.absolute).mtimeMs;}catch(error){diagnostic.diskReadError=String(error);}
+ try{diagnostic.rebuildStartEpochMs=stats.startTime;diagnostic.rebuildEndEpochMs=stats.endTime;}catch(error){diagnostic.statsTimestampError=String(error);}
+ diagnostic.checkEpochMs=Date.now();console.error('PROBE_EXPORT_DIAGNOSTIC',JSON.stringify(diagnostic));
+ return false;
+}
 function validateInitialAndRelease(initial){
  const stats=initial.stats;
  if(mode!=='retained-stats-negative')delete initial.stats;
@@ -60,6 +67,10 @@ function validateInitialAndRelease(initial){
  const module={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(output,'bundle.js'),'utf8'),{module},{timeout:20000});
  initial.actualHash=digest(module.exports);initial.expectedHash=digest(expected(0,[]));
  assert.equal(initial.actualHash,initial.expectedHash,'ARM_EDIT_FAILURE initial output');
+ if(mode==='diagnostic-control'){
+  const p=probes[0];logUnexpectedProbe(p,new Map(module.exports.entries).get(p.key),stats,[]);
+  throw new Error('DIAGNOSTIC_CONTROL_DONE');
+ }
  assert(Object.values(initial).every(value=>value==null||typeof value!=='object'),'INITIAL_METADATA_RETAINED_OBJECT');
 }
 function windowsSnapshot(directories=false){
@@ -79,7 +90,7 @@ function watchCount(){
  }
  return {count,instances,method:'/proc/self/fdinfo inotify wd lines'};
 }
-let watching,compiler,sampler,probeWriter,monitor,monitorExit,monitorResult;
+let watching,compiler,sampler,probeWriter,monitor,monitorExit,monitorResult,cleanupStarted=false;
 const watchdog=setTimeout(()=>{console.error('ARM_EDIT_FAILURE process watchdog');process.exit(94);},600000);
 let pending,lastError,builds=0,expectedVersion=0,phase='initial',sampledPeak=0,firstDonePeak=0,readinessSampledPeak=0;
 let firstProbeMs,readinessMs,readinessResource,readinessWindows,probeResolve,probeReject,probeTimer;
@@ -111,7 +122,7 @@ function onBuild(error,stats){
   const actualHash=digest(module.exports),modifiedFiles=[...compiler.modifiedFiles||[]];
   if(phase==='probes'){
    const values=new Map(module.exports.entries),changed=[];
-   for(const p of probes){const value=values.get(p.key);assert(value===p.initialValue||value===p.changedValue,'unexpected probe export');if(value===p.changedValue)changed.push(p.key);}
+   for(const p of probes){const value=values.get(p.key);assert(value===p.initialValue||value===p.changedValue||logUnexpectedProbe(p,value,stats,modifiedFiles),'unexpected probe export');if(value===p.changedValue)changed.push(p.key);}
    for(const file of modifiedFiles){const p=byPath.get(canonical(file));if(!p)continue;assert.equal(values.get(p.key),p.changedValue,'ARM_EDIT_FAILURE stale probe export');if(!landed.has(p.key))landed.set(p.key,arrived-start);}
    assert.equal(actualHash,digest(expected(0,changed)),'ARM_EDIT_FAILURE probe output parity');
    if(landed.size>0&&firstProbeMs===undefined)firstProbeMs=arrived-start;
@@ -136,7 +147,7 @@ function onBuild(error,stats){
  try{
   if(process.platform==='linux'){
    monitor=fork(path.resolve('bench/wide-memory/inotify.cjs'),[String(process.pid),path.join(root,'results',`${scenario}-${arm}-${rep}-inotify.json`)],{stdio:['ignore','inherit','inherit','ipc']});
-   monitorExit=new Promise((resolve,reject)=>{monitor.once('exit',code=>code===0?resolve():reject(new Error(`inotify monitor exited ${code}`)));});
+   monitorExit=new Promise((resolve,reject)=>{monitor.once('exit',code=>(code===0||cleanupStarted)?resolve():reject(new Error(`inotify monitor exited ${code}`)));});
    monitorExit.catch(error=>fail(error));
    await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('monitor startup timed out')),10000);monitor.once('message',message=>{clearTimeout(timer);assert.equal(message.kind,'ready');resolve();});});
    monitorResult=new Promise(resolve=>monitor.on('message',message=>{if(message.kind==='inotify-stability')resolve(message);}));
@@ -178,6 +189,7 @@ function onBuild(error,stats){
   fs.writeFileSync(resultFile,JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify({kind:'completed-sample',arm,scenario,rep,firstDoneMs:result.firstDoneMs,readinessMs,firstProbeMs,inotifyStableMs:result.inotifyStableMs,fullPeakMiB:result.fullPeakMiB,idleRssMiB:result.idleRssMiB,editedRssMiB:result.editedRssMiB,editLatencyMs:result.editLatencyMs,watchesIdle}));
  }finally{
+  cleanupStarted=true;probeReject=undefined;
   clearInterval(sampler);clearInterval(probeWriter);clearTimeout(probeTimer);clearTimeout(watchdog);
   if(monitor?.connected)monitor.disconnect();
   if(monitor&&!monitor.killed)monitor.kill();

@@ -25,6 +25,16 @@ result=run([script,'main','modules','1','retained-stats-negative'],'metadata-neg
 assert.notEqual(result.status,0,'retained initial Stats accepted');
 assert.match(fs.readFileSync(path.join(results,'metadata-negative.log'),'utf8'),/INITIAL_METADATA_RETAINED_OBJECT/);
 console.log('INITIAL_METADATA_CONTROL_REJECTED');
+result=run([script,'main','modules','1','diagnostic-control'],'diagnostic-control.log');
+assert.notEqual(result.status,0);const diagnosticText=fs.readFileSync(path.join(results,'diagnostic-control.log'),'utf8');
+assert.match(diagnosticText,/DIAGNOSTIC_CONTROL_DONE/);
+const diagnosticLine=diagnosticText.split('\n').find(line=>line.startsWith('PROBE_EXPORT_DIAGNOSTIC '));assert(diagnosticLine);
+const diagnostic=JSON.parse(diagnosticLine.slice('PROBE_EXPORT_DIAGNOSTIC '.length));
+assert.equal(diagnostic.actualBundleValue,String(diagnostic.expectedInitialValue));
+assert(diagnostic.diskContent.includes(`module.exports = ${diagnostic.expectedProbeValue};`));
+assert(Number.isFinite(diagnostic.lastWriteEpochMs)&&diagnostic.lastWriteEpochMs>0);
+assert(Number.isFinite(diagnostic.rebuildStartEpochMs)&&diagnostic.rebuildStartEpochMs>0);
+console.log('PROBE_DIAGNOSTIC_CONTROL_PASSED');
 const schedule=[],failures=[];
 outer:for(const scenario of ['wide','modules','symlink'])for(let rep=1;rep<=5;rep++) {
  const arms=rep%2?['main','before','fix','wp']:['wp','fix','before','main'];

@@ -16,8 +16,6 @@ jobs:
       matrix:
         include:
           - { platform: Linux, runner: ubuntu-latest }
-          - { platform: macOS, runner: macos-latest }
-          - { platform: Windows, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     defaults:
@@ -65,7 +63,7 @@ jobs:
     needs: measure
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -83,6 +81,22 @@ jobs:
         with:
           pattern: wide-results-*
           path: .bench-wide/collected/
+      - name: Wait for retained macOS and Windows jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run watch 41133890095 --repo guru-irl/rspack --interval 60
+      - uses: actions/download-artifact@v4
+        with:
+          name: wide-results-macOS
+          run-id: 41133890095
+          github-token: ${{ github.token }}
+          path: .bench-wide/collected/wide-results-macOS/
+      - uses: actions/download-artifact@v4
+        with:
+          name: wide-results-Windows
+          run-id: 41133890095
+          github-token: ${{ github.token }}
+          path: .bench-wide/collected/wide-results-Windows/
       - name: Assemble tables, identities and threshold checks
         run: node bench/wide-memory/report.cjs
       - uses: actions/upload-artifact@v4

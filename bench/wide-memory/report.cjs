@@ -13,10 +13,10 @@ for(const os of systems){
  entries[os]={folder,summary};
 }
 const signed=(n,d=2)=>`${n>=0?'+':''}${n.toFixed(d)}`;
-const flags=[];
+const flags=[],failureDiagnostics=[];
 let report='# PR #59 cross-platform memory and startup\n\n';
 report+='Release sources are main `79c650c24e4b468e743ebfe6454b3b2bc6650938`, before `b87c553ce76f2055d2ee19de589f5bbc106ff23d`, and fix `90f41a8ac8200533cdc96aa31b4b818bf8a75561`. Watchpack is 2.6.3 through the main compiler with its native watcher disabled.\n\n';
-report+='Build run [41106150672](https://github.com/guru-irl/rspack/actions/runs/41106150672) uses nine release builds with `plugin,info-level`. Measurement run is ['+process.env.GITHUB_RUN_ID+'](https://github.com/guru-irl/rspack/actions/runs/'+process.env.GITHUB_RUN_ID+'). All builds and samples use GitHub-hosted runners and Node 22.23.3.\n\n';
+report+='Build run [41106150672](https://github.com/guru-irl/rspack/actions/runs/41106150672) uses nine release builds with `plugin,info-level`. Linux measurement and aggregation run is ['+process.env.GITHUB_RUN_ID+'](https://github.com/guru-irl/rspack/actions/runs/'+process.env.GITHUB_RUN_ID+'). macOS and Windows measurements are from [41133890095](https://github.com/guru-irl/rspack/actions/runs/41133890095). All builds and samples use GitHub-hosted runners and Node 22.23.3.\n\n';
 report+=`Bench branch \`bench/pr59-xplat-memory\` is at \`${process.env.GITHUB_SHA}\`.\n\n`;
 report+='Each OS uses one measurement host, fresh processes, five alternating forward/reverse rounds per arm and scenario, and no forced GC. Tables show medians. Delta rows are medians of within-repetition paired deltas, followed by paired percentages. Ranges, phase RSS values, CPU and filesystem counters are retained in the raw receipts. Final lines refer to the wide 20k-folder context.\n\n';
 report+='Readiness is watch start until all ten fixed-seed probe edits appear in rebuild `modifiedFiles`. After first done, each pending probe is rewritten every 200 ms. First probe is watch start until the first such delivery. Linux also samples inotify watches every 200 ms in a separate process and reports the final count confirmed stable for 2.4 seconds. The 200 ms probe cadence and 50 ms aggregate timeout are part of these times.\n\n';
@@ -27,9 +27,13 @@ const callbackLine=sourceLines.findIndex(line=>line.startsWith('function onBuild
 const loopLine=sourceLines.findIndex(line=>line.includes('const rewrite=()=>'))+1;
 const firstWriteLine=sourceLines.findIndex(line=>line.includes('rewrite();probeWriter='))+1;
 const releaseLine=sourceLines.findIndex(line=>line.startsWith('function validateInitialAndRelease('))+1;
-report+=`In counted processes the initial callback at \`bench/wide-memory/sample.cjs:${callbackLine}-${callbackLine+8}\` resolves first done without RSS, resource, CPU or bundle reads. The probe loop at \`bench/wide-memory/sample.cjs:${loopLine}-${firstWriteLine}\` writes before any such observer. macOS has no ps, vm_stat or fs_usage call in that gap. A runtime guard rejects any counter or external observer before the first probe write; every OS also runs its negative control. Initial Stats and VM output are scoped to \`bench/wide-memory/sample.cjs:${releaseLine}-${releaseLine+9}\`; only primitive metadata survives into idle and edit sampling, checked by a retained-Stats negative control.\n\n`;
+report+='In counted processes first done resolves without RSS, resource, CPU or bundle reads, and probes are written before those observers. macOS has no ps, vm_stat or fs_usage call in that gap. A runtime guard rejects counter or external observer calls before the first probe write. Initial Stats and VM output live only in a synchronous validation helper; only primitive metadata survives into idle and edit sampling. Each OS runs both negative controls.\n\n';
+report+='New-run probe failures log expected and actual bundle values, file content, filesystem mtime as last-write time, and `Stats.startTime` as rebuild start. These reads occur only after a failed value check, with no new hooks, per-write sampling, cadence changes or delay on the successful path. The diagnostic control checks those fields against a real initial bundle and native Stats.\n\n';
 for(const os of systems){
  const entry=entries[os];report+=`## ${os}\n\n`;
+ report+=`Driver commit \`${os==='Linux'?process.env.GITHUB_SHA:'1f93cc1c3df2aa804235fb8324b170e51767a2dd'}\`; run ${os==='Linux'?process.env.GITHUB_RUN_ID:'41133890095'}.\n\n`;
+ const refs=os==='Linux'?{callback:callbackLine,loop:loopLine,write:firstWriteLine,release:releaseLine,releaseEnd:releaseLine+13}:{callback:96,loop:152,write:153,release:55,releaseEnd:64};
+ report+=`Code: first-done callback \`bench/wide-memory/sample.cjs:${refs.callback}-${refs.callback+8}\`; immediate probe loop \`bench/wide-memory/sample.cjs:${refs.loop}-${refs.write}\`; scoped initial validation \`bench/wide-memory/sample.cjs:${refs.release}-${refs.releaseEnd}\`.\n\n`;
  if(entry.missing){report+='| State | Result |\n|---|---|\n| Measurements | not run; no complete artifact |\n\n';continue;}
  const {summary,folder}=entry;
  const keys=[['Readiness ms','readinessMs'],['First probe ms','firstProbeMs'],['First done ms','firstDoneMs'],...(os==='Linux'?[['Inotify stable ms','inotifyStableMs']]:[]),['Startup peak MiB','readinessPeakMiB'],['Full peak MiB','fullPeakMiB'],['Idle MiB','idleRssMiB'],['20-edit MiB','editedRssMiB'],['Edit ms','editLatencyMs'],['Native watches','watchesIdle.count']];
@@ -64,8 +68,14 @@ for(const os of systems){
  if(fs.existsSync(failuresFile))for(const failure of JSON.parse(fs.readFileSync(failuresFile,'utf8'))){
   const logFile=failure.arm?path.join(folder,`${failure.scenario}-${failure.arm}-${failure.rep}.log`):null;
   const text=logFile&&fs.existsSync(logFile)?fs.readFileSync(logFile,'utf8'):'';
-  flags.push({os,kind:/ARM_EDIT_FAILURE/.test(text)?'edit delivery failure':'failed command, excluded from samples',...failure});
+  const diagnosticLine=text.split('\n').find(line=>line.startsWith('PROBE_EXPORT_DIAGNOSTIC '));
+  if(diagnosticLine)failureDiagnostics.push({os,...JSON.parse(diagnosticLine.slice('PROBE_EXPORT_DIAGNOSTIC '.length))});
+  flags.push({os,kind:diagnosticLine?'probe output failure, diagnostic attached':/ARM_EDIT_FAILURE/.test(text)?'edit delivery failure':'failed command, excluded from samples',...failure});
  }
+}
+if(failureDiagnostics.length){
+ report+='## Probe failure diagnostics\n\n';
+ for(const diagnostic of failureDiagnostics)report+='```json\n'+JSON.stringify(diagnostic,null,2)+'\n```\n\n';
 }
 report+='## Checks and interpretation\n\n';
 report+='Every counted process sets `NAPI_RS_NATIVE_LIBRARY_PATH`, records its absolute path and SHA-256, and proves the loaded native object through `/proc/self/maps` on Linux or `process.report.sharedObjects` on macOS and Windows. Each OS runs a real wrong-binding process control. The auditor rejects missing samples, wrong bindings, stale edited output, missing edits, duplicate samples, wrong source identities, missing readiness probes and stale probe output. Every initial, probe and measured edit rebuild checks the emitted bundle.\n\n';
@@ -87,9 +97,10 @@ report+='Comparisons with before isolate this cross-platform fix. Linux costs ve
 report+='## Superseded runs\n\n';
 report+='Run 41115683971 is excluded. Its Windows positive control could not resolve the bare Watchpack development package; the version check now reads the prebundled package used by the compiler. Linux main also failed one symlink probe-output check, with an unexpected export and no recorded value. That failed command was not a sample and does not prove a missed edit. Its log is `wide-results-Linux/symlink-main-4.log`.\n\n';
 report+='Run 41117477873 passed all 180 processes, but its timings are superseded. Windows queried PowerShell synchronously before writing probes. macOS had no external ps/vm_stat/fs_usage call, but the shared callback read RSS and resource counters and validated the initial bundle before the first probe write. The previously reported macOS +878 ms is not used here.\n\n';
-report+='Run 41128483603 removed the observer gap, but retained the initial Stats object through the resolved promise. Stats holds a Compilation reference at `packages/rspack/src/Stats.ts:25-33`. That pass is also excluded. Retention control run 41133253138 reproduced the problem on all three OSes; the counted rerun deletes that reference and scopes VM validation to a short-lived function.\n\n';
-report+='Guard regression run 41127477298 reproduced the pre-probe observer on all three OSes. The counted rerun resolves first done without observers, writes probes, then validates the initial bundle. The guard remains active throughout the first-done-to-first-write gap. All macOS jobs received runners on their first attempt; no no-runner retry was needed.\n\n';
-report+='ESCALATION[warning]: The excluded first run contains an unclassified Linux main probe-output failure. The later counted samples do not erase it.\n\n';
+report+='Run 41128483603 removed the observer gap, but retained the initial Stats object through the resolved promise. Stats holds a Compilation reference at `packages/rspack/src/Stats.ts:25-33`. That pass is also excluded. Its macOS main wide repetition 5 failed the same unexpected-probe-export check, without recording the actual value; that is also unclassified, not a proved missed edit. Retention control run 41133253138 reproduced the problem on all three OSes; the counted rerun deletes that reference and scopes VM validation to a short-lived function.\n\n';
+report+='Guard regression run 41127477298 reproduced the pre-probe observer on all three OSes. The counted rerun resolves first done without observers, writes probes, then validates the initial bundle. The guard remains active throughout the first-done-to-first-write gap. All macOS jobs received runners on their first attempt; no retry was needed.\n\n';
+report+='Linux in 41133890095 failed before collecting samples: intentional monitor shutdown masked the retained-Stats negative control with an unhandled rejected promise. The Linux-only retry marks cleanup explicitly and disables the abandoned probe rejector before stopping the observer. This changes cleanup, not the probe or RSS measurement path. macOS and Windows use the same observer-free, metadata-only protocol from 41133890095.\n\n';
+report+='ESCALATION[warning]: Excluded runs contain unclassified Linux main and macOS main probe-output failures. Later counted samples do not erase them; future failures log the unexpected value and path.\n\n';
 report+='## Attention\n\n';
 report+='Work and review stayed inline because the user forbade subagents. Build the Lever produced the fixture generator, probe driver and receipt auditor. Explain the Number kept first done separate from probe readiness and retained system counters and raw ranges. The branch starts at `1463464694cd8571a74d2f1223ce1bf54df87ea2`; the original Windows-only workflow was replaced with the prior three-OS release structure because name and source changes alone could not measure three OSes. No release build was cancelled.\n\n';
 const lines=[];
