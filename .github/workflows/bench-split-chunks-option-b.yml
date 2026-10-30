@@ -1,4 +1,4 @@
-name: PR59 cross-platform release memory builds
+name: PR59 wide-tree measurement controls
 on:
   push:
     branches: [bench/pr59-xplat-memory]
@@ -7,67 +7,48 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr59-wide-release-${{ github.sha }}
+  group: pr59-wide-controls-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  build:
+  controls:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: main, ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938 }
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: main, ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938 }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: main, ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938 }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+          - { platform: Linux, runner: ubuntu-latest }
+          - { platform: macOS, runner: macos-latest }
+          - { platform: Windows, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 220
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Set scratch paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$PWD/.bench-wide/tmp"
-          P="$PWD/.bench-wide/tmp"
-          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
-          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ matrix.ref }}
-          path: source
-      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.3
-          cache: pnpm
-      - name: Free disk cache
-        if: runner.os == 'Linux'
-        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
-        with:
-          tool-cache: false
-      - name: Repair Rust proxies on macOS
-        if: runner.os == 'macOS'
-        shell: bash
+      - name: Set scratch paths
         run: |
           set -euo pipefail
-          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Build exact release source
-        shell: bash
-        env:
-          SOURCE_REF: ${{ matrix.ref }}
-          RUST_TARGET: ${{ matrix.target }}
-        run: bash bench/wide-memory/build.sh
+          mkdir -p "$PWD/.bench-wide/tmp" "$PWD/.bench-wide/results"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - name: Check JavaScript syntax and generate exact fixtures
+        run: |
+          set -euo pipefail
+          for file in bench/wide-memory/*.cjs; do node --check "$file"; done
+          node bench/wide-memory/prepare.cjs | tee .bench-wide/results/fixtures.jsonl
+      - name: Prove Windows directory handle counting
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./bench/wide-memory/observe.ps1 -SelfControl -Fixture (Resolve-Path .bench-wide/fixtures/wide).Path | Tee-Object -FilePath .bench-wide/results/directory-control.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wide-binding-${{ matrix.platform }}-${{ matrix.arm }}
-          path: .bench-wide/artifact/
+          name: wide-controls-${{ matrix.platform }}
+          path: .bench-wide/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
