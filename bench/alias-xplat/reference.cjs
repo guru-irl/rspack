@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const [sourceArg, arm, resultArg] = process.argv.slice(2);
 const source = fs.realpathSync(sourceArg);
 const localRequire = createRequire(path.join(source, 'packages/rspack/package.json'));
-const { rspack } = localRequire(path.join(source, 'packages/rspack'));
+const { rspack } = localRequire(path.join(source, 'packages/rspack/dist/index.js'));
 const pin = fs.realpathSync(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);
 const hash = crypto.createHash('sha256').update(fs.readFileSync(pin)).digest('hex');
 assert.equal(hash, process.env.EXPECTED_BINDING_SHA256);
