@@ -414,19 +414,19 @@ impl PathManager {
     self.context_watcher.get_or_init(|| watcher);
   }
 
-  fn watch_context_directory(&self, path: &InternedPath) -> rspack_error::Result<()> {
+  fn watch_context_directory(&self, path: &InternedPath) -> rspack_error::Result<bool> {
     if let Some(watcher) = self.context_watcher.get().and_then(Weak::upgrade) {
       let mut watcher = watcher.lock().expect("disk watcher lock poisoned");
       // A scan can outlive the context that started it.
-      if (self.directories.all.contains(path) || self.is_below_context(path))
-        && path.is_dir()
-        && let Err(error) = watcher.watch_context_directory(path)
-        && path.is_dir()
-      {
-        return Err(error);
+      if (self.directories.all.contains(path) || self.is_below_context(path)) && path.is_dir() {
+        match watcher.watch_context_directory(path) {
+          Ok(added) => return Ok(added),
+          Err(error) if path.is_dir() => return Err(error),
+          Err(_) => {}
+        }
       }
     }
-    Ok(())
+    Ok(false)
   }
 
   fn remove_context_watch(&self, path: &InternedPath, removed: bool) {
@@ -763,8 +763,10 @@ impl PathManager {
     };
     if metadata.is_dir() {
       // Like watchpack's `setDirectory`, only a directory not known before is
-      // scanned: an event on a known one, e.g. a `chmod`, changes nothing below.
-      if self.record(path, || self.context_directories.insert(path.clone())) {
+      // scanned, unless a failed watch was dropped and can now be restored.
+      if self.record(path, || self.context_directories.insert(path.clone()))
+        || !matches!(self.watch_context_directory(path), Ok(false))
+      {
         self.scan_below(vec![path.clone()], false, None).await;
       }
       return true;
