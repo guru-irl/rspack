@@ -1,12 +1,13 @@
 import path from 'node:path';
 import { defineConfig } from '@rspack/cli';
+import type { Compiler } from '@rspack/core';
 
 export default defineConfig({
   devtool: false,
   incremental: { silent: true },
   optimization: { moduleIds: 'natural', chunkIds: 'natural' },
   plugins: [
-    (compiler) => {
+    (compiler: Compiler) => {
       for (const name of ['first', 'second']) {
         compiler.hooks.make.tapAsync(
           `ChildHash-${name}`,
