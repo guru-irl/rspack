@@ -390,14 +390,6 @@ pub async fn create_hash(
   {
     compilation_hasher.update(hash);
   }
-  // Like webpack, fold warnings before errors, ahead of chunk hashes.
-  for diagnostic in compilation
-    .get_warnings_sorted()
-    .chain(compilation.get_errors_sorted())
-  {
-    // Use the same message exposed by compilation.warnings and compilation.errors.
-    compilation_hasher.update(&diagnostic.render_report(false)?);
-  }
   compilation
     .build_chunk_graph_artifact
     .chunk_by_ukey
