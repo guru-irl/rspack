@@ -17,6 +17,10 @@ result=run([script,'main','wide','1','identity-only'],'identity-negative.log',{B
 assert.notEqual(result.status,0,'wrong-binding process accepted');
 assert.match(fs.readFileSync(path.join(results,'identity-negative.log'),'utf8'),/WRONG_BINDING_HASH/);
 console.log('WRONG_BINDING_CONTROL_REJECTED');
+result=run([script,'main','modules','1','observer-negative'],'observer-negative.log');
+assert.notEqual(result.status,0,'observer in the probe gap accepted');
+assert.match(fs.readFileSync(path.join(results,'observer-negative.log'),'utf8'),/OBSERVER_IN_PROBE_GAP/);
+console.log('OBSERVER_GAP_CONTROL_REJECTED');
 const schedule=[],failures=[];
 outer:for(const scenario of ['wide','modules','symlink'])for(let rep=1;rep<=5;rep++) {
  const arms=rep%2?['main','before','fix','wp']:['wp','fix','before','main'];

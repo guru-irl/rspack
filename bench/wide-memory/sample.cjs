@@ -85,7 +85,12 @@ function next(version){
 function fail(error){lastError=String(error);pending?.reject(error);probeReject?.(error);}
 function onBuild(error,stats){
  const arrived=performance.now();
- if(phase==='initial')firstDoneSeen=true;
+ if(phase==='initial'){
+  firstDoneSeen=true;builds++;
+  if(mode==='observer-negative')readRssMiB();
+  pending.resolve({arrived,error,stats,sampledAtDone:firstDonePeak});
+  return;
+ }
  const resource=readResourceUsage(),rss=readRssMiB(),cpu=readCpuUsage();
  builds++;
  if(error||stats.hasErrors()){fail(new Error(String(error||stats.toString({all:false,errors:true}))));return;}
@@ -126,7 +131,7 @@ function onBuild(error,stats){
    await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('monitor startup timed out')),10000);monitor.once('message',message=>{clearTimeout(timer);assert.equal(message.kind,'ready');resolve();});});
    monitorResult=new Promise(resolve=>monitor.on('message',message=>{if(message.kind==='inotify-stability')resolve(message);}));
   }
-  baseline={rssMiB:readRssMiB(),resource:readResourceUsage()};
+  baseline={rssMiB:readRssMiB(),resource:readResourceUsage()};firstDonePeak=baseline.rssMiB;
   sampler=setInterval(()=>{const rss=readRssMiB();sampledPeak=Math.max(sampledPeak,rss);if(phase==='initial')firstDonePeak=Math.max(firstDonePeak,rss);if(['initial','probes'].includes(phase))readinessSampledPeak=Math.max(readinessSampledPeak,rss);},10);
   compiler=rspack({context:fixture,mode:'development',devtool:false,target:'node',entry:'./index.js',resolve:{symlinks:false},output:{path:output,filename:'bundle.js',library:{type:'commonjs2'}},experiments:{nativeWatcher:arm!=='wp'}});
   start=performance.now();cpuStart=process.cpuUsage();
@@ -134,8 +139,13 @@ function onBuild(error,stats){
   const first=next(0);watching=compiler.watch({aggregateTimeout:50,followSymlinks:true},onBuild);initial=await first;
   phase='probes';
   const ready=new Promise((resolve,reject)=>{probeResolve=resolve;probeReject=reject;probeTimer=setTimeout(()=>reject(new Error(`ARM_EDIT_FAILURE readiness probes missing: ${probes.filter(p=>!landed.has(p.key)).map(p=>p.file).join(',')}`)),120000);});
-  const rewrite=()=>{try{if(!firstProbeWritten){firstProbeWriteMs=performance.now()-start;firstProbeWritten=true;}for(const p of probes)if(!landed.has(p.key)){const n=rewrites.get(p.key)+1;rewrites.set(p.key,n);fs.writeFileSync(p.absolute,`module.exports = ${p.changedValue}; // probe rewrite ${n}\n`);}}catch(error){fail(error);}};
-  rewrite();probeWriter=setInterval(rewrite,200);await ready;probeReject=undefined;
+  const rewrite=()=>{try{for(const p of probes)if(!landed.has(p.key)){const n=rewrites.get(p.key)+1;rewrites.set(p.key,n);if(!firstProbeWritten)firstProbeWriteMs=performance.now()-start;fs.writeFileSync(p.absolute,`module.exports = ${p.changedValue}; // probe rewrite ${n}\n`);firstProbeWritten=true;}}catch(error){fail(error);}};
+  rewrite();probeWriter=setInterval(rewrite,200);
+  assert(!initial.error,String(initial.error));assert(!initial.stats.hasErrors(),initial.stats.toString({all:false,errors:true}));
+  const initialModule={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(output,'bundle.js'),'utf8'),{module:initialModule},{timeout:20000});
+  initial.actualHash=digest(initialModule.exports);initial.expectedHash=digest(expected(0,[]));
+  assert.equal(initial.actualHash,initial.expectedHash,'ARM_EDIT_FAILURE initial output');
+  await ready;probeReject=undefined;
   const idleSamples=[];for(let second=1;second<=10;second++){await wait(1000);if(second>=6)idleSamples.push(readRssMiB());}
   if(lastError)throw new Error(lastError);
   if(monitor){monitor.send({kind:'stop'});inotify=await monitorResult;await monitorExit;assert(inotify.stableMs!==null,'inotify count did not stabilize for 2400 ms');}
@@ -150,7 +160,8 @@ function onBuild(error,stats){
   const highWater=(resource,win)=>(win?.peakWorkingSetBytes||resource.maxRSS*1024)/1048576;
   const result={arm,scenario,rep,platform,arch:process.arch,node:process.version,identity,watchpackVersion,
    fixture:{folders:spec.folders,fillerFiles:spec.fillerFiles,moduleCount:entries.length,symlinkFiles:spec.symlinkFiles,probeSeed:probeSet.seed,probeCount:10},baseline,
-   firstDoneMs:initial.arrived-start,firstDonePeakMiB:Math.max(initial.sampledAtDone,highWater(initial.resource,initial.windows)),firstDoneResource:initial.resource,firstDoneCpu:initial.cpu,
+   firstDoneMs:initial.arrived-start,firstProbeWriteMs,firstDoneToProbeWriteMs:firstProbeWriteMs-(initial.arrived-start),observerGapGuard:true,
+   firstDonePeakMiB:initial.sampledAtDone,firstDonePeakMethod:'10 ms sampled RSS; no observer in the probe gap',firstDoneResource:null,firstDoneCpu:null,
    readinessMs,firstProbeMs,readinessPeakMiB:Math.max(readinessSampledPeak,highWater(readinessResource,readinessWindows)),readinessResource,
    probes:probes.map(p=>({file:p.file,key:p.key,landedMs:landed.get(p.key),rewrites:rewrites.get(p.key)})),probeRebuilds,
    inotifyStableMs:inotify?.stableMs??null,inotify:inotify?{...inotify,samples:undefined}:null,

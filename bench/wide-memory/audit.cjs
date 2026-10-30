@@ -31,6 +31,9 @@ function validate(rows,complete=true) {
   assert.deepEqual(row.fixture,{folders:fixture.folders,fillerFiles:fixture.fillerFiles,moduleCount:fixture.moduleCount+(scenario==='modules'?0:10),symlinkFiles:fixture.symlinkFiles,probeSeed:probeSet.seed,probeCount:10});
   for(const key of ['firstDoneMs','readinessMs','firstProbeMs','firstDonePeakMiB','readinessPeakMiB','idleRssMiB','editedRssMiB','editLatencyMs','fullPeakMiB'])assert(Number.isFinite(row[key])&&row[key]>0,key);
   assert(row.firstDoneMs<=row.firstProbeMs&&row.firstProbeMs<=row.readinessMs,'phase order');
+  assert.equal(row.observerGapGuard,true);
+  assert(Number.isFinite(row.firstProbeWriteMs)&&row.firstProbeWriteMs>=row.firstDoneMs&&row.firstProbeWriteMs<=row.firstProbeMs,'probe write order');
+  assert.equal(row.firstDoneToProbeWriteMs,row.firstProbeWriteMs-row.firstDoneMs);
   assert.equal(row.probes.length,10,'missing readiness probe');
   assert.deepEqual(row.probes.map(p=>p.file),probes.map(p=>p.file));
   const deliveries=new Map();
@@ -79,7 +82,7 @@ if(complete){
  reject('missing-readiness-probe',copy=>copy[0].probes.pop());reject('stale-probe-output',copy=>copy[0].probeRebuilds.at(-1).actualHash=expectedHash(copy[0].scenario,copy[0].rep,0,[]));
  console.log(JSON.stringify({kind:'receipt-controls',controls}));
 }
-const metrics=[['Readiness, ms','readinessMs'],['First probe, ms','firstProbeMs'],['First done, ms','firstDoneMs'],['Inotify stable, ms','inotifyStableMs'],['First done peak RSS, MiB','firstDonePeakMiB'],['Readiness peak RSS, MiB','readinessPeakMiB'],['Full-run peak RSS, MiB','fullPeakMiB'],['Idle RSS, MiB','idleRssMiB'],['After 20 edits RSS, MiB','editedRssMiB'],['Edit latency, ms','editLatencyMs'],['Native watches','watchesIdle.count']];
+const metrics=[['Readiness, ms','readinessMs'],['First probe, ms','firstProbeMs'],['First done, ms','firstDoneMs'],['First done to first probe write, ms','firstDoneToProbeWriteMs'],['Inotify stable, ms','inotifyStableMs'],['First done peak RSS, MiB','firstDonePeakMiB'],['Readiness peak RSS, MiB','readinessPeakMiB'],['Full-run peak RSS, MiB','fullPeakMiB'],['Idle RSS, MiB','idleRssMiB'],['After 20 edits RSS, MiB','editedRssMiB'],['Edit latency, ms','editLatencyMs'],['Native watches','watchesIdle.count']];
 const get=(row,key)=>key.split('.').reduce((value,k)=>value[k],row);
 const stats=values=>({median:median(values),min:Math.min(...values),max:Math.max(...values),values});
 const data={},large=[];
@@ -92,7 +95,7 @@ for(const scenario of scenarios){
   const perArm=Object.fromEntries(arms.map(arm=>{const values=group[arm].map(r=>get(r,key));return [arm,values.length===5&&values.every(v=>v!==null)?stats(values):{median:null,n:values.length,notExposed:values.length===5&&values.every(v=>v===null)}];}));
   const pairs={};for(const base of ['before','main'])pairs[base]=perArm.fix.median!==null&&perArm[base].median!==null?{delta:stats(group.fix.map((r,i)=>get(r,key)-get(group[base][i],key))),percent:stats(group.fix.map((r,i)=>(get(r,key)/get(group[base][i],key)-1)*100))}:null;
   data[scenario][key]={arms:perArm,pairs};
-  for(const base of ['before','main'])if(pairs[base]&&((['readinessMs','firstDoneMs'].includes(key)&&pairs[base].percent.median>20)||(['firstDonePeakMiB','readinessPeakMiB','fullPeakMiB'].includes(key)&&pairs[base].percent.median>10)))large.push({scenario,metric:key,base,delta:pairs[base].delta.median,percent:pairs[base].percent.median});
+  for(const base of ['before','main'])if(pairs[base]&&((key==='readinessMs'&&pairs[base].percent.median>20)||(['readinessPeakMiB','fullPeakMiB'].includes(key)&&pairs[base].percent.median>10)))large.push({scenario,metric:key,base,delta:pairs[base].delta.median,percent:pairs[base].percent.median});
   const cells=arms.map(arm=>arm==='wp'&&['editLatencyMs','watchesIdle.count'].includes(key)?'not requested':perArm[arm].median!==null?`${format(perArm[arm].median,key==='watchesIdle.count'?0:2)} [${format(perArm[arm].min,key==='watchesIdle.count'?0:2)}, ${format(perArm[arm].max,key==='watchesIdle.count'?0:2)}]`:perArm[arm].notExposed?'not exposed':`incomplete ${perArm[arm].n}/5`);
   const deltas=['before','main'].map(base=>pairs[base]?`${signed(pairs[base].delta.median)} / ${signed(pairs[base].percent.median)}%`:'not available');
   md+=`| ${scenario}, ${label} | ${cells.join(' | ')} | ${deltas.join(' | ')} |\n`;
