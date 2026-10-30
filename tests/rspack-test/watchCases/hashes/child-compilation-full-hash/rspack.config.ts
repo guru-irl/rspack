@@ -2,23 +2,32 @@ import path from 'node:path';
 import { defineConfig } from '@rspack/cli';
 
 export default defineConfig({
+  devtool: false,
+  optimization: { moduleIds: 'natural', chunkIds: 'natural' },
   plugins: [
     (compiler) => {
-      compiler.hooks.make.tapAsync('ChildHash', (compilation, callback) => {
-        compilation.fileDependencies.add(
-          path.resolve(compiler.context, 'child.js'),
+      for (const name of ['first', 'second']) {
+        compiler.hooks.make.tapAsync(
+          `ChildHash-${name}`,
+          (compilation, callback) => {
+            compilation.fileDependencies.add(
+              path.resolve(compiler.context, `${name}.js`),
+            );
+            const child = compilation.createChildCompiler(
+              name,
+              { filename: `${name}.js` },
+              [
+                new compiler.rspack.EntryPlugin(
+                  compiler.context,
+                  `./${name}.js`,
+                  { name: 'child' },
+                ),
+              ],
+            );
+            child.runAsChild((error) => callback(error));
+          },
         );
-        const child = compilation.createChildCompiler(
-          'hash-child',
-          { filename: 'child.js' },
-          [
-            new compiler.rspack.EntryPlugin(compiler.context, './child.js', {
-              name: 'child',
-            }),
-          ],
-        );
-        child.runAsChild((error) => callback(error));
-      });
+      }
     },
   ],
 });
