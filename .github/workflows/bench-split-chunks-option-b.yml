@@ -15,8 +15,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
           - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
           - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
     runs-on: ${{ matrix.runner }}
@@ -94,8 +92,16 @@ jobs:
           node-version: 22.23.3
           cache: pnpm
       - uses: actions/download-artifact@v4
+        if: matrix.platform == 'Windows'
         with:
           pattern: wide-binding-${{ matrix.platform }}-*
+          path: .bench-wide/bindings/
+      - uses: actions/download-artifact@v4
+        if: matrix.platform == 'macOS'
+        with:
+          pattern: wide-binding-macOS-*
+          run-id: 41139664709
+          github-token: ${{ github.token }}
           path: .bench-wide/bindings/
       - uses: actions/download-artifact@v4
         with:

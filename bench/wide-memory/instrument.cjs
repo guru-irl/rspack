@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const file = 'source/crates/rspack_watcher/src/disk_watcher.rs';
-let text = fs.readFileSync(file, 'utf8');
+let text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 const cross = !text.includes('#[cfg(target_os = "linux")]\n#[derive(Default)]');
 function replace(old, next) {
   assert.equal(text.split(old).length, 2, `one match required: ${old}`);
