@@ -390,22 +390,13 @@ pub async fn create_hash(
   {
     compilation_hasher.update(hash);
   }
-  let diagnostics = compilation
-    .get_warnings()
-    .chain(compilation.get_errors())
-    .map(|diagnostic| {
-      Ok((
-        diagnostic.is_error(),
-        diagnostic.module_identifier,
-        diagnostic.loc.as_ref(),
-        // Use the same message exposed by compilation.warnings and compilation.errors.
-        diagnostic.render_report(false)?,
-      ))
-    })
-    .collect::<Result<Vec<_>>>()?;
-  // Warnings precede errors, then sort by module, location and message like webpack.
-  for (_, _, _, message) in diagnostics.into_iter().sorted_unstable() {
-    compilation_hasher.update(&message);
+  // Like webpack, fold warnings before errors, ahead of chunk hashes.
+  for diagnostic in compilation
+    .get_warnings_sorted()
+    .chain(compilation.get_errors_sorted())
+  {
+    // Use the same message exposed by compilation.warnings and compilation.errors.
+    compilation_hasher.update(&diagnostic.render_report(false)?);
   }
   compilation
     .build_chunk_graph_artifact
