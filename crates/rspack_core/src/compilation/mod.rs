@@ -295,6 +295,7 @@ pub struct Compilation {
   pub incremental: Incremental,
 
   pub hash: Option<RspackHashDigest>,
+  pub child_compilation_hashes: Vec<String>,
 
   pub file_dependencies: InternedPathIndexSet,
   pub context_dependencies: InternedPathIndexSet,
@@ -446,6 +447,7 @@ impl Compilation {
       build_chunk_graph_artifact: Default::default(),
 
       hash: None,
+      child_compilation_hashes: Default::default(),
 
       file_dependencies: Default::default(),
       context_dependencies: Default::default(),

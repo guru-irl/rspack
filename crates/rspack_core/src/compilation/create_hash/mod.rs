@@ -381,6 +381,11 @@ pub async fn create_hash(
   logger.time_end(start);
 
   // create full hash
+  // Child compilers can finish in any order. Hash their values in a stable order,
+  // retaining duplicates and only including children that ran in this compilation.
+  for hash in compilation.child_compilation_hashes.iter().sorted_unstable() {
+    compilation_hasher.update(hash);
+  }
   compilation
     .build_chunk_graph_artifact
     .chunk_by_ukey

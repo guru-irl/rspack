@@ -800,6 +800,15 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
    *
    * @internal
    */
+  __internal__addChildCompilationHash(hash: string) {
+    this.#inner.addChildCompilationHash(hash);
+  }
+
+  /**
+   * Note: This is not a webpack public API, maybe removed in future.
+   *
+   * @internal
+   */
   __internal__pushRspackDiagnostic(diagnostic: binding.JsRspackDiagnostic) {
     this.#inner.pushDiagnostic(diagnostic);
   }

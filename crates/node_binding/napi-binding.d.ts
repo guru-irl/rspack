@@ -295,6 +295,7 @@ export declare class JsCompilation {
   renameAsset(filename: string, newName: string): void
   get entrypoints(): ChunkGroup[]
   get chunkGroups(): ChunkGroup[]
+  addChildCompilationHash(hash: string): void
   get hash(): string | null
   get fileDependencies(): FileSystemDependencies
   get contextDependencies(): FileSystemDependencies
