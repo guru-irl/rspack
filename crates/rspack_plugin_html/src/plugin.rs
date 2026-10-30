@@ -196,7 +196,7 @@ async fn full_hash(&self, compilation: &Compilation, hasher: &mut RspackHasher) 
     if let Some(path) = options[key].as_str() {
       let path = compilation.options.context.as_path().join(path);
       let relative = self.config.get_relative_path(compilation, path.as_str());
-      options[key] = relative.replace('\\', "/").into();
+      options[key] = relative.cow_replace('\\', "/").into();
     }
   }
   let output = compilation.options.output.path.as_std_path();
@@ -207,7 +207,7 @@ async fn full_hash(&self, compilation: &Compilation, hasher: &mut RspackHasher) 
           .join(path)
           .relative(output)
           .to_string_lossy()
-          .replace('\\', "/")
+          .cow_replace('\\', "/")
           .into();
       }
     }
