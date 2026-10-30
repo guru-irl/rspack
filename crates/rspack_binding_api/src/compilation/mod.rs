@@ -460,7 +460,11 @@ impl JsCompilation {
 
   #[napi]
   pub fn add_child_compilation_hash(&mut self, hash: String, name: Option<String>) -> Result<()> {
-    self.as_mut()?.child_compilation_hashes.push((name, hash));
+    let id = self.id;
+    let compilation = self.as_mut()?;
+    if compilation.id() == id {
+      compilation.child_compilation_hashes.push((name, hash));
+    }
     Ok(())
   }
 
