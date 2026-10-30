@@ -1,74 +1,73 @@
-name: Native watcher Windows final gates
+name: PR59 cross-platform release memory builds
 on:
   push:
-    branches: [bench/pr59-alias-xplat]
-    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/alias-xplat/**']
+    branches: [bench/pr59-xplat-memory]
+    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/wide-memory/**']
 permissions:
   contents: read
   actions: read
+concurrency:
+  group: pr59-wide-release-${{ github.sha }}
+  cancel-in-progress: false
 jobs:
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    env:
-      EXPECTED_BINDING_SHA256: 7775793553b9ff85fd3289f94cf6f36aab95c8a177a656c9f21cc2dec08a9026
-    defaults:
-      run:
-        shell: bash
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: main, ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938 }
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: main, ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938 }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: main, ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938 }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 220
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Set scratch paths
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$PWD/.bench-alias/tmp" "$PWD/.bench-alias/results"
-          P="$(cygpath -w "$PWD/.bench-alias/tmp")"
+          mkdir -p "$PWD/.bench-wide/tmp"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
           printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561
-          path: head
-      - name: Verify source identity
-        run: |
-          set -euo pipefail
-          test "$(git -C head rev-parse HEAD)" = 90f41a8ac8200533cdc96aa31b4b818bf8a75561
-          test "$(git -C head rev-parse HEAD^{tree})" = 51f2676af734fbbbd3c17df49222e9c59ca65e7c
-          git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
+          ref: ${{ matrix.ref }}
+          path: source
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
-      - name: Reuse the exact hosted dev binding
-        uses: actions/download-artifact@v4
+      - name: Free disk cache
+        if: runner.os == 'Linux'
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
-          name: alias-fixed-binding-Windows
-          run-id: 41098959234
-          github-token: ${{ github.token }}
-          path: head/crates/node_binding
-      - name: Install dependencies and build JavaScript
-        working-directory: head
-        run: pnpm install --frozen-lockfile && pnpm run build:js
-      - name: Pin and check the reused binding
+          tool-cache: false
+      - name: Repair Rust proxies on macOS
+        if: runner.os == 'macOS'
+        shell: bash
         run: |
           set -euo pipefail
-          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.realpathSync.native("head/crates/node_binding/rspack.win32-x64-msvc.node"),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); assert.equal(h,process.env.EXPECTED_BINDING_SHA256); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nALIAS_SOURCE_ROOT=${fs.realpathSync.native("head")}\n`); console.log(JSON.stringify({binding:p,sha256:h,producer:41098959234}));' | tee .bench-alias/results/binding.json
-      - name: Check identity guard positive and wrong-hash controls
-        run: |
-          set -euo pipefail
-          node -r ./bench/alias-xplat/binding-guard.cjs -e 'require(process.env.ALIAS_SOURCE_ROOT + "/packages/rspack/dist/index.js")' | tee .bench-alias/results/guard-positive.log
-          if EXPECTED_BINDING_SHA256=000 node -r ./bench/alias-xplat/binding-guard.cjs -e 'require(process.env.ALIAS_SOURCE_ROOT + "/packages/rspack/dist/index.js")' > .bench-alias/results/guard-negative.log 2>&1; then
-            echo WRONG_HASH_ACCEPTED; exit 97
-          fi
-          grep -q WRONG_BINDING_HASH .bench-alias/results/guard-negative.log
-      - name: Run native watcher compiler cases with worker binding proof
-        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates compiler
-      - name: Check the source stayed unchanged
-        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
+          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build exact release source
+        shell: bash
+        env:
+          SOURCE_REF: ${{ matrix.ref }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: bash bench/wide-memory/build.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alias-windows-final-gates
-          path: .bench-alias/results/
+          name: wide-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-wide/artifact/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
