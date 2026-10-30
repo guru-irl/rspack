@@ -3,6 +3,7 @@ import { defineConfig } from '@rspack/cli';
 
 export default defineConfig({
   devtool: false,
+  incremental: { silent: true },
   optimization: { moduleIds: 'natural', chunkIds: 'natural' },
   plugins: [
     (compiler) => {
