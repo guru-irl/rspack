@@ -1,4 +1,4 @@
-name: Native watcher alias parity
+name: Native watcher alias fixed verification
 on:
   push:
     branches: [bench/pr59-alias-xplat]
@@ -7,17 +7,17 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: native-watcher-alias-xplat-${{ github.sha }}
+  group: native-watcher-alias-fixed-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  reference:
+  verify:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { platform: Linux, runner: ubuntu-latest }
+          - { platform: macOS, runner: macos-latest }
+          - { platform: Windows, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
@@ -38,86 +38,60 @@ jobs:
           printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d
+          ref: 5feaeab46c42dadc94772cc779478f129223cb0a
           path: head
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: web-infra-dev/rspack
-          ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
-          path: main
-      - name: Record source identities
-        run: git -C head rev-parse HEAD && git -C main rev-parse HEAD
+      - name: Verify source identity
+        run: |
+          set -euo pipefail
+          test "$(git -C head rev-parse HEAD)" = 5feaeab46c42dadc94772cc779478f129223cb0a
+          test "$(git -C head rev-parse HEAD^{tree})" = db83df66b5a2bb02b5612937f392c0806867e744
+          git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - name: Download exact main binding
-        uses: actions/download-artifact@v4
-        with:
-          repository: web-infra-dev/rspack
-          name: bindings-${{ matrix.target }}
-          run-id: 41037569354
-          github-token: ${{ github.token }}
-          path: .bench-alias/main-binding
-      - name: Download exact head binding
-        if: runner.os != 'macOS'
-        uses: actions/download-artifact@v4
-        with:
-          name: bindings-${{ matrix.target }}
-          run-id: 41075011525
-          github-token: ${{ github.token }}
-          path: .bench-alias/head-binding
-      - name: Install head dependencies
-        working-directory: head
-        run: pnpm install --frozen-lockfile
-      - name: Install Rust on macOS
+      - name: Repair Rust proxies on macOS
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" toolchain install nightly-2026-04-16 --profile minimal
-      - name: Build head binding on macOS
-        if: runner.os == 'macOS'
+      - name: Install Rust
+        run: rustup toolchain install nightly-2026-04-16 --profile minimal
+      - name: Install dependencies
         working-directory: head
-        run: |
-          set -euo pipefail
-          pnpm run build:binding:dev
-          mkdir -p ../.bench-alias/head-binding
-          cp crates/node_binding/*.node ../.bench-alias/head-binding/
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'macOS'
-        with:
-          name: alias-head-binding-${{ matrix.platform }}
-          path: .bench-alias/head-binding/*.node
-          include-hidden-files: true
-          if-no-files-found: error
-      - name: Build head JavaScript
+        run: pnpm install --frozen-lockfile
+      - name: Build development binding
+        working-directory: head
+        run: pnpm run build:binding:dev
+      - name: Build JavaScript
         working-directory: head
         run: pnpm run build:js
-      - name: Measure head and Watchpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alias-fixed-binding-${{ matrix.platform }}
+          path: head/crates/node_binding/*.node
+          if-no-files-found: error
+      - name: Pin the fixed binding
         run: |
           set -euo pipefail
-          PIN="$(find "$PWD/.bench-alias/head-binding" -name '*.node' -type f)"
-          export NAPI_RS_NATIVE_LIBRARY_PATH="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$PIN")"
-          export EXPECTED_BINDING_SHA256="$(node -e 'console.log(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' "$PIN")"
-          node bench/alias-xplat/reference.cjs head head .bench-alias/results/head.jsonl
+          PIN="$(find "$PWD/head/crates/node_binding" -name '*.node' -type f)"
+          node -e 'const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto"); const p=fs.realpathSync(process.argv[1]),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:p,sha256:h}));' "$PIN" | tee .bench-alias/results/binding.json
+      - name: Compare fixed alias steps with Watchpack
+        run: |
+          set -euo pipefail
+          node bench/alias-xplat/reference.cjs head fixed .bench-alias/results/fixed.jsonl
           node bench/alias-xplat/reference.cjs head wp .bench-alias/results/wp.jsonl
-      - name: Install and build main JavaScript
-        working-directory: main
-        run: pnpm install --frozen-lockfile && pnpm run build:js
-      - name: Measure main
-        run: |
-          set -euo pipefail
-          PIN="$(find "$PWD/.bench-alias/main-binding" -name '*.node' -type f)"
-          export NAPI_RS_NATIVE_LIBRARY_PATH="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$PIN")"
-          export EXPECTED_BINDING_SHA256="$(node -e 'console.log(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' "$PIN")"
-          node bench/alias-xplat/reference.cjs main main .bench-alias/results/main.jsonl
+          node bench/alias-xplat/audit-reference.cjs .bench-alias/results --controls --require-parity=fixed | tee .bench-alias/results/audit.log
+      - name: Run native watcher compiler cases with worker binding proof
+        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates compiler
+      - name: Check the source stayed unchanged
+        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alias-reference-${{ matrix.platform }}
+          name: alias-fixed-${{ matrix.platform }}
           path: .bench-alias/results/
           include-hidden-files: true
           if-no-files-found: error
