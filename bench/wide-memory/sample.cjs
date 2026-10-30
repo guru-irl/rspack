@@ -22,7 +22,7 @@ const req=createRequire(path.join(artifact,'core/package.json')),{rspack}=req('.
 let identity;
 try{identity={source:refs[arm],coreIndexHash:manifest.coreIndexHash,selected:addon,...read(addon,process.env.BENCH_EXPECTED_SHA256||manifest.sha256)};}
 catch(error){console.error('WRONG_BINDING_HASH',error);process.exit(93);}
-const watchpackVersion=req('watchpack/package.json').version;assert.equal(watchpackVersion,'2.6.3');
+const watchpackVersion=req('./compiled/watchpack/package.json').version;assert.equal(watchpackVersion,'2.6.3');
 console.log(JSON.stringify({kind:'binding-identity',arm,scenario,rep,identity,watchpackVersion}));
 if(mode==='identity-only')process.exit(0);
 assert(['wide','modules','symlink'].includes(scenario));assert(rep>=1&&rep<=5);
