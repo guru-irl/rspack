@@ -1,16 +1,18 @@
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
 use std::{sync::Arc, time::Duration};
 
 use notify::{
-  Event, EventKind,
+  Event, EventKind, RecommendedWatcher,
+  RecursiveMode::{NonRecursive, Recursive},
+  Watcher,
   event::{ModifyKind, RenameMode},
 };
-#[cfg(not(target_os = "linux"))]
-use notify::{RecommendedWatcher, Watcher};
 use rspack_paths::InternedPath;
+#[cfg(target_os = "linux")]
+use rspack_paths::InternedPathMap;
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
-#[cfg(target_os = "linux")]
-use crate::canonical_watcher::CanonicalWatcher as RecommendedWatcher;
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
 
 /// `DiskWatcher` is responsible for managing the underlying file system watcher
@@ -18,6 +20,10 @@ use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
 pub struct DiskWatcher {
   /// The actual file system watcher from the `notify` crate.
   inner: Option<RecommendedWatcher>,
+  #[cfg(target_os = "linux")]
+  native_paths: InternedPathMap<InternedPath>,
+  #[cfg(target_os = "linux")]
+  aliases: Arc<Mutex<InternedPathMap<HashSet<WatchPattern>>>>,
   /// A set of pattern that are currently being watched.
   watch_patterns: HashSet<WatchPattern>,
   /// Requirements from registered files, contexts and missing paths.
@@ -40,9 +46,51 @@ impl DiskWatcher {
       None => notify::Config::default().with_follow_symlinks(follow_symlinks),
     };
 
+    #[cfg(target_os = "linux")]
+    let aliases = Arc::new(Mutex::new(
+      InternedPathMap::<HashSet<WatchPattern>>::default(),
+    ));
+    #[cfg(target_os = "linux")]
+    let event_aliases = Arc::clone(&aliases);
     let inner = RecommendedWatcher::new(
       move |result: notify::Result<Event>| match result {
-        Ok(event) => handle_event(event, &trigger),
+        Ok(event) => {
+          #[cfg(target_os = "linux")]
+          let event = {
+            let mut event = event;
+            let aliases = event_aliases.lock().expect("watch aliases lock poisoned");
+            event.paths = std::mem::take(&mut event.paths)
+              .into_iter()
+              .flat_map(|path| {
+                let mut paths = HashSet::default();
+                for ancestor in path.ancestors() {
+                  if let Some(patterns) = aliases.get(&InternedPath::from(ancestor)) {
+                    for pattern in patterns {
+                      if ancestor == path
+                        || Some(ancestor) == path.parent()
+                        || pattern.mode == Recursive
+                      {
+                        paths.insert(if ancestor == path {
+                          pattern.path.to_path_buf()
+                        } else {
+                          pattern
+                            .path
+                            .join(path.strip_prefix(ancestor).expect("watched ancestor"))
+                        });
+                      }
+                    }
+                  }
+                }
+                if paths.is_empty() {
+                  paths.insert(path);
+                }
+                paths
+              })
+              .collect();
+            event
+          };
+          handle_event(event, &trigger);
+        }
 
         Err(e) => {
           tracing::error!(target: "rspack_watcher::fs_event", "file watcher error: {e:?}");
@@ -55,6 +103,10 @@ impl DiskWatcher {
 
     DiskWatcher {
       inner: Some(inner),
+      #[cfg(target_os = "linux")]
+      native_paths: InternedPathMap::default(),
+      #[cfg(target_os = "linux")]
+      aliases,
       watch_patterns: HashSet::default(),
       analyzer_patterns: HashSet::default(),
       context_paths: HashSet::default(),
@@ -71,44 +123,32 @@ impl DiskWatcher {
     patterns: impl Iterator<Item = WatchPattern>,
   ) -> rspack_error::Result<()> {
     self.analyzer_patterns = patterns.collect();
-    let mut modes = rspack_paths::InternedPathMap::default();
-    for pattern in &self.analyzer_patterns {
-      modes
-        .entry(pattern.path.clone())
-        .and_modify(|mode| {
-          if pattern.mode == notify::RecursiveMode::Recursive {
-            *mode = pattern.mode;
-          }
-        })
-        .or_insert(pattern.mode);
-    }
-    for path in &self.context_paths {
-      modes
-        .entry(path.clone())
-        .or_insert(notify::RecursiveMode::NonRecursive);
-    }
-    // notify shares one watch per path. A non-recursive add must never downgrade
-    // a recursive requirement, and unwatching a recursive parent removes its children.
-    let has_recursive = modes
-      .values()
-      .any(|mode| *mode == notify::RecursiveMode::Recursive);
-    let new_patterns: HashSet<WatchPattern> = modes
+    let mut new_patterns: HashSet<_> = self
+      .analyzer_patterns
       .iter()
-      .filter_map(|(path, mode)| {
-        if has_recursive
-          && path.ancestors().skip(1).any(|parent| {
-            modes.get(&InternedPath::from(parent)) == Some(&notify::RecursiveMode::Recursive)
-          })
-        {
-          None
-        } else {
-          Some(WatchPattern {
-            path: path.clone(),
-            mode: *mode,
-          })
-        }
-      })
+      .cloned()
+      .chain(self.context_paths.iter().map(|path| WatchPattern {
+        path: path.clone(),
+        mode: NonRecursive,
+      }))
       .collect();
+    let recursive: HashSet<_> = self
+      .analyzer_patterns
+      .iter()
+      .filter(|p| p.mode == Recursive)
+      .map(|p| p.path.clone())
+      .collect();
+    // A recursive requirement covers non-recursive requirements at the same
+    // path and every requirement below it. Removing it restores those children.
+    if !recursive.is_empty() {
+      new_patterns.retain(|pattern| {
+        !pattern
+          .path
+          .ancestors()
+          .skip(usize::from(pattern.mode == Recursive))
+          .any(|parent| recursive.contains(&InternedPath::from(parent)))
+      });
+    }
 
     // Collect stale paths that are no longer needed, then unwatch and remove them.
     let stale_paths: HashSet<InternedPath> = self
@@ -122,8 +162,7 @@ impl DiskWatcher {
       // A failed unwatch must not stop the new patterns from being watched. For example, on
       // Linux `notify` can return `EINVAL` for a subdirectory that was deleted while its parent
       // was watched recursively (https://github.com/notify-rs/notify/issues/709).
-      if let Some(watcher) = &mut self.inner
-        && let Err(e) = watcher.unwatch(path)
+      if let Err(e) = self.unwatch_path(path)
         && !matches!(e.kind, notify::ErrorKind::WatchNotFound)
       {
         tracing::warn!(
@@ -143,11 +182,9 @@ impl DiskWatcher {
         continue;
       }
 
-      if let Some(watcher) = &mut self.inner {
-        watcher
-          .watch(&pattern.path, pattern.mode)
-          .map_err(|e| rspack_error::error!(e.to_string()))?;
-      }
+      self
+        .watch_pattern(&pattern)
+        .map_err(|e| rspack_error::error!(e.to_string()))?;
 
       self.watch_patterns.insert(pattern);
     }
@@ -164,27 +201,22 @@ impl DiskWatcher {
     if self.inner.is_none() {
       return Ok(());
     }
-    let covered = self.watch_patterns.contains(&WatchPattern {
+    let pattern = WatchPattern {
       path: path.clone(),
-      mode: notify::RecursiveMode::NonRecursive,
-    }) || path.ancestors().any(|ancestor| {
-      self.watch_patterns.contains(&WatchPattern {
-        path: InternedPath::from(ancestor),
-        mode: notify::RecursiveMode::Recursive,
-      })
-    });
-    if !covered {
-      if let Some(watcher) = &mut self.inner {
-        watcher
-          .watch(path, notify::RecursiveMode::NonRecursive)
-          .map_err(|error| {
-            rspack_error::error!("failed to watch context directory {path:?}: {error}")
-          })?;
-      }
-      self.watch_patterns.insert(WatchPattern {
-        path: path.clone(),
-        mode: notify::RecursiveMode::NonRecursive,
+      mode: NonRecursive,
+    };
+    let covered = self.watch_patterns.contains(&pattern)
+      || path.ancestors().any(|ancestor| {
+        self.watch_patterns.contains(&WatchPattern {
+          path: InternedPath::from(ancestor),
+          mode: Recursive,
+        })
       });
+    if !covered {
+      self.watch_pattern(&pattern).map_err(|error| {
+        rspack_error::error!("failed to watch context directory {path:?}: {error}")
+      })?;
+      self.watch_patterns.insert(pattern);
     }
     self.context_paths.insert(path.clone());
     Ok(())
@@ -198,27 +230,116 @@ impl DiskWatcher {
     }
     let mut pattern = WatchPattern {
       path: path.clone(),
-      mode: notify::RecursiveMode::NonRecursive,
+      mode: NonRecursive,
     };
     if !removed
       && (self.analyzer_patterns.contains(&pattern)
         || self.analyzer_patterns.contains(&WatchPattern {
           path: path.clone(),
-          mode: notify::RecursiveMode::Recursive,
+          mode: Recursive,
         }))
     {
       return;
     }
     if removed && !self.watch_patterns.contains(&pattern) {
-      pattern.mode = notify::RecursiveMode::Recursive;
+      pattern.mode = Recursive;
     }
     if self.watch_patterns.remove(&pattern)
-      && let Some(watcher) = &mut self.inner
-      && let Err(error) = watcher.unwatch(path)
+      && let Err(error) = self.unwatch_path(path)
       && !matches!(error.kind, notify::ErrorKind::WatchNotFound)
     {
       tracing::warn!(target: "rspack_watcher::disk_watcher", ?path, "failed to unwatch context directory: {error:?}");
     }
+  }
+
+  // Keep notify's single descriptor under one physical spelling. Logical aliases
+  // hold references here, so removing one cannot release another's directory.
+  fn watch_pattern(&mut self, pattern: &WatchPattern) -> notify::Result<()> {
+    #[cfg(target_os = "linux")]
+    let (path, mode) = {
+      let path =
+        InternedPath::from(std::fs::canonicalize(&pattern.path).map_err(notify::Error::io)?);
+      if self
+        .native_paths
+        .get(&pattern.path)
+        .is_some_and(|old| *old != path)
+      {
+        self.unwatch_path(&pattern.path)?;
+      }
+      let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
+      aliases
+        .entry(path.clone())
+        .or_default()
+        .insert(pattern.clone());
+      self.native_paths.insert(pattern.path.clone(), path.clone());
+      let recursive = path.ancestors().any(|ancestor| {
+        aliases
+          .get(&InternedPath::from(ancestor))
+          .is_some_and(|patterns| patterns.iter().any(|p| p.mode == Recursive))
+      });
+      (path, if recursive { Recursive } else { NonRecursive })
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (path, mode) = (pattern.path.clone(), pattern.mode);
+    if let Some(watcher) = &mut self.inner
+      && let Err(error) = watcher.watch(&path, mode)
+    {
+      #[cfg(target_os = "linux")]
+      if !self.watch_patterns.contains(pattern) {
+        let _ = self.unwatch_path(&pattern.path);
+      }
+      return Err(error);
+    }
+    Ok(())
+  }
+
+  fn unwatch_path(&mut self, path: &InternedPath) -> notify::Result<()> {
+    #[cfg(target_os = "linux")]
+    let (path, restore) = {
+      let Some(native) = self.native_paths.remove(path) else {
+        return Ok(());
+      };
+      let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
+      let patterns = aliases.get_mut(&native).expect("native watch aliases");
+      let recursive = patterns.iter().any(|p| p.mode == Recursive);
+      patterns.retain(|p| p.path != *path);
+      let remaining_recursive = patterns.iter().any(|p| p.mode == Recursive);
+      let remaining = !patterns.is_empty();
+      if !remaining {
+        aliases.remove(&native);
+      }
+      let covered = native.ancestors().skip(1).any(|ancestor| {
+        aliases
+          .get(&InternedPath::from(ancestor))
+          .is_some_and(|patterns| patterns.iter().any(|p| p.mode == Recursive))
+      });
+      if covered || (remaining && recursive == remaining_recursive) {
+        return Ok(());
+      }
+      let restore: Vec<_> = if recursive {
+        aliases
+          .iter()
+          .filter(|(p, _)| p.starts_with(&native))
+          .flat_map(|(_, patterns)| patterns.iter().cloned())
+          .collect()
+      } else {
+        Vec::new()
+      };
+      (native, restore)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let path = path.clone();
+    let result = self
+      .inner
+      .as_mut()
+      .map_or(Ok(()), |watcher| watcher.unwatch(&path));
+    #[cfg(target_os = "linux")]
+    for pattern in restore {
+      if pattern.path.is_dir() {
+        self.watch_pattern(&pattern)?;
+      }
+    }
+    result
   }
 
   pub fn close(&mut self) {
@@ -304,11 +425,11 @@ mod tests {
         vec![
           WatchPattern {
             path: InternedPath::from(dir_a.clone()),
-            mode: notify::RecursiveMode::NonRecursive,
+            mode: NonRecursive,
           },
           WatchPattern {
             path: InternedPath::from(dir_b.clone()),
-            mode: notify::RecursiveMode::NonRecursive,
+            mode: NonRecursive,
           },
         ]
         .into_iter(),
@@ -322,11 +443,11 @@ mod tests {
         vec![
           WatchPattern {
             path: InternedPath::from(dir_b.clone()),
-            mode: notify::RecursiveMode::NonRecursive,
+            mode: NonRecursive,
           },
           WatchPattern {
             path: InternedPath::from(dir_c.clone()),
-            mode: notify::RecursiveMode::NonRecursive,
+            mode: NonRecursive,
           },
         ]
         .into_iter(),
@@ -360,7 +481,7 @@ mod tests {
       .watch(
         vec![WatchPattern {
           path: InternedPath::from(dir.clone()),
-          mode: notify::RecursiveMode::Recursive,
+          mode: Recursive,
         }]
         .into_iter(),
       )
@@ -378,7 +499,7 @@ mod tests {
       .watch(
         vec![WatchPattern {
           path: InternedPath::from(other.clone()),
-          mode: notify::RecursiveMode::NonRecursive,
+          mode: NonRecursive,
         }]
         .into_iter(),
       )

@@ -216,22 +216,13 @@ export default class NativeWatchFileSystem implements WatchFileSystem {
     // Plugin context removals can be absent from the dependency set's delta.
     // Diff only contexts, leaving file and missing-path deltas unchanged.
     const contexts = new Set(directories);
-    const addedContexts: string[] = [];
-    const removedContexts: string[] = [];
-    for (const directory of contexts) {
-      if (!this.#contextDependencies.has(directory)) {
-        addedContexts.push(directory);
-      }
-    }
-    for (const directory of this.#contextDependencies) {
-      if (!contexts.has(directory)) {
-        removedContexts.push(directory);
-      }
-    }
 
     nativeWatcher.watch(
       this.formatWatchDependencies(files),
-      [addedContexts, removedContexts],
+      [
+        [...contexts].filter((path) => !this.#contextDependencies.has(path)),
+        [...this.#contextDependencies].filter((path) => !contexts.has(path)),
+      ],
       this.formatWatchDependencies(missing),
       BigInt(startTime),
       (err: Error | null, result) => {

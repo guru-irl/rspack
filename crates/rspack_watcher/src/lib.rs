@@ -1,6 +1,4 @@
 mod analyzer;
-#[cfg(target_os = "linux")]
-mod canonical_watcher;
 mod disk_watcher;
 mod executor;
 mod ignored;
