@@ -45,6 +45,8 @@ jobs:
           repository: web-infra-dev/rspack
           ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
           path: main
+      - name: Record source identities
+        run: git -C head rev-parse HEAD && git -C main rev-parse HEAD
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
