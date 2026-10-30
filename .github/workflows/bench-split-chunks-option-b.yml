@@ -1,23 +1,77 @@
-name: PR59 cross-platform memory and probe readiness
+name: PR59 watcher startup diagnosis
 on:
   push:
-    branches: [bench/pr59-xplat-memory]
+    branches: [bench/pr59-xplat-cost]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/wide-memory/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr59-wide-measure-${{ github.sha }}
+  group: pr59-cost-diagnosis-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  measure:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-latest }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 300
+    timeout-minutes: 220
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-wide/tmp"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.ref }}
+          path: source
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - name: Repair Rust proxies on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build temporary diagnostic binding
+        shell: bash
+        env:
+          SOURCE_REF: ${{ matrix.ref }}
+          RUST_TARGET: ${{ matrix.target }}
+          BENCH_INSTRUMENT: '1'
+        run: bash bench/wide-memory/build.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wide-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-wide/artifact/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  diagnose:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macOS, runner: macos-latest }
+          - { platform: Windows, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -39,71 +93,25 @@ jobs:
         with:
           node-version: 22.23.3
           cache: pnpm
-      - name: Wait for this OS release receipts without cancelling builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node bench/wide-memory/wait.cjs '${{ matrix.platform }}'
       - uses: actions/download-artifact@v4
         with:
           pattern: wide-binding-${{ matrix.platform }}-*
+          path: .bench-wide/bindings/
+      - uses: actions/download-artifact@v4
+        with:
+          name: wide-binding-${{ matrix.platform }}-main
           run-id: 41106150672
           github-token: ${{ github.token }}
-          path: .bench-wide/bindings/
-      - name: Measure five alternating runs per arm and scenario
+          path: .bench-wide/bindings/wide-binding-${{ matrix.platform }}-main/
+      - name: Diagnose registration, canonicalization and alias retention
+        env:
+          BENCH_DIAGNOSTIC: '1'
         run: bash bench/wide-memory/measure.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wide-results-${{ matrix.platform }}
+          name: cost-diagnosis-${{ matrix.platform }}
           path: .bench-wide/results/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-  summarize:
-    needs: measure
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Set scratch paths
-        run: |
-          set -euo pipefail
-          mkdir -p "$PWD/.bench-wide/tmp"
-          printf 'TMPDIR=%s\n' "$PWD/.bench-wide/tmp" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: wide-results-*
-          path: .bench-wide/collected/
-      - name: Wait for retained macOS and Windows jobs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run watch 41133890095 --repo guru-irl/rspack --interval 60
-      - uses: actions/download-artifact@v4
-        with:
-          name: wide-results-macOS
-          run-id: 41133890095
-          github-token: ${{ github.token }}
-          path: .bench-wide/collected/wide-results-macOS/
-      - uses: actions/download-artifact@v4
-        with:
-          name: wide-results-Windows
-          run-id: 41133890095
-          github-token: ${{ github.token }}
-          path: .bench-wide/collected/wide-results-Windows/
-      - name: Assemble tables, identities and threshold checks
-        run: node bench/wide-memory/report.cjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: wide-memory-report
-          path: .bench-wide/report/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

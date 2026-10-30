@@ -8,6 +8,10 @@ if [[ "$RUNNER_OS" == Windows ]]; then
 fi
 unset RSPACK_BINDING NAPI_RS_NATIVE_LIBRARY_PATH RAYON_NUM_THREADS TOKIO_WORKER_THREADS
 { uname -a; node --version; pnpm --version; df -h .; } > "$ROOT/artifact/host.txt"
+if [[ "${BENCH_INSTRUMENT:-0}" == 1 ]]; then
+ node bench/wide-memory/instrument.cjs
+ git -C source diff -- crates/rspack_watcher/src/disk_watcher.rs > "$ROOT/artifact/instrumentation.patch"
+fi
 cd source
 rustup toolchain install nightly-2026-04-16 --profile minimal --component rust-src
 rustup default nightly-2026-04-16

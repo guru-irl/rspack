@@ -6,7 +6,7 @@ function hash(file){const h=crypto.createHash('sha256'),b=Buffer.allocUnsafe(655
 const [arm,scenario,repText,mode]=process.argv.slice(2),rep=Number(repText);
 const refs={main:'79c650c24e4b468e743ebfe6454b3b2bc6650938',before:'b87c553ce76f2055d2ee19de589f5bbc106ff23d',fix:'90f41a8ac8200533cdc96aa31b4b818bf8a75561',wp:'79c650c24e4b468e743ebfe6454b3b2bc6650938'};
 assert(arm in refs);
-assert(Date.now()<Date.parse('2026-10-31T03:45:00Z'),'do not start a sample near the hard stop');
+assert(Date.now()<Date.parse('2026-10-31T07:45:00Z'),'do not start a sample near the hard stop');
 const platform={linux:'Linux',darwin:'macOS',win32:'Windows'}[process.platform],root=path.resolve('.bench-wide');
 const artifact=path.join(root,'bindings',`wide-binding-${platform}-${arm==='wp'?'main':arm}`);
 const manifest=JSON.parse(fs.readFileSync(path.join(artifact,'identity.json'),'utf8'));

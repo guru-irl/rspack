@@ -37,4 +37,8 @@ if [[ "${BENCH_OBSERVER_RED:-0}" == 1 || "${BENCH_METADATA_RED:-0}" == 1 ]]; the
  echo NEGATIVE_CONTROL_REJECTED
  exit 0
 fi
-node bench/wide-memory/measure.cjs
+if [[ "${BENCH_DIAGNOSTIC:-0}" == 1 ]]; then
+ node bench/wide-memory/diagnostic.cjs
+else
+ node bench/wide-memory/measure.cjs
+fi
