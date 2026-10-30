@@ -381,6 +381,15 @@ pub async fn create_hash(
   logger.time_end(start);
 
   // create full hash
+  // Child compilers can finish in any order. Sort by name, then hash, like webpack,
+  // so exchanging the outputs of two named children still changes the parent hash.
+  for (_, hash) in compilation
+    .child_compilation_hashes
+    .iter()
+    .sorted_unstable()
+  {
+    compilation_hasher.update(hash);
+  }
   compilation
     .build_chunk_graph_artifact
     .chunk_by_ukey
@@ -401,6 +410,11 @@ pub async fn create_hash(
       }
     });
   compilation_hasher.update(&compilation.hot_index);
+  plugin_driver
+    .compilation_hooks
+    .full_hash
+    .call(compilation, &mut compilation_hasher)
+    .await?;
   compilation.hash = Some(compilation_hasher.digest(&compilation.options.output.hash_digest));
 
   // re-create runtime chunk hash that depend on full hash

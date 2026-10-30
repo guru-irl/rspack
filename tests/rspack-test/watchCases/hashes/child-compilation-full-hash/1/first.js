@@ -1,0 +1,1 @@
+globalThis.childValue = 2;

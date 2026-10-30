@@ -475,6 +475,16 @@ impl JsCompilation {
     )
   }
 
+  #[napi]
+  pub fn add_child_compilation_hash(&mut self, hash: String, name: Option<String>) -> Result<()> {
+    let id = self.id;
+    let compilation = self.as_mut()?;
+    if compilation.id() == id {
+      compilation.child_compilation_hashes.push((name, hash));
+    }
+    Ok(())
+  }
+
   #[napi(getter)]
   pub fn hash(&self) -> Result<Option<String>> {
     let compilation = self.as_ref()?;

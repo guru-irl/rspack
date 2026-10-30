@@ -6,8 +6,11 @@ use std::{
 
 use atomic_refcell::AtomicRefCell;
 use cow_utils::CowUtils;
-use rspack_core::{Compilation, CompilationId, CompilationProcessAssets, Filename, Plugin};
+use rspack_core::{
+  Compilation, CompilationFullHash, CompilationId, CompilationProcessAssets, Filename, Plugin,
+};
 use rspack_error::{Diagnostic, Result};
+use rspack_hash::RspackHasher;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_util::fx_hash::FxDashMap;
 #[cfg(allocative)]
@@ -18,10 +21,10 @@ use crate::{
   AfterEmitData, AfterTemplateExecutionData, AlterAssetTagGroupsData, AlterAssetTagsData,
   BeforeAssetTagGenerationData, BeforeEmitData, HtmlPluginHooks,
   asset::{HtmlPluginAssetTags, HtmlPluginAssets, create_favicon_asset, create_html_asset},
-  config::{HtmlInject, HtmlRspackPluginOptions},
+  config::{HtmlInject, HtmlRspackPluginOptions, TemplateParameters},
   injector::AssetInjector,
   parser::HtmlCompiler,
-  template::HtmlTemplate,
+  template::{HtmlTemplate, TemplateRender},
 };
 
 /// Safety with [atomic_refcell::AtomicRefCell]:
@@ -181,6 +184,59 @@ async fn generate_html(
   ))
 }
 
+#[plugin_hook(CompilationFullHash for HtmlRspackPlugin)]
+async fn full_hash(&self, compilation: &Compilation, hasher: &mut RspackHasher) -> Result<()> {
+  let mut config = serde_json::to_value(&self.config).expect("HTML options should serialize");
+  let options = config
+    .as_object_mut()
+    .expect("HTML options should be an object");
+  // The uid identifies a JavaScript plugin instance, not its output.
+  options.remove("uid");
+  for key in ["template", "favicon"] {
+    if let Some(path) = options[key].as_str() {
+      let path = compilation.options.context.as_path().join(path);
+      let relative = self.config.get_relative_path(compilation, path.as_str());
+      options[key] = relative.cow_replace('\\', "/").into();
+    }
+  }
+  let output = compilation.options.output.path.as_std_path();
+  if let Some(filenames) = options["filename"].as_array_mut() {
+    for filename in filenames {
+      if let Some(path) = filename.as_str() {
+        *filename = output
+          .join(path)
+          .relative(output)
+          .to_string_lossy()
+          .cow_replace('\\', "/")
+          .into();
+      }
+    }
+  }
+  match &self.config.template_parameters {
+    TemplateParameters::Map(parameters) => {
+      options.insert(
+        "templateParameters".into(),
+        serde_json::to_value(parameters).expect("template parameters should serialize"),
+      );
+    }
+    TemplateParameters::Disabled => {
+      options.insert("templateParameters".into(), serde_json::Value::Bool(false));
+    }
+    TemplateParameters::Function(_) => {}
+  }
+  config.sort_all_objects();
+  hasher.update(&config.to_string());
+
+  // process_assets reports template read errors and emits the error page.
+  // Function-valued options and HTML hooks run later and cannot be hashed here.
+  if let Ok(template) = HtmlTemplate::new(&self.config, compilation).await
+    && let TemplateRender::Template(content) = template.render
+  {
+    hasher.update(&content);
+  }
+  Ok(())
+}
+
 #[plugin_hook(CompilationProcessAssets for HtmlRspackPlugin, stage = Compilation::PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE)]
 async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
   let config: &HtmlRspackPluginOptions = &self.config;
@@ -283,6 +339,7 @@ impl Plugin for HtmlRspackPlugin {
   }
 
   fn apply(&self, ctx: &mut rspack_core::ApplyContext<'_>) -> Result<()> {
+    ctx.compilation_hooks.full_hash.tap(full_hash::new(self));
     ctx
       .compilation_hooks
       .process_assets
