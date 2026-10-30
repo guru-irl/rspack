@@ -682,7 +682,10 @@ class Compiler {
       this.parentCompilation!.children.push(compilation);
       const childHash = compilation.hash;
       if (childHash !== null) {
-        this.parentCompilation!.__internal__addChildCompilationHash(childHash);
+        this.parentCompilation!.__internal__addChildCompilationHash(
+          childHash,
+          this.name,
+        );
       }
       for (const { name, source, info } of compilation.getAssets()) {
         // Do not emit asset if source is not available.

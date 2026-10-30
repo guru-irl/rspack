@@ -459,8 +459,8 @@ impl JsCompilation {
   }
 
   #[napi]
-  pub fn add_child_compilation_hash(&mut self, hash: String) -> Result<()> {
-    self.as_mut()?.child_compilation_hashes.push(hash);
+  pub fn add_child_compilation_hash(&mut self, hash: String, name: Option<String>) -> Result<()> {
+    self.as_mut()?.child_compilation_hashes.push((name, hash));
     Ok(())
   }
 

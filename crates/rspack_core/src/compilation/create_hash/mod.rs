@@ -381,9 +381,9 @@ pub async fn create_hash(
   logger.time_end(start);
 
   // create full hash
-  // Child compilers can finish in any order. Hash their values in a stable order,
-  // retaining duplicates and only including children that ran in this compilation.
-  for hash in compilation
+  // Child compilers can finish in any order. Sort by name, then hash, like webpack,
+  // so exchanging the outputs of two named children still changes the parent hash.
+  for (_, hash) in compilation
     .child_compilation_hashes
     .iter()
     .sorted_unstable()

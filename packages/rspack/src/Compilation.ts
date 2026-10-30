@@ -800,8 +800,8 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
    *
    * @internal
    */
-  __internal__addChildCompilationHash(hash: string) {
-    this.#inner.addChildCompilationHash(hash);
+  __internal__addChildCompilationHash(hash: string, name?: string) {
+    this.#inner.addChildCompilationHash(hash, name);
   }
 
   /**

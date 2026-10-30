@@ -297,7 +297,7 @@ pub struct Compilation {
   pub incremental: Incremental,
 
   pub hash: Option<RspackHashDigest>,
-  pub child_compilation_hashes: Vec<String>,
+  pub child_compilation_hashes: Vec<(Option<String>, String)>,
 
   pub file_dependencies: InternedPathIndexSet,
   pub context_dependencies: InternedPathIndexSet,
