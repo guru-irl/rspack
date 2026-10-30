@@ -31,6 +31,8 @@ public static class DirectoryHandles {
   string root = fixture.TrimEnd('\\').ToLowerInvariant();
   IntPtr proc = OpenProcess(0x40, false, pid);
   if (proc == IntPtr.Zero) throw new Exception("OpenProcess failed");
+  IntPtr classifier=CreateFile(System.IO.Path.GetPathRoot(fixture),0,7,IntPtr.Zero,3,0x02000000,IntPtr.Zero);
+  if(classifier.ToInt64()==-1) throw new Exception("File-type classifier open failed");
   IntPtr buffer = IntPtr.Zero, info = Marshal.AllocHGlobal(64);
   long allDirectories=0, fixtureDirectories=0, inaccessible=0;
   try {
@@ -45,26 +47,31 @@ public static class DirectoryHandles {
     if (size>268435456) throw new Exception("Handle table too large");
    }
    long count=Marshal.ReadInt64(buffer);
+   int ownPid=System.Diagnostics.Process.GetCurrentProcess().Id, fileType=-1;
    for(long i=0;i<count;i++) {
     IntPtr entry=new IntPtr(buffer.ToInt64()+16+i*40);
-    if (Marshal.ReadInt64(entry,8)!=pid) continue;
+    if(Marshal.ReadInt64(entry,8)==ownPid && Marshal.ReadInt64(entry,16)==classifier.ToInt64()) { fileType=(ushort)Marshal.ReadInt16(entry,30); break; }
+   }
+   if(fileType<0) throw new Exception("File object type not found");
+   for(long i=0;i<count;i++) {
+    IntPtr entry=new IntPtr(buffer.ToInt64()+16+i*40);
+    if (Marshal.ReadInt64(entry,8)!=pid || (ushort)Marshal.ReadInt16(entry,30)!=fileType) continue;
     IntPtr copy;
     if (!DuplicateHandle(proc, new IntPtr(Marshal.ReadInt64(entry,16)), GetCurrentProcess(), out copy, 0, false, 2)) { inaccessible++; continue; }
     try {
      if (GetFileType(copy)!=1) continue;
-     if (!GetFileInformationByHandleEx(copy, 0, info, 64)) { inaccessible++; continue; }
-     if ((Marshal.ReadInt32(info,32)&16)==0) continue;
-     allDirectories++;
      var name=new StringBuilder(32768);
      uint n=GetFinalPathNameByHandle(copy,name,(uint)name.Capacity,0);
      if (n==0 || n>=name.Capacity) { inaccessible++; continue; }
      string value=name.ToString();
      if(value.StartsWith(@"\\?\")) value=value.Substring(4);
+     if(!System.IO.Directory.Exists(value)) continue;
+     allDirectories++;
      value=value.TrimEnd('\\').ToLowerInvariant();
      if(value==root || value.StartsWith(root+"\\")) fixtureDirectories++;
     } finally { CloseHandle(copy); }
    }
-  } finally { if(buffer!=IntPtr.Zero) Marshal.FreeHGlobal(buffer); Marshal.FreeHGlobal(info); CloseHandle(proc); }
+  } finally { if(buffer!=IntPtr.Zero) Marshal.FreeHGlobal(buffer); Marshal.FreeHGlobal(info); CloseHandle(classifier); CloseHandle(proc); }
   return new long[]{fixtureDirectories,allDirectories,inaccessible};
  }
 }

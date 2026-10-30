@@ -47,7 +47,21 @@ for (const scenario of ['wide', 'modules', 'symlink']) {
   write(base, 'index.js', 'const c = require.context("./ctx", true, /\\.js$/); module.exports = {value: require("./ctx/target.js"), count: c.keys().length, entries: c.keys().sort().map(k => [k, c(k)])};\n');
  }
  const targetKey = scenario === 'modules' ? `./${target}` : './target.js';
- const manifest = {scenario, target, targetKey, folders, fillerFiles, moduleCount: entries.length, symlinkFiles: scenario === 'symlink' ? 500 : 0, entries};
+ const probeSets = [];
+ for(let rep=1;rep<=5;rep++) {
+  const seed = (0x59c0ffee ^ Math.imul(rep,0x9e3779b9)) >>> 0;
+  let state=seed;
+  const random=()=>{state^=state<<13;state^=state>>>17;state^=state<<5;return state>>>0;};
+  const indices=new Set();
+  while(indices.size<10) indices.add(scenario==='modules' ? 1+random()%1999 : random()%20000);
+  const files=[...indices].map(index=>{
+   if(scenario==='modules') {const [key,value]=entries[index];return {file:key.slice(2),key,initialValue:value,changedValue:value+1000000};}
+   const folder=`d${String(index).padStart(5,'0')}`;
+   return {file:`ctx/${folder}/probe.js`,key:`./${folder}/probe.js`,initialValue:0,changedValue:1};
+  });
+  probeSets.push({rep,seed,files});
+ }
+ const manifest = {scenario, target, targetKey, folders, fillerFiles, moduleCount: entries.length, symlinkFiles: scenario === 'symlink' ? 500 : 0, entries, probeSets};
  fs.writeFileSync(path.join(base,'fixture.json'), JSON.stringify(manifest));
  console.log(JSON.stringify({kind:'fixture',...manifest,entries:undefined,root:fs.realpathSync(base)}));
 }
