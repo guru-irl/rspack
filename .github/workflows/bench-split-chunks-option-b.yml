@@ -1,66 +1,122 @@
-name: Native watcher coalescing bounded-hash rerun
+name: Native watcher alias parity
 on:
   push:
-    branches: [bench/native-watcher-coalesce-xplat]
-    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/coalesce-harness/**']
+    branches: [bench/pr59-alias-xplat]
+    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/alias-xplat/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: native-watcher-coalesce-xplat
+  group: native-watcher-alias-xplat
   cancel-in-progress: false
 jobs:
-  measure:
+  reference:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: Linux, runner: ubuntu-latest }
-          - { platform: macOS, runner: macos-latest }
-          - { platform: Windows, runner: windows-latest }
+          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Set scratch paths
-        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$PWD/.bench-coalesce/tmp"
-          P="$PWD/.bench-coalesce/tmp"
+          mkdir -p "$PWD/.bench-alias/tmp" "$PWD/.bench-alias/results"
+          P="$PWD/.bench-alias/tmp"
           if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
           printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: e04e75e8a56d1a1d0a920e34e166dd91617b118f
-          path: source
+          ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d
+          path: head
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: web-infra-dev/rspack
+          ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
+          path: main
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.23.3
+          node-version: 22
           cache: pnpm
-      - name: Reuse the two original release arms
+      - name: Download exact main binding
         uses: actions/download-artifact@v4
         with:
-          pattern: coalesce-binding-${{ matrix.platform }}-*
-          run-id: 40870153481
+          repository: web-infra-dev/rspack
+          name: bindings-${{ matrix.target }}
+          run-id: 41037569354
           github-token: ${{ github.token }}
-          path: .bench-coalesce/bindings/
-      - name: Reuse the new release arm
+          path: .bench-alias/main-binding
+      - name: Download exact head binding
+        if: runner.os != 'macOS'
         uses: actions/download-artifact@v4
         with:
-          pattern: coalesce-binding-${{ matrix.platform }}-new
-          run-id: 40878987905
+          name: bindings-${{ matrix.target }}
+          run-id: 41075011525
           github-token: ${{ github.token }}
-          path: .bench-coalesce/bindings/
-      - name: Measure five alternating runs per arm and scenario
-        shell: bash
-        run: bash bench/coalesce-harness/measure.sh
+          path: .bench-alias/head-binding
+      - name: Install head dependencies
+        working-directory: head
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust on macOS
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install nightly-2026-04-16 --profile minimal
+      - name: Build head binding on macOS
+        if: runner.os == 'macOS'
+        working-directory: head
+        run: |
+          set -euo pipefail
+          pnpm run build:binding:dev
+          mkdir -p ../.bench-alias/head-binding
+          cp crates/node_binding/*.node ../.bench-alias/head-binding/
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: alias-head-binding-${{ matrix.platform }}
+          path: .bench-alias/head-binding/*.node
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Build head JavaScript
+        working-directory: head
+        run: pnpm run build:js
+      - name: Measure head and Watchpack
+        run: |
+          set -euo pipefail
+          PIN="$(find "$PWD/.bench-alias/head-binding" -name '*.node' -type f)"
+          export NAPI_RS_NATIVE_LIBRARY_PATH="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$PIN")"
+          export EXPECTED_BINDING_SHA256="$(node -e 'console.log(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' "$PIN")"
+          node bench/alias-xplat/reference.cjs head head .bench-alias/results/head.jsonl
+          node bench/alias-xplat/reference.cjs head wp .bench-alias/results/wp.jsonl
+      - name: Install and build main JavaScript
+        working-directory: main
+        run: pnpm install --frozen-lockfile && pnpm run build:js
+      - name: Measure main
+        run: |
+          set -euo pipefail
+          PIN="$(find "$PWD/.bench-alias/main-binding" -name '*.node' -type f)"
+          export NAPI_RS_NATIVE_LIBRARY_PATH="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$PIN")"
+          export EXPECTED_BINDING_SHA256="$(node -e 'console.log(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' "$PIN")"
+          node bench/alias-xplat/reference.cjs main main .bench-alias/results/main.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coalesce-results-${{ matrix.platform }}
-          path: .bench-coalesce/results/
+          name: alias-reference-${{ matrix.platform }}
+          path: .bench-alias/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
