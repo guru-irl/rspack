@@ -169,12 +169,7 @@ impl FsWatcher {
       options.poll_interval,
       trigger.clone(),
     )));
-    if cfg!(any(
-      feature = "testing",
-      not(any(target_os = "macos", target_os = "windows"))
-    )) {
-      path_manager.set_context_watcher(Arc::downgrade(&disk_watcher));
-    }
+    path_manager.set_context_watcher(Arc::downgrade(&disk_watcher));
     let paused = Arc::new(AtomicBool::new(false));
     let executor = Executor::new(rx, options.aggregate_timeout, Arc::clone(&paused));
     let aggregated = executor.aggregated();
@@ -454,8 +449,8 @@ impl FsWatcherInner {
       self.analyzer.invalidate_all();
       return Err(error);
     }
-    // Directory-based backends extend coverage through this filtered scan.
-    // Each directory is watched before enumeration, even when it is empty.
+    // Register logical context spellings before enumeration. Recursive backends
+    // retain covered aliases without installing another native watch.
     let changed_in_contexts = self.path_manager.scan_contexts(start_time).await;
     if let Some(trigger) = self.trigger.lock().expect("should lock trigger").clone() {
       for path in &changed_in_contexts {
