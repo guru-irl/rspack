@@ -145,6 +145,7 @@ function onBuild(error,stats){
   const initialModule={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(output,'bundle.js'),'utf8'),{module:initialModule},{timeout:20000});
   initial.actualHash=digest(initialModule.exports);initial.expectedHash=digest(expected(0,[]));
   assert.equal(initial.actualHash,initial.expectedHash,'ARM_EDIT_FAILURE initial output');
+  assert(Object.values(initial).every(value=>value==null||typeof value!=='object'),'INITIAL_METADATA_RETAINED_OBJECT');
   await ready;probeReject=undefined;
   const idleSamples=[];for(let second=1;second<=10;second++){await wait(1000);if(second>=6)idleSamples.push(readRssMiB());}
   if(lastError)throw new Error(lastError);

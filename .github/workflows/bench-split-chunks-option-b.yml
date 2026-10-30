@@ -1,4 +1,4 @@
-name: PR59 cross-platform memory and probe readiness
+name: PR59 initial metadata retention control
 on:
   push:
     branches: [bench/pr59-xplat-memory]
@@ -7,10 +7,10 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr59-wide-measure-${{ github.sha }}
+  group: pr59-metadata-control-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  measure:
+  controls:
     strategy:
       fail-fast: false
       matrix:
@@ -19,7 +19,7 @@ jobs:
           - { platform: macOS, runner: macos-latest }
           - { platform: Windows, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 300
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -41,55 +41,21 @@ jobs:
         with:
           node-version: 22.23.3
           cache: pnpm
-      - name: Wait for this OS release receipts without cancelling builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node bench/wide-memory/wait.cjs '${{ matrix.platform }}'
       - uses: actions/download-artifact@v4
         with:
           pattern: wide-binding-${{ matrix.platform }}-*
           run-id: 41106150672
           github-token: ${{ github.token }}
           path: .bench-wide/bindings/
-      - name: Measure five alternating runs per arm and scenario
+      - name: Prove the initial result retains a native object
+        env:
+          BENCH_METADATA_RED: 1
         run: bash bench/wide-memory/measure.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wide-results-${{ matrix.platform }}
+          name: initial-metadata-red-${{ matrix.platform }}
           path: .bench-wide/results/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-  summarize:
-    needs: measure
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Set scratch paths
-        run: |
-          set -euo pipefail
-          mkdir -p "$PWD/.bench-wide/tmp"
-          printf 'TMPDIR=%s\n' "$PWD/.bench-wide/tmp" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: wide-results-*
-          path: .bench-wide/collected/
-      - name: Assemble tables, identities and threshold checks
-        run: node bench/wide-memory/report.cjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: wide-memory-report
-          path: .bench-wide/report/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
