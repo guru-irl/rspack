@@ -192,6 +192,26 @@ async fn full_hash(&self, compilation: &Compilation, hasher: &mut RspackHasher) 
     .expect("HTML options should be an object");
   // The uid identifies a JavaScript plugin instance, not its output.
   options.remove("uid");
+  for key in ["template", "favicon"] {
+    if let Some(path) = options[key].as_str() {
+      let path = compilation.options.context.as_path().join(path);
+      let relative = self.config.get_relative_path(compilation, path.as_str());
+      options[key] = relative.replace('\\', "/").into();
+    }
+  }
+  let output = compilation.options.output.path.as_std_path();
+  if let Some(filenames) = options["filename"].as_array_mut() {
+    for filename in filenames {
+      if let Some(path) = filename.as_str() {
+        *filename = output
+          .join(path)
+          .relative(output)
+          .to_string_lossy()
+          .replace('\\', "/")
+          .into();
+      }
+    }
+  }
   match &self.config.template_parameters {
     TemplateParameters::Map(parameters) => {
       options.insert(
