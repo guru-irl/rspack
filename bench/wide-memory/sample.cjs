@@ -47,7 +47,13 @@ function expected(version,changed=probes.map(p=>p.key)) {
  const keys=new Set(changed),values=new Map(probes.filter(p=>keys.has(p.key)).map(p=>[p.key,p.changedValue]));
  return {value:version,count:entries.length,entries:entries.map(([key,value])=>[key,key===spec.targetKey?version:values.has(key)?values.get(key):value])};
 }
+let firstDoneSeen=false,firstProbeWritten=false,firstProbeWriteMs;
+function assertObserverAllowed(){assert(!firstDoneSeen||firstProbeWritten,'OBSERVER_IN_PROBE_GAP');}
+function readRssMiB(){assertObserverAllowed();return process.memoryUsage.rss()/1048576;}
+function readResourceUsage(){assertObserverAllowed();return process.resourceUsage();}
+function readCpuUsage(){assertObserverAllowed();return process.cpuUsage(cpuStart);}
 function windowsSnapshot(directories=false){
+ assertObserverAllowed();
  const args=['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.resolve('bench/wide-memory/observe.ps1'),'-TargetPid',String(process.pid),'-Fixture',fixture];
  if(directories)args.push('-Directories');
  const r=spawnSync('powershell.exe',args,{encoding:'utf8',timeout:60000,maxBuffer:1048576});
@@ -78,11 +84,14 @@ function next(version){
 }
 function fail(error){lastError=String(error);pending?.reject(error);probeReject?.(error);}
 function onBuild(error,stats){
- const arrived=performance.now(),resource=process.resourceUsage(),rss=process.memoryUsage.rss()/1048576,cpu=process.cpuUsage(cpuStart);
+ const arrived=performance.now();
+ if(phase==='initial')firstDoneSeen=true;
+ const resource=readResourceUsage(),rss=readRssMiB(),cpu=readCpuUsage();
  builds++;
  if(error||stats.hasErrors()){fail(new Error(String(error||stats.toString({all:false,errors:true}))));return;}
  try{
-  const initialWindows=phase==='initial'&&process.platform==='win32'?windowsSnapshot():null;
+  assert(resource.maxRSS>0,'OS RSS high-water counter required');
+  const initialWindows=null;
   const module={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(output,'bundle.js'),'utf8'),{module},{timeout:20000});
   const actualHash=digest(module.exports),modifiedFiles=[...compiler.modifiedFiles||[]];
   if(phase==='probes'){
@@ -95,7 +104,7 @@ function onBuild(error,stats){
    if(landed.size===10){
     assert.equal(actualHash,digest(expected(0)),'ARM_EDIT_FAILURE final probe output');
     readinessMs=arrived-start;readinessResource=resource;
-    readinessWindows=process.platform==='win32'?windowsSnapshot():null;
+    readinessWindows=null;
     readinessSampledPeak=Math.max(readinessSampledPeak,rss);
     clearInterval(probeWriter);clearTimeout(probeTimer);phase='idle';probeResolve();
    }
@@ -117,17 +126,17 @@ function onBuild(error,stats){
    await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('monitor startup timed out')),10000);monitor.once('message',message=>{clearTimeout(timer);assert.equal(message.kind,'ready');resolve();});});
    monitorResult=new Promise(resolve=>monitor.on('message',message=>{if(message.kind==='inotify-stability')resolve(message);}));
   }
-  baseline={rssMiB:process.memoryUsage.rss()/1048576,resource:process.resourceUsage()};
-  sampler=setInterval(()=>{const rss=process.memoryUsage.rss()/1048576;sampledPeak=Math.max(sampledPeak,rss);if(phase==='initial')firstDonePeak=Math.max(firstDonePeak,rss);if(['initial','probes'].includes(phase))readinessSampledPeak=Math.max(readinessSampledPeak,rss);},10);
+  baseline={rssMiB:readRssMiB(),resource:readResourceUsage()};
+  sampler=setInterval(()=>{const rss=readRssMiB();sampledPeak=Math.max(sampledPeak,rss);if(phase==='initial')firstDonePeak=Math.max(firstDonePeak,rss);if(['initial','probes'].includes(phase))readinessSampledPeak=Math.max(readinessSampledPeak,rss);},10);
   compiler=rspack({context:fixture,mode:'development',devtool:false,target:'node',entry:'./index.js',resolve:{symlinks:false},output:{path:output,filename:'bundle.js',library:{type:'commonjs2'}},experiments:{nativeWatcher:arm!=='wp'}});
   start=performance.now();cpuStart=process.cpuUsage();
   monitor?.send({kind:'start',startEpoch:performance.timeOrigin+start});
   const first=next(0);watching=compiler.watch({aggregateTimeout:50,followSymlinks:true},onBuild);initial=await first;
   phase='probes';
   const ready=new Promise((resolve,reject)=>{probeResolve=resolve;probeReject=reject;probeTimer=setTimeout(()=>reject(new Error(`ARM_EDIT_FAILURE readiness probes missing: ${probes.filter(p=>!landed.has(p.key)).map(p=>p.file).join(',')}`)),120000);});
-  const rewrite=()=>{try{for(const p of probes)if(!landed.has(p.key)){const n=rewrites.get(p.key)+1;rewrites.set(p.key,n);fs.writeFileSync(p.absolute,`module.exports = ${p.changedValue}; // probe rewrite ${n}\n`);}}catch(error){fail(error);}};
+  const rewrite=()=>{try{if(!firstProbeWritten){firstProbeWriteMs=performance.now()-start;firstProbeWritten=true;}for(const p of probes)if(!landed.has(p.key)){const n=rewrites.get(p.key)+1;rewrites.set(p.key,n);fs.writeFileSync(p.absolute,`module.exports = ${p.changedValue}; // probe rewrite ${n}\n`);}}catch(error){fail(error);}};
   rewrite();probeWriter=setInterval(rewrite,200);await ready;probeReject=undefined;
-  const idleSamples=[];for(let second=1;second<=10;second++){await wait(1000);if(second>=6)idleSamples.push(process.memoryUsage.rss()/1048576);}
+  const idleSamples=[];for(let second=1;second<=10;second++){await wait(1000);if(second>=6)idleSamples.push(readRssMiB());}
   if(lastError)throw new Error(lastError);
   if(monitor){monitor.send({kind:'stop'});inotify=await monitorResult;await monitorExit;assert(inotify.stableMs!==null,'inotify count did not stabilize for 2400 ms');}
   const watchesIdle=watchCount();phase='edits';
@@ -135,9 +144,9 @@ function onBuild(error,stats){
    await wait(250);const done=next(version),editStart=performance.now();fs.writeFileSync(target,`module.exports = ${version};\n`);const receipt=await done;
    edits.push({version,latencyMs:receipt.arrived-editStart,actualHash:receipt.actualHash,expectedHash:receipt.expectedHash,outputMatches:true});
   }
-  await wait(3000);const editedSamples=[];for(let i=0;i<5;i++){await wait(1000);editedSamples.push(process.memoryUsage.rss()/1048576);}
+  await wait(3000);const editedSamples=[];for(let i=0;i<5;i++){await wait(1000);editedSamples.push(readRssMiB());}
   if(lastError)throw new Error(lastError);
-  const watchesEdited=watchCount(),finalResource=process.resourceUsage(),windows=process.platform==='win32'?windowsSnapshot():null;
+  const watchesEdited=watchCount(),finalResource=readResourceUsage(),windows=process.platform==='win32'?windowsSnapshot():null;
   const highWater=(resource,win)=>(win?.peakWorkingSetBytes||resource.maxRSS*1024)/1048576;
   const result={arm,scenario,rep,platform,arch:process.arch,node:process.version,identity,watchpackVersion,
    fixture:{folders:spec.folders,fillerFiles:spec.fillerFiles,moduleCount:entries.length,symlinkFiles:spec.symlinkFiles,probeSeed:probeSet.seed,probeCount:10},baseline,

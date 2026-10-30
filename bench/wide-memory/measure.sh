@@ -27,4 +27,12 @@ if [[ "$RUNNER_OS" == Windows ]]; then
  FIXTURE="$(node -p 'require("node:fs").realpathSync.native(".bench-wide/fixtures/wide")')"
  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File bench/wide-memory/observe.ps1 -SelfControl -Fixture "$FIXTURE" > "$ROOT/results/directory-control.json"
 fi
+if [[ "${BENCH_OBSERVER_RED:-0}" == 1 ]]; then
+ if node bench/wide-memory/sample.cjs main modules 1 observer-negative > "$ROOT/results/observer-negative.log" 2>&1; then
+  echo OBSERVER_GAP_CONTROL_ACCEPTED; exit 97
+ fi
+ grep -q OBSERVER_IN_PROBE_GAP "$ROOT/results/observer-negative.log"
+ echo OBSERVER_GAP_CONTROL_REJECTED
+ exit 0
+fi
 node bench/wide-memory/measure.cjs
