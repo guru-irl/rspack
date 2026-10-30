@@ -383,7 +383,11 @@ pub async fn create_hash(
   // create full hash
   // Child compilers can finish in any order. Hash their values in a stable order,
   // retaining duplicates and only including children that ran in this compilation.
-  for hash in compilation.child_compilation_hashes.iter().sorted_unstable() {
+  for hash in compilation
+    .child_compilation_hashes
+    .iter()
+    .sorted_unstable()
+  {
     compilation_hasher.update(hash);
   }
   compilation
@@ -406,6 +410,11 @@ pub async fn create_hash(
       }
     });
   compilation_hasher.update(&compilation.hot_index);
+  plugin_driver
+    .compilation_hooks
+    .full_hash
+    .call(compilation, &mut compilation_hasher)
+    .await?;
   compilation.hash = Some(compilation_hasher.digest(&compilation.options.output.hash_digest));
 
   // re-create runtime chunk hash that depend on full hash

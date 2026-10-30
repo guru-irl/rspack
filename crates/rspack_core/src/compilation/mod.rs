@@ -139,6 +139,7 @@ define_hook!(CompilationOptimizeCodeGeneration: Series(compilation: &Compilation
 define_hook!(CompilationAfterCodeGeneration: Series(compilation: &Compilation, diagnostics: &mut Vec<Diagnostic>));
 define_hook!(CompilationChunkHash: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, hasher: &mut RspackHasher),tracing=false);
 define_hook!(CompilationContentHash: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, hashes: &mut HashMap<SourceType, RspackHasher>));
+define_hook!(CompilationFullHash: Series(compilation: &Compilation, hasher: &mut RspackHasher));
 define_hook!(CompilationDependentFullHash: Sync(compilation: &Compilation, chunk_ukey: &ChunkUkey, dependent_full_hash: &mut bool));
 define_hook!(CompilationRenderManifest: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, manifest: &mut Vec<RenderManifestEntry>, diagnostics: &mut Vec<Diagnostic>),tracing=false);
 define_hook!(CompilationChunkAsset: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, filename: &str));
@@ -181,6 +182,7 @@ pub struct CompilationHooks {
   pub after_code_generation: CompilationAfterCodeGenerationHook,
   pub chunk_hash: CompilationChunkHashHook,
   pub content_hash: CompilationContentHashHook,
+  pub full_hash: CompilationFullHashHook,
   pub dependent_full_hash: CompilationDependentFullHashHook,
   pub render_manifest: CompilationRenderManifestHook,
   pub chunk_asset: CompilationChunkAssetHook,
