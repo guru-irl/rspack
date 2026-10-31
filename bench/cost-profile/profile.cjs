@@ -18,7 +18,8 @@ async function run(arm,rep){
  const done=waitExit(child);
  process.kill(child.pid,'SIGSTOP');
  const trace=path.join(results,'syscalls',`${stem}.log`),traceFd=fs.openSync(trace,'wx');
- const observer=spawn('sudo',['-n','/usr/bin/fs_usage','-w','-f','filesys','-t','15',String(child.pid)],{stdio:['ignore',traceFd,traceFd]});
+ const native=process.env.BENCH_NATIVE_STACKS==='1',nativeFile=path.join(results,'syscalls',`${stem}.sample.txt`);
+ const observer=native?spawn('/usr/bin/sample',[String(child.pid),'12','-file',nativeFile],{stdio:['ignore',traceFd,traceFd]}):spawn('sudo',['-n','/usr/bin/fs_usage','-w','-f','filesys','-t','15',String(child.pid)],{stdio:['ignore',traceFd,traceFd]});
  const observed=waitExit(observer);
  await new Promise(resolve=>setTimeout(resolve,500));process.kill(child.pid,'SIGCONT');
  const outcome=await done;fs.closeSync(fd);const observerOutcome=await observed;fs.closeSync(traceFd);
@@ -35,8 +36,10 @@ async function run(arm,rep){
  const cpu=JSON.parse(fs.readFileSync(path.join(results,'cpu',`${stem}.cpuprofile`),'utf8')),byId=new Map(cpu.nodes.map(n=>[n.id,n])),times=new Map();
  for(let i=0;i<cpu.samples.length;i++)times.set(cpu.samples[i],(times.get(cpu.samples[i])||0)+(cpu.timeDeltas[i]||0)/1000);
  const cpuSelf=[...times].map(([id,ms])=>({ms,name:byId.get(id).callFrame.functionName,url:byId.get(id).callFrame.url,line:byId.get(id).callFrame.lineNumber})).sort((a,b)=>b.ms-a.ms).slice(0,40);
- const result={arm,rep,outcome,observerOutcome,firstEventMs:events[0]?.elapsedMs??null,firstInvalidMs:invalid[0]?.elapsedMs??null,eventCount:events.length,invalidCount:invalid.length,events,invalid,readinessMs:row.readinessMs,builds:row.builds,probeRebuilds:row.probeRebuilds,rewrites:row.probes.map(p=>({file:p.file,rewrites:p.rewrites})),operations,fixtureOperations,lost,cpuSelf};
+ const nativeInteresting=fs.existsSync(nativeFile)?fs.readFileSync(nativeFile,'utf8').split('\n').filter(l=>/rspack_watcher|rspack_core|rspack_plugin_context|rspack_paths|opendir|realpath|stat64|lstat64/.test(l)).slice(0,150):[];
+ const watchDiagnostics=text.split('\n').filter(l=>/^WATCH_(DIAG|PHASE|CONTEXT|EXTRA) /.test(l)).map(line=>{const parts=line.split(' '),kind=parts.shift(),name=parts[0]?.includes('=')?null:parts.shift();return {kind,name,...Object.fromEntries(parts.filter(p=>p.includes('=')).map(p=>{const i=p.indexOf('='),v=p.slice(i+1);return[p.slice(0,i),/^\\d+$/.test(v)?Number(v):v];}))};});
+ const result={arm,rep,outcome,observerOutcome,nativeInteresting,watchDiagnostics,firstEventMs:events[0]?.elapsedMs??null,firstInvalidMs:invalid[0]?.elapsedMs??null,eventCount:events.length,invalidCount:invalid.length,events,invalid,readinessMs:row.readinessMs,builds:row.builds,probeRebuilds:row.probeRebuilds,rewrites:row.probes.map(p=>({file:p.file,rewrites:p.rewrites})),operations,fixtureOperations,lost,cpuSelf};
  all.push(result);fs.writeFileSync(path.join(results,'profile-summary.json'),JSON.stringify(all,null,2)+'\n');
- assert.equal(outcome.code,0,'profiled command failed');assert.equal(observerOutcome.code,0,'filesystem observer failed');assert(Object.keys(operations).length,'empty filesystem trace');
+ assert.equal(outcome.code,0,'profiled command failed');if(!native){assert.equal(observerOutcome.code,0,'filesystem observer failed');assert(Object.keys(operations).length,'empty filesystem trace');}
 }
-(async()=>{for(let rep=1;rep<=3;rep++)for(const arm of(rep%2?['before','cost','wp']:['wp','cost','before']))await run(arm,rep);console.log(JSON.stringify(all,null,2));})().catch(error=>{console.error(error);process.exitCode=1;});
+(async()=>{for(let rep=1;rep<=3;rep++)for(const arm of(rep%2?['before','cost']:['cost','before']))await run(arm,rep);console.log(JSON.stringify(all,null,2));})().catch(error=>{console.error(error);process.exitCode=1;});
