@@ -1,7 +1,7 @@
-name: Native watcher PR 59 adversarial cycle 5, closing-peer round
+name: Native watcher PR 59 adversarial cycle 5, covered-recursive round
 on:
   push:
-    branches: [bench/pr59-c5-adv5]
+    branches: [bench/pr59-c5-adv6]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/c4b/**']
 permissions:
   contents: read
@@ -15,10 +15,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { unit: c5e-closing-fix, trees: 'fix', cmd: 'c5e.sh fix' }
-          - { unit: c5e-closing-base, trees: 'base', cmd: 'c5e.sh base' }
-          - { unit: c5e-closing-main, trees: 'main', cmd: 'c5e.sh main' }
-          - { unit: c5e-closing-wp, trees: 'head', cmd: 'c5e.sh wp' }
+          - { unit: c5f-covhold-fix, trees: 'fix', cmd: 'c5f.sh fix' }
+          - { unit: c5f-covhold-base, trees: 'base', cmd: 'c5f.sh base' }
+          - { unit: c5f-covhold-main, trees: 'main', cmd: 'c5f.sh main' }
+          - { unit: c5f-covhold-wp, trees: 'head', cmd: 'c5f.sh wp' }
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:

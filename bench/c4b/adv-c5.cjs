@@ -156,6 +156,23 @@ async function closing(name) {
   await step('C07','c0',()=>t('c0/other2/g.txt','g2'));
  });
 }
+// W: no contexts. An external holder makes notify's asynchronous recursive add fail, then frees
+// the quota. A later dependency in the new folder is covered by the recursive pattern.
+async function covhold(name) {
+ const defs={c0:{files:['c0/other/f.txt'],missing:['c0/p/m1/m2/x.txt','c0/p/z1/z2/y.txt'],setup:s=>{otherSetup('c0')(s); write(path.join(s,'c0/p/keep.txt'),'k',true);}}};
+ await mc(name,'sep',defs,async({step,t})=>{
+  await step('W01','c0',()=>t('c0/other/f.txt','f1'));
+  const h=startHolder(path.join(root,name,'holder')); const held=await h.ready; fs.writeSync(2,`HOLDER ${held}\n`);
+  console.log(JSON.stringify({type:'holder',scenario:name,held}));
+  try { await step('W02','c0',()=>fs.mkdirSync(path.join(root,name,'src','c0/p/m1/m2'),{recursive:true}),'observe',3000); }
+  finally { await h.stop(); fs.writeSync(2,'HOLDER released\n'); }
+  await sleep(500);
+  await step('W03','c0',()=>t('c0/p/m1/m2/x.txt','x'));
+  await step('W04','c0',()=>t('c0/p/m1/m2/x.txt','x1'));
+  await step('W05','c0',()=>t('c0/other/f.txt','f2'));
+  await step('W06','c0',()=>t('c0/p/m1/m2/x.txt','x2'));
+ });
+}
 // S: one compiler's new dependency sits in another compiler's nested context folder.
 async function share(name) {
  const defs={c0:{files:['c0/other/f.txt'],setup:otherSetup('c0')},c1:{files:['c1/other/f.txt'],contexts:['c1/ctx'],setup:s=>{otherSetup('c1')(s); ctxSetup('c1')(s);}}};
@@ -213,6 +230,7 @@ const all = {
  'async2-sep':()=>asyncrec2('async2-sep','sep'),
  'holder':()=>holder('holder'),
  'closing':()=>closing('closing'),
+ 'covhold':()=>covhold('covhold'),
  'share':()=>share('share'),
  'gen':()=>gen('gen'),
  'busy-r1':()=>busy('busy-r1'),'busy-r2':()=>busy('busy-r2'),'busy-r3':()=>busy('busy-r3'),
