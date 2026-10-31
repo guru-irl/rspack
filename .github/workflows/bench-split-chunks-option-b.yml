@@ -1,7 +1,7 @@
-name: Native watcher c3 fix cross-platform verification
+name: Native watcher c4 fix cross-platform verification
 on:
   push:
-    branches: [bench/pr59-c3fix-xplat]
+    branches: [bench/pr59-c4fix-xplat]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/alias-xplat/**']
 permissions:
   contents: read
@@ -15,11 +15,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: macOS, runner: macos-latest, arm: head, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
-          - { platform: Windows, runner: windows-latest, arm: head, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
-          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
-          - { platform: macOS, runner: macos-latest, arm: base, sha: 90f41a8ac8200533cdc96aa31b4b818bf8a75561, tree: 51f2676af734fbbbd3c17df49222e9c59ca65e7c }
-          - { platform: Windows, runner: windows-latest, arm: base, sha: 90f41a8ac8200533cdc96aa31b4b818bf8a75561, tree: 51f2676af734fbbbd3c17df49222e9c59ca65e7c }
+          - { platform: macOS, runner: macos-latest, arm: head, sha: 78923037c8e95171f8fff63ea51abc143b6a2a28, tree: 7ce4a9e6165bef73973df41d5161453ac7cc6c55 }
+          - { platform: Windows, runner: windows-latest, arm: head, sha: 78923037c8e95171f8fff63ea51abc143b6a2a28, tree: 7ce4a9e6165bef73973df41d5161453ac7cc6c55 }
+          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 78923037c8e95171f8fff63ea51abc143b6a2a28, tree: 7ce4a9e6165bef73973df41d5161453ac7cc6c55 }
+          - { platform: macOS, runner: macos-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: Windows, runner: windows-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: Linux, runner: ubuntu-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
           - { platform: macOS, runner: macos-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, tree: 11587ee715e5c9122ae9b1a440dad97ff3489bcc }
           - { platform: Windows, runner: windows-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, tree: 11587ee715e5c9122ae9b1a440dad97ff3489bcc }
     runs-on: ${{ matrix.runner }}
@@ -74,7 +75,7 @@ jobs:
         run: pnpm run build:js
       - uses: actions/upload-artifact@v4
         with:
-          name: c3-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          name: c4fix-binding-${{ matrix.platform }}-${{ matrix.arm }}
           path: head/crates/node_binding/*.node
           if-no-files-found: error
       - name: Pin the binding
@@ -100,14 +101,14 @@ jobs:
           echo "wp rc=$rc"
           node bench/alias-xplat/c3-compare.cjs .bench-alias/results/c3-${{ matrix.arm }}.jsonl .bench-alias/results/c3-wp.jsonl | tee .bench-alias/results/c3-compare.log
       - name: Run native watcher compiler cases with worker binding proof
-        if: matrix.arm == 'head'
-        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates compiler
+        if: matrix.arm == 'head' || (matrix.platform == 'Linux' && matrix.arm == 'base')
+        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates ${{ matrix.platform == 'Linux' && 'linux' || 'compiler' }}
       - name: Check the source stayed unchanged
         run: git -C head diff --exit-code && git -C head diff --exit-code --cached
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: c3-${{ matrix.platform }}-${{ matrix.arm }}
+          name: c4fix-${{ matrix.platform }}-${{ matrix.arm }}
           path: .bench-alias/results/
           include-hidden-files: true
           if-no-files-found: error
