@@ -1,13 +1,13 @@
-name: Native watcher c4b limit checks, round 2
+name: Native watcher c4 fix limit and replay checks
 on:
   push:
-    branches: [bench/pr59-c4b-limits2]
+    branches: [bench/pr59-c4fix-limits]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/c4b/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: native-watcher-c4b2-${{ github.sha }}
+  group: native-watcher-c4fix-\${{ github.sha }}
   cancel-in-progress: false
 jobs:
   run:
@@ -15,14 +15,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { unit: r2-lim300-fix, trees: 'fix', cmd: 'more.sh fix lim300' }
-          - { unit: r2-lim300-head, trees: 'head', cmd: 'more.sh head lim300' }
-          - { unit: r2-lim300-main, trees: 'main', cmd: 'more.sh main lim300' }
-          - { unit: r2-lim300-wp, trees: 'head', cmd: 'more.sh wp lim300' }
-          - { unit: r2-rep30-fix, trees: 'fix', cmd: 'more.sh fix rep30' }
-          - { unit: r2-rep30-head, trees: 'head', cmd: 'more.sh head rep30' }
-          - { unit: r2-rep30-main, trees: 'main', cmd: 'more.sh main rep30' }
-          - { unit: r2-rep30-wp, trees: 'head', cmd: 'more.sh wp rep30' }
+          - { unit: lim30real-fix, trees: 'fix', cmd: 'limits.sh fix lim30real' }
+          - { unit: lim30real-head, trees: 'head', cmd: 'limits.sh head lim30real' }
+          - { unit: lim30real-main, trees: 'main', cmd: 'limits.sh main lim30real' }
+          - { unit: lim30real-wp, trees: 'head', cmd: 'limits.sh wp lim30real' }
+          - { unit: lim30link-fix, trees: 'fix', cmd: 'limits.sh fix lim30link' }
+          - { unit: lim30link-head, trees: 'head', cmd: 'limits.sh head lim30link' }
+          - { unit: lim30link-main, trees: 'main', cmd: 'limits.sh main lim30link' }
+          - { unit: lim30link-wp, trees: 'head', cmd: 'limits.sh wp lim30link' }
+          - { unit: lim300-fix, trees: 'fix', cmd: 'limits.sh fix lim300' }
+          - { unit: lim300-head, trees: 'head', cmd: 'limits.sh head lim300' }
+          - { unit: lim300-main, trees: 'main', cmd: 'limits.sh main lim300' }
+          - { unit: lim300-wp, trees: 'head', cmd: 'limits.sh wp lim300' }
+          - { unit: unlimited-fix, trees: 'fix', cmd: 'limits.sh fix unlimited' }
+          - { unit: unlimited-head, trees: 'head', cmd: 'limits.sh head unlimited' }
+          - { unit: unlimited-main, trees: 'main', cmd: 'limits.sh main unlimited' }
+          - { unit: unlimited-wp, trees: 'head', cmd: 'limits.sh wp unlimited' }
+          - { unit: retained, trees: 'fix head main', cmd: 'retained.sh' }
+          - { unit: replay-real, trees: 'fix head', cmd: 'replay.sh real' }
+          - { unit: replay-link, trees: 'fix head', cmd: 'replay.sh link' }
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
@@ -35,12 +46,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: contains(matrix.trees, 'fix')
         with:
-          ref: 360667e8f049fdea70d03e357e0018aa62553d23
+          ref: 78923037c8e95171f8fff63ea51abc143b6a2a28
           path: t-fix
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: contains(matrix.trees, 'head')
         with:
-          ref: 6433cb8ccfef1ab755d0510a089446be417fae67
+          ref: 360667e8f049fdea70d03e357e0018aa62553d23
           path: t-head
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: contains(matrix.trees, 'main')
@@ -54,8 +65,8 @@ jobs:
           check() { test "$(git -C t-$1 rev-parse HEAD)" = $2; test "$(git -C t-$1 rev-parse HEAD^{tree})" = $3; git -C t-$1 show -s --format="$1 %H %T %s" | tee -a .c4b/results/source.txt; }
           for t in ${{ matrix.trees }}; do
             case $t in
-              fix) check fix 360667e8f049fdea70d03e357e0018aa62553d23 3bafe42e2eae81274f30802126a499ecbb60da4a;;
-              head) check head 6433cb8ccfef1ab755d0510a089446be417fae67 cd0558dab30380f26e030f652954edb832b0f884;;
+              fix) check fix 78923037c8e95171f8fff63ea51abc143b6a2a28 7ce4a9e6165bef73973df41d5161453ac7cc6c55;;
+              head) check head 360667e8f049fdea70d03e357e0018aa62553d23 3bafe42e2eae81274f30802126a499ecbb60da4a;;
               main) check main 79c650c24e4b468e743ebfe6454b3b2bc6650938 11587ee715e5c9122ae9b1a440dad97ff3489bcc;;
             esac
           done
@@ -75,15 +86,15 @@ jobs:
       - uses: actions/download-artifact@v4
         if: contains(matrix.trees, 'fix')
         with:
-          name: c3-binding-Linux-head
-          run-id: 41183881778
+          name: c4fix-binding-Linux-head
+          run-id: 41209850166
           github-token: ${{ github.token }}
           path: t-fix/crates/node_binding
       - uses: actions/download-artifact@v4
         if: contains(matrix.trees, 'head')
         with:
-          name: c3-binding-Linux-head
-          run-id: 41170523541
+          name: c4fix-binding-Linux-base
+          run-id: 41209850166
           github-token: ${{ github.token }}
           path: t-head/crates/node_binding
       - uses: actions/download-artifact@v4
@@ -102,13 +113,30 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run
         run: bash bench/c4b/${{ matrix.cmd }} 2>&1 | tee .c4b/results/run.log
+      - name: Run unlimited c3 sessions on link roots
+        if: startsWith(matrix.unit, 'unlimited-')
+        run: |
+          set -euo pipefail
+          ARM="${{ matrix.trees }}"
+          if [[ "${{ matrix.unit }}" == unlimited-wp ]]; then ARM=wp; fi
+          bash bench/c4b/arm.sh "$ARM" adv-c3.cjs unlimited link limit,limitrec,limitretry,limitdrop,limitdrop2-ctx,limitdrop2-file
+      - name: Run retained folders at 300
+        if: matrix.unit == 'retained'
+        run: |
+          set -euo pipefail
+          export NSLIMIT=300 PREFIX="$GITHUB_WORKSPACE/bench/c4b/nslimit.sh"
+          unset LIMIT_FILLERS
+          bash bench/c4b/arm.sh fix adv-retained-folder.cjs lim300-retained real limitretain
+          LIMIT_FILLERS=$(grep '"type":"fill-meta"' .c4b/results/lim300-retained-real-fix.jsonl | sed -E 's/.*"fillers":([0-9]+).*/\1/')
+          export LIMIT_FILLERS
+          for arm in head main wp; do bash bench/c4b/arm.sh "$arm" adv-retained-folder.cjs lim300-retained real limitretain; done
       - name: Check for leftover processes
         if: always()
         run: ps -eo pid,etimes,args | grep -E 'node .*bench/c4b' | grep -v grep | tee .c4b/results/leftover.txt || echo none
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: c4b-${{ matrix.unit }}
+          name: c4fix-${{ matrix.unit }}
           path: .c4b/results/
           if-no-files-found: error
           retention-days: 14
