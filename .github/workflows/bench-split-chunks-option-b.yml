@@ -1,7 +1,7 @@
-name: Native watcher c4 fix limit and replay checks
+name: Native watcher c4 fix generation-reset limit and replay checks
 on:
   push:
-    branches: [bench/pr59-c4fix-limits]
+    branches: [bench/pr59-c4fix-r2-limits]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/c4b/**']
 permissions:
   contents: read
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: contains(matrix.trees, 'fix')
         with:
-          ref: 78923037c8e95171f8fff63ea51abc143b6a2a28
+          ref: 124beab203d064b899d86b652d8b76b7ea12576a
           path: t-fix
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: contains(matrix.trees, 'head')
@@ -65,7 +65,7 @@ jobs:
           check() { test "$(git -C t-$1 rev-parse HEAD)" = $2; test "$(git -C t-$1 rev-parse HEAD^{tree})" = $3; git -C t-$1 show -s --format="$1 %H %T %s" | tee -a .c4b/results/source.txt; }
           for t in ${{ matrix.trees }}; do
             case $t in
-              fix) check fix 78923037c8e95171f8fff63ea51abc143b6a2a28 7ce4a9e6165bef73973df41d5161453ac7cc6c55;;
+              fix) check fix 124beab203d064b899d86b652d8b76b7ea12576a 5420f948b72ceb83eccdf454d589470c37ae5440;;
               head) check head 360667e8f049fdea70d03e357e0018aa62553d23 3bafe42e2eae81274f30802126a499ecbb60da4a;;
               main) check main 79c650c24e4b468e743ebfe6454b3b2bc6650938 11587ee715e5c9122ae9b1a440dad97ff3489bcc;;
             esac
@@ -87,14 +87,14 @@ jobs:
         if: contains(matrix.trees, 'fix')
         with:
           name: c4fix-binding-Linux-head
-          run-id: 41209850166
+          run-id: 41212550652
           github-token: ${{ github.token }}
           path: t-fix/crates/node_binding
       - uses: actions/download-artifact@v4
         if: contains(matrix.trees, 'head')
         with:
           name: c4fix-binding-Linux-base
-          run-id: 41209850166
+          run-id: 41212550652
           github-token: ${{ github.token }}
           path: t-head/crates/node_binding
       - uses: actions/download-artifact@v4
