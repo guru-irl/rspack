@@ -197,10 +197,6 @@ impl DiskWatcher {
     patterns: impl Iterator<Item = WatchPattern>,
   ) -> rspack_error::Result<()> {
     self.analyzer_patterns = patterns.collect();
-    #[cfg(target_os = "linux")]
-    if CONTEXTS_DISABLED.load(Ordering::Acquire) {
-      self.release_context_only();
-    }
     let new_patterns: HashSet<_> = self
       .analyzer_patterns
       .iter()
