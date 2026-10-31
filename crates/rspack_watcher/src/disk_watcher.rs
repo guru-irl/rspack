@@ -166,6 +166,14 @@ impl DiskWatcher {
       .watch_patterns
       .retain(|p| !stale_paths.contains(&p.path));
 
+    // A recursive root must be installed before its covered directories, or
+    // those directories keep redundant native watches for the whole session.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let new_patterns = {
+      let mut patterns: Vec<_> = new_patterns.into_iter().collect();
+      patterns.sort_by_key(|pattern| pattern.mode == NonRecursive);
+      patterns
+    };
     for pattern in new_patterns {
       if !self.analyzer_patterns.contains(&pattern) && !self.context_paths.contains(&pattern.path) {
         continue;
