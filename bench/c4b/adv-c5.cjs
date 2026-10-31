@@ -92,6 +92,23 @@ async function asyncrec(name, kind) {
   await step('X06','c0',()=>fs.mkdirSync(path.join(root,name,'src','c0/p/n1/n2'),{recursive:true}),'observe',3000);
  });
 }
+// A2: as A1, but a second missing file keeps the recursive pattern on c0/p. The new dependency
+// folder c0/p/m1/m2 is then covered by that recursive pattern, so no separate native watch is
+// added for it after the rebuild.
+async function asyncrec2(name, kind) {
+ const both=kind==='single';
+ const defs={c0:{files:['c0/other/f.txt'],missing:['c0/p/m1/m2/x.txt','c0/p/z1/z2/y.txt'],contexts:both?['c0/ctx']:[],setup:s=>{otherSetup('c0')(s); write(path.join(s,'c0/p/keep.txt'),'k',true); if(both) ctxSetup('c0')(s);}}};
+ if (!both) defs.c1={files:['c1/other/f.txt'],contexts:['c1/ctx'],setup:s=>{otherSetup('c1')(s); ctxSetup('c1')(s);}};
+ await mc(name, both?'sep':kind, defs, async({step,t})=>{
+  await step('Y01','c0',()=>t('c0/other/f.txt','f1'));
+  await step('Y02','c0',()=>fs.mkdirSync(path.join(root,name,'src','c0/p/m1/m2'),{recursive:true}),'observe',3000);
+  await step('Y03','c0',()=>t('c0/p/m1/m2/x.txt','x'));
+  await step('Y04','c0',()=>t('c0/other/f.txt','f2'));
+  await step('Y05','c0',()=>t('c0/p/m1/m2/x.txt','x1'));
+  await step('Y06','c0',()=>t('c0/p/m1/m2/x.txt','x2'));
+  await step('Y07','c0',()=>t('c0/other/f.txt','f3'));
+ });
+}
 // S: one compiler's new dependency sits in another compiler's nested context folder.
 async function share(name) {
  const defs={c0:{files:['c0/other/f.txt'],setup:otherSetup('c0')},c1:{files:['c1/other/f.txt'],contexts:['c1/ctx'],setup:s=>{otherSetup('c1')(s); ctxSetup('c1')(s);}}};
@@ -144,6 +161,9 @@ const all = {
  'async-single':()=>asyncrec('async-single','single'),
  'async-multi':()=>asyncrec('async-multi','multi'),
  'async-sep':()=>asyncrec('async-sep','sep'),
+ 'async2-single':()=>asyncrec2('async2-single','single'),
+ 'async2-multi':()=>asyncrec2('async2-multi','multi'),
+ 'async2-sep':()=>asyncrec2('async2-sep','sep'),
  'share':()=>share('share'),
  'gen':()=>gen('gen'),
  'busy-r1':()=>busy('busy-r1'),'busy-r2':()=>busy('busy-r2'),'busy-r3':()=>busy('busy-r3'),

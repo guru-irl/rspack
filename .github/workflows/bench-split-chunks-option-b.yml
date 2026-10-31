@@ -1,7 +1,7 @@
-name: Native watcher PR 59 adversarial cycle 5
+name: Native watcher PR 59 adversarial cycle 5, recursive-pattern round
 on:
   push:
-    branches: [bench/pr59-c5-adv]
+    branches: [bench/pr59-c5-adv2]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/c4b/**']
 permissions:
   contents: read
@@ -15,24 +15,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { unit: c5-lim30real-fix, trees: 'fix', cmd: 'c5.sh fix lim30real' }
-          - { unit: c5-lim30real-base, trees: 'base', cmd: 'c5.sh base lim30real' }
-          - { unit: c5-lim30real-main, trees: 'main', cmd: 'c5.sh main lim30real' }
-          - { unit: c5-lim30real-wp, trees: 'head', cmd: 'c5.sh wp lim30real' }
-          - { unit: c5-lim30link-fix, trees: 'fix', cmd: 'c5.sh fix lim30link' }
-          - { unit: c5-lim30link-base, trees: 'base', cmd: 'c5.sh base lim30link' }
-          - { unit: c5-lim30link-main, trees: 'main', cmd: 'c5.sh main lim30link' }
-          - { unit: c5-lim30link-wp, trees: 'head', cmd: 'c5.sh wp lim30link' }
-          - { unit: c5-lim300-fix, trees: 'fix', cmd: 'c5.sh fix lim300' }
-          - { unit: c5-lim300-base, trees: 'base', cmd: 'c5.sh base lim300' }
-          - { unit: c5-lim300-main, trees: 'main', cmd: 'c5.sh main lim300' }
-          - { unit: c5-lim300-wp, trees: 'head', cmd: 'c5.sh wp lim300' }
-          - { unit: c5-busy-fix, trees: 'fix', cmd: 'c5.sh fix busy' }
-          - { unit: c5-busy-base, trees: 'base', cmd: 'c5.sh base busy' }
-          - { unit: c5-busy-main, trees: 'main', cmd: 'c5.sh main busy' }
-          - { unit: c5-busy-wp, trees: 'head', cmd: 'c5.sh wp busy' }
-          - { unit: c5-replay-real, trees: 'fix base', cmd: 'replay-c5.sh real' }
-          - { unit: c5-replay-link, trees: 'fix base', cmd: 'replay-c5.sh link' }
+          - { unit: c5b-lim30real-fix, trees: 'fix', cmd: 'c5b.sh fix lim30real' }
+          - { unit: c5b-lim30real-base, trees: 'base', cmd: 'c5b.sh base lim30real' }
+          - { unit: c5b-lim30real-main, trees: 'main', cmd: 'c5b.sh main lim30real' }
+          - { unit: c5b-lim30real-wp, trees: 'head', cmd: 'c5b.sh wp lim30real' }
+          - { unit: c5b-lim30link-fix, trees: 'fix', cmd: 'c5b.sh fix lim30link' }
+          - { unit: c5b-lim30link-base, trees: 'base', cmd: 'c5b.sh base lim30link' }
+          - { unit: c5b-lim30link-main, trees: 'main', cmd: 'c5b.sh main lim30link' }
+          - { unit: c5b-lim30link-wp, trees: 'head', cmd: 'c5b.sh wp lim30link' }
+          - { unit: c5b-lim300-fix, trees: 'fix', cmd: 'c5b.sh fix lim300' }
+          - { unit: c5b-lim300-base, trees: 'base', cmd: 'c5b.sh base lim300' }
+          - { unit: c5b-lim300-main, trees: 'main', cmd: 'c5b.sh main lim300' }
+          - { unit: c5b-lim300-wp, trees: 'head', cmd: 'c5b.sh wp lim300' }
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
