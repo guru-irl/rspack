@@ -182,7 +182,9 @@ impl DiskWatcher {
         continue;
       }
       if let Err(error) = self.watch_pattern(&pattern) {
-        if self.analyzer_patterns.contains(&pattern) {
+        if self.analyzer_patterns.contains(&pattern)
+          && !matches!(error.kind, notify::ErrorKind::MaxFilesWatch)
+        {
           self.report_context_watch_errors();
           return Err(rspack_error::error!(error.to_string()));
         }
