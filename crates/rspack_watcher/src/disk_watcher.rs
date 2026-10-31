@@ -26,17 +26,26 @@ static SWEEP: Mutex<()> = Mutex::new(());
 #[cfg(target_os = "linux")]
 pub(crate) fn register(watcher: &Arc<Mutex<DiskWatcher>>) {
   let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
-  live.retain(|watcher| watcher.strong_count() > 0);
+  prune_live_watchers(&mut live);
   live.push(Arc::downgrade(watcher));
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn unregister(watcher: &Arc<Mutex<DiskWatcher>>) {
   let watcher = Arc::downgrade(watcher);
-  LIVE
-    .lock()
-    .expect("live disk watchers lock poisoned")
-    .retain(|entry| entry.strong_count() > 0 && !entry.ptr_eq(&watcher));
+  let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
+  live.retain(|entry| !entry.ptr_eq(&watcher));
+  prune_live_watchers(&mut live);
+}
+
+#[cfg(target_os = "linux")]
+fn prune_live_watchers(live: &mut Vec<Weak<Mutex<DiskWatcher>>>) {
+  live.retain(|watcher| watcher.strong_count() > 0);
+  if live.is_empty() {
+    // A new compiler generation can try nested contexts again. Live peers,
+    // including those retained during a sweep, keep sharing the fallback.
+    CONTEXTS_DISABLED.store(false, Ordering::Release);
+  }
 }
 
 /// The caller must release every disk watcher, alias and path index guard first.
@@ -46,7 +55,7 @@ pub(crate) fn reclaim_and_retry_all() {
   let watchers: Vec<_> = {
     let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
     let watchers = live.iter().filter_map(Weak::upgrade).collect();
-    live.retain(|watcher| watcher.strong_count() > 0);
+    prune_live_watchers(&mut live);
     watchers
   };
   // Wait for in-flight registrations and finish every release before any retry.
