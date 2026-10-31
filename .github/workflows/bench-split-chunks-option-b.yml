@@ -1,73 +1,18 @@
-name: PR59 recursive-first parity and paired cost
+name: PR59 single reference replacements and cost report
 on:
   push:
-    branches: [bench/pr59-xplat-cost]
-    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/wide-memory/**', 'bench/alias-xplat/**']
+    branches: [bench/pr59-xplat-cost-replacements]
+    paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/cost-replacements/**', 'bench/wide-memory/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: pr59-cost-final-${{ github.sha }}
+  group: pr59-cost-replacements-${{ github.sha }}
   cancel-in-progress: false
 env:
   COST_SOURCE_SHA: 1810ebe4ca553451b1f4e6237095a0329da87436
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin }
-          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 220
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Set scratch paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$PWD/.bench-wide/tmp"
-          P="$PWD/.bench-wide/tmp"
-          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
-          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.COST_SOURCE_SHA }}
-          path: source
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-      - name: Free disk cache
-        if: runner.os == 'Linux'
-        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
-        with:
-          tool-cache: false
-      - name: Repair Rust proxies on macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Build exact release source without diagnostics
-        shell: bash
-        env:
-          SOURCE_REF: ${{ env.COST_SOURCE_SHA }}
-          RUST_TARGET: ${{ matrix.target }}
-        run: bash bench/wide-memory/build.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: wide-binding-${{ matrix.platform }}-cost
-          path: .bench-wide/artifact/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-  verify:
+  retry:
     strategy:
       fail-fast: false
       matrix:
@@ -76,104 +21,7 @@ jobs:
           - { platform: macOS, runner: macos-latest }
           - { platform: Windows, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
-    env:
-      CARGO_PROFILE_DEV_DEBUG: 0
-      CARGO_INCREMENTAL: 0
-      CARGO_BUILD_JOBS: 3
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Set scratch paths
-        run: |
-          set -euo pipefail
-          mkdir -p "$PWD/.bench-alias/tmp" "$PWD/.bench-alias/results"
-          P="$PWD/.bench-alias/tmp"
-          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
-          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\nCARGO_TARGET_DIR=%s\n' "$P" "$P" "$P" "$PWD/.bench-alias/target" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.COST_SOURCE_SHA }}
-          path: head
-      - name: Verify source identity
-        run: |
-          set -euo pipefail
-          test "$(git -C head rev-parse HEAD)" = "$COST_SOURCE_SHA"
-          git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-      - name: Free disk cache
-        if: runner.os == 'Linux'
-        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
-        with:
-          tool-cache: false
-      - name: Repair Rust proxies on macOS
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Install Rust
-        run: rustup toolchain install nightly-2026-04-16 --profile minimal --component rustfmt --component clippy
-      - name: Build development artifacts before testing
-        working-directory: head
-        run: pnpm install --frozen-lockfile && pnpm run build:cli:dev
-      - name: Pin the candidate development binding
-        run: |
-          set -euo pipefail
-          PIN="$(find "$PWD/head/crates/node_binding" -name '*.node' -type f)"
-          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"); const p=fs.realpathSync.native(process.argv[1]),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nEXPECTED_BINDING_SHA256=${h}\nALIAS_SOURCE_ROOT=${fs.realpathSync.native("head")}\n`); console.log(JSON.stringify({binding:p,sha256:h}));' "$PIN" | tee .bench-alias/results/binding.json
-      - name: Prove loaded identity and reject a wrong hash
-        run: |
-          set -euo pipefail
-          node -r ./bench/alias-xplat/binding-guard.cjs -e 'require(process.env.ALIAS_SOURCE_ROOT + "/packages/rspack/dist/index.js")' | tee .bench-alias/results/guard-positive.log
-          if EXPECTED_BINDING_SHA256=000 node -r ./bench/alias-xplat/binding-guard.cjs -e 'require(process.env.ALIAS_SOURCE_ROOT + "/packages/rspack/dist/index.js")' > .bench-alias/results/guard-negative.log 2>&1; then
-            echo WRONG_HASH_ACCEPTED; exit 97
-          fi
-          grep -q WRONG_BINDING_HASH .bench-alias/results/guard-negative.log
-      - name: Compare all alias steps with Watchpack 2.6.3
-        run: |
-          set -euo pipefail
-          node -r ./bench/alias-xplat/binding-guard.cjs bench/alias-xplat/reference.cjs head fixed .bench-alias/results/fixed.jsonl
-          node -r ./bench/alias-xplat/binding-guard.cjs bench/alias-xplat/reference.cjs head wp .bench-alias/results/wp.jsonl
-          node bench/alias-xplat/audit-reference.cjs .bench-alias/results --controls --require-parity=fixed | tee .bench-alias/results/audit.log
-      - name: Run eleven compiler cases and native API and watch suites
-        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates linux
-      - name: Rust formatting, watcher clippy and existing tests
-        if: runner.os == 'Linux'
-        working-directory: head
-        run: |
-          set -euo pipefail
-          cargo fmt --all --check > ../.bench-alias/results/fmt.log 2>&1
-          cargo clippy -p rspack_watcher --all-targets -- -D warnings > ../.bench-alias/results/clippy.log 2>&1
-          cargo test -p rspack_watcher > ../.bench-alias/results/rust.log 2>&1
-          grep 'test result:' ../.bench-alias/results/rust.log
-      - name: Check the source stayed unchanged
-        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: cost-parity-${{ matrix.platform }}
-          path: .bench-alias/results/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-  measure:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: Linux, runner: ubuntu-latest }
-          - { platform: macOS, runner: macos-latest }
-          - { platform: Windows, runner: windows-latest }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 220
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -186,6 +34,10 @@ jobs:
           P="$PWD/.bench-wide/tmp"
           if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
           printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - name: Wait until the original measurement queue finishes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run watch 41149287712 --repo guru-irl/rspack --interval 60
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
@@ -197,16 +49,27 @@ jobs:
           cache: pnpm
       - uses: actions/download-artifact@v4
         with:
-          pattern: wide-binding-${{ matrix.platform }}-cost
-          path: .bench-wide/bindings/
+          name: wide-results-${{ matrix.platform }}
+          run-id: 41149287712
+          github-token: ${{ github.token }}
+          path: .bench-wide/original/
+      - uses: actions/download-artifact@v4
+        with:
+          name: wide-binding-${{ matrix.platform }}-cost
+          run-id: 41149287712
+          github-token: ${{ github.token }}
+          path: .bench-wide/bindings/wide-binding-${{ matrix.platform }}-cost/
       - uses: actions/download-artifact@v4
         with:
           pattern: wide-binding-${{ matrix.platform }}-*
           run-id: 41106150672
           github-token: ${{ github.token }}
           path: .bench-wide/bindings/
-      - name: Measure five alternating runs per arm and scenario
-        run: bash bench/wide-memory/measure.sh
+      - name: Replace each excluded reference cell once and audit native completeness
+        run: |
+          set -euo pipefail
+          cp bench/cost-replacements/retry.cjs bench/wide-memory/measure.cjs
+          bash bench/wide-memory/measure.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -216,7 +79,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   summarize:
-    needs: measure
+    needs: retry
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -229,7 +92,7 @@ jobs:
         with:
           pattern: wide-results-*
           path: .bench-wide/collected/
-      - name: Summarize paired medians and 95 percent bootstrap intervals
+      - name: Summarize paired native comparisons and reference failure counts
         run: node bench/wide-memory/cost-report.cjs
       - uses: actions/upload-artifact@v4
         if: always()

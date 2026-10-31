@@ -16,27 +16,34 @@ const interval=s=>`${signed(s.median)} [${signed(s.low)}, ${signed(s.high)}]`;
 const systems=['macOS','Windows','Linux'],scenarios=['wide','modules','symlink'],arms=['cost','fix','before','wp'];
 const metrics=['readinessMs','firstProbeMs','firstDoneMs','fullPeakMiB','readinessPeakMiB','idleRssMiB','editedRssMiB','firstDoneToProbeWriteMs','watchesIdle.count'];
 const value=(row,key)=>key.split('.').reduce((v,k)=>v[k],row);
-const data={},identities={},flags=[];
+const data={},identities={},flags=[],harnessFailures=[],failureCounts={cost:0,fix:0,before:0,wp:0};
 let report='# PR59 watcher startup cost measurements\n\nFive alternating paired rounds. Brackets are 95% percentile bootstrap intervals for paired medians.\n\n';
 for(const os of systems){
  const folder=path.join(root,`wide-results-${os}`),summary=JSON.parse(fs.readFileSync(path.join(folder,'summary.json'),'utf8'));
- assert.equal(summary.platform,os);assert.equal(summary.complete,true);assert.equal(summary.sampleCount,60);assert.equal(summary.controls.length,8);
+ assert.equal(summary.platform,os);assert.equal(summary.complete,true);assert.equal(summary.decisionComplete,true);assert.equal(summary.sampleCount,60-summary.missingWatchpack.length);assert.equal(summary.controls.length,8);
+ for(const [arm,count] of Object.entries(summary.failureCounts))failureCounts[arm]+=count;
+ for(const failure of summary.failureDetails)harnessFailures.push({os,...failure});
  for(const [file,marker] of [['identity-negative.log','WRONG_BINDING_HASH'],['observer-negative.log','OBSERVER_IN_PROBE_GAP'],['metadata-negative.log','INITIAL_METADATA_RETAINED_OBJECT']])assert(fs.readFileSync(path.join(folder,file),'utf8').includes(marker));
  data[os]={};identities[os]=summary.identities;
  report+=`## ${os}\n\n| Scenario / metric | Cost fix | 90f41a8a | b87c553c | Watchpack | Vs 90f41a8a | Vs b87c553c | Vs Watchpack |\n|---|---:|---:|---:|---:|---|---|---|\n`;
  for(const scenario of scenarios){
-  const rows=Object.fromEntries(arms.map(arm=>[arm,Array.from({length:5},(_,i)=>JSON.parse(fs.readFileSync(path.join(folder,`${scenario}-${arm}-${i+1}.json`),'utf8')))]));
+  const rows=Object.fromEntries(arms.map(arm=>[arm,Array.from({length:5},(_,i)=>{
+   const file=path.join(folder,`${scenario}-${arm}-${i+1}.json`);
+   if(!fs.existsSync(file)){assert(arm==='wp'&&summary.missingWatchpack.some(c=>c.scenario===scenario&&c.rep===i+1));return null;}
+   return JSON.parse(fs.readFileSync(file,'utf8'));
+  }).filter(Boolean)]));
   data[os][scenario]={};
   for(const key of metrics){
    const values=Object.fromEntries(arms.map(arm=>[arm,rows[arm].map(r=>value(r,key))]));
-   const medians=Object.fromEntries(arms.map(arm=>[arm,values[arm].every(v=>v!==null)?median(values[arm]):null]));
+   const medians=Object.fromEntries(arms.map(arm=>[arm,values[arm].length===5&&values[arm].every(v=>v!==null)?median(values[arm]):null]));
    const pairs={};for(const base of ['fix','before','wp']){
     pairs[base]=medians.cost===null||medians[base]===null?null:{delta:estimate(values.cost.map((v,i)=>v-values[base][i])),percent:estimate(values.cost.map((v,i)=>(v/values[base][i]-1)*100))};
    }
    data[os][scenario][key]={medians,pairs};
    if(['readinessMs','fullPeakMiB'].includes(key)){
-    const cells=['fix','before','wp'].map(base=>`${interval(pairs[base].delta)}; ${interval(pairs[base].percent)}%`);
-    report+=`| ${scenario} / ${key==='readinessMs'?'readiness ms':'peak MiB'} | ${arms.map(arm=>format(medians[arm])).join(' | ')} | ${cells.join(' | ')} |\n`;
+    const missingLabel=summary.missingWatchpack.filter(c=>c.scenario===scenario).map(c=>c.reason).join('; ');
+    const cells=['fix','before','wp'].map(base=>pairs[base]?`${interval(pairs[base].delta)}; ${interval(pairs[base].percent)}%`:missingLabel||'not exposed');
+    report+=`| ${scenario} / ${key==='readinessMs'?'readiness ms':'peak MiB'} | ${arms.map(arm=>arm==='wp'&&rows.wp.length<5?missingLabel:format(medians[arm])).join(' | ')} | ${cells.join(' | ')} |\n`;
     if(pairs.before.percent.median>(key==='readinessMs'?20:10))flags.push({os,scenario,key,...pairs.before});
    }
   }
@@ -45,6 +52,9 @@ for(const os of systems){
  for(const scenario of scenarios)for(const arm of arms)report+=`| ${scenario} / ${arm} | ${['firstDoneMs','firstProbeMs','idleRssMiB','editedRssMiB','watchesIdle.count'].map(key=>format(data[os][scenario][key].medians[arm])).join(' | ')} |\n`;
  report+='\n';
 }
-fs.writeFileSync(path.join(out,'cost-measurements.json'),JSON.stringify({data,identities,flags},null,2)+'\n');
+report+='## Harness failures\n\n| OS | Arm | Scenario | Seed | Attempt | Edit | Read |\n|---|---|---|---:|---:|---|---|\n';
+for(const f of harnessFailures)report+=`| ${f.os} | ${f.arm} | ${f.scenario} | ${f.seed} | ${f.attempt} | ${f.editNumber??'readiness probes'} | ${f.read}${f.readProof?' by output hash':''} |\n`;
+report+=`\nFailed measurement processes by arm: candidate ${failureCounts.cost}, 90f41a8a ${failureCounts.fix}, b87c553c ${failureCounts.before}, Watchpack ${failureCounts.wp}. Negative controls are not samples.\n`;
+fs.writeFileSync(path.join(out,'cost-measurements.json'),JSON.stringify({data,identities,flags,harnessFailures,failureCounts},null,2)+'\n');
 fs.writeFileSync(path.join(out,'cost-measurements.md'),report);
 console.log(report);console.log(JSON.stringify({kind:'target-flags',flags}));

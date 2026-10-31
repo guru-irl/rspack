@@ -2,6 +2,15 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const root=path.resolve('.bench-wide'),results=path.join(root,'results');
 const arms=['cost','before','fix','wp'],scenarios=['wide','modules','symlink'];
+const retryFile=path.join(results,'retry-receipt.json'),retry=fs.existsSync(retryFile)?JSON.parse(fs.readFileSync(retryFile,'utf8')):null;
+const allowedMissing=new Set();
+for(const cell of retry?.missingWatchpack||[]){
+ assert(scenarios.includes(cell.scenario)&&cell.rep>=1&&cell.rep<=5);
+ assert.equal(retry.firstFailures.filter(f=>f.arm==='wp'&&f.scenario===cell.scenario&&f.rep===cell.rep).length,1);
+ const attempts=retry.replacements.filter(f=>f.arm==='wp'&&f.scenario===cell.scenario&&f.rep===cell.rep);assert.equal(attempts.length,1);assert.notEqual(attempts[0].exitCode,0);
+ assert(fs.existsSync(path.join(results,attempts[0].log)));
+ allowedMissing.add(`${cell.scenario}/wp/${cell.rep}`);
+}
 const refs={main:'79c650c24e4b468e743ebfe6454b3b2bc6650938',before:'b87c553ce76f2055d2ee19de589f5bbc106ff23d',fix:'90f41a8ac8200533cdc96aa31b4b818bf8a75561',wp:'79c650c24e4b468e743ebfe6454b3b2bc6650938'};
 assert.match(process.env.COST_SOURCE_SHA,/^[0-9a-f]{40}$/);refs.cost=process.env.COST_SOURCE_SHA;
 const median=xs=>{if(!xs.length)return null;const a=[...xs].sort((a,b)=>a-b),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2;};
@@ -68,7 +77,11 @@ function validate(rows,complete=true) {
   assert.equal(row.editLatencyMs,median(row.edits.map(e=>e.latencyMs)));
   for(const watches of [row.watchesIdle,row.watchesEdited]){if(watches.count!==null)assert(Number.isInteger(watches.count)&&watches.count>0,'watch count');else assert.equal(process.platform,'darwin','native watch count unavailable on a countable platform');}
  }
- if(complete)for(const scenario of scenarios)for(const arm of arms)for(let rep=1;rep<=5;rep++)assert(seen.has(`${scenario}/${arm}/${rep}`),`missing sample ${scenario}/${arm}/${rep}`);
+ if(complete)for(const scenario of scenarios)for(const arm of arms)for(let rep=1;rep<=5;rep++){
+  const key=`${scenario}/${arm}/${rep}`;
+  if(allowedMissing.has(key)){assert(!seen.has(key),'documented missing reference has a counted sample');continue;}
+  assert(seen.has(key),`missing sample ${key}`);
+ }
  return true;
 }
 const rows=fs.readdirSync(results).filter(n=>/^(wide|modules|symlink)-(cost|before|fix|wp)-[1-5]\.json$/.test(n)).map(n=>JSON.parse(fs.readFileSync(path.join(results,n),'utf8')));
@@ -77,7 +90,7 @@ try{validate(rows,true);}catch(e){complete=false;console.error(e.message);}
 const controls=[];
 if(complete){
  const reject=(name,change)=>{const copy=structuredClone(rows);change(copy);assert.throws(()=>validate(copy,true),undefined,`${name} accepted`);controls.push({name,rejected:true});};
- reject('missing-sample',copy=>copy.pop());reject('wrong-binding',copy=>copy[0].identity.sha256='0'.repeat(64));
+ reject('missing-sample',copy=>copy.splice(copy.findIndex(row=>row.arm==='cost'),1));reject('wrong-binding',copy=>copy[0].identity.sha256='0'.repeat(64));
  reject('stale-edited-output',copy=>copy[0].edits[0].actualHash=expectedHash(copy[0].scenario,copy[0].rep,0));
  reject('missing-edit',copy=>copy[0].edits.pop());reject('duplicate-sample',copy=>copy.push(copy[0]));reject('wrong-source',copy=>copy[0].identity.source='x');
  reject('missing-readiness-probe',copy=>copy[0].probes.pop());reject('stale-probe-output',copy=>copy[0].probeRebuilds.at(-1).actualHash=expectedHash(copy[0].scenario,copy[0].rep,0,[]));
@@ -102,7 +115,7 @@ for(const scenario of scenarios){
   md+=`| ${scenario}, ${label} | ${cells.join(' | ')} | ${deltas.join(' | ')} |\n`;
  }
 }
-const summary={platform,runId:process.env.GITHUB_RUN_ID,complete,sampleCount:rows.length,outputChecks:rows.reduce((n,r)=>n+r.edits.length+r.probeRebuilds.length+1,0),controls,large,data,identities:pins};
+const summary={platform,runId:process.env.GITHUB_RUN_ID,complete,decisionComplete:complete,watchpackComplete:rows.length===60,missingWatchpack:retry?.missingWatchpack||[],failureCounts:retry?.failureCounts||null,failureDetails:retry?.failureDetails||[],sampleCount:rows.length,outputChecks:rows.reduce((n,r)=>n+r.edits.length+r.probeRebuilds.length+1,0),controls,large,data,identities:pins};
 md+=`\nSamples ${rows.length}/60; output checks ${summary.outputChecks}; controls ${controls.length}; threshold flags ${large.length}.\n`;
 fs.writeFileSync(path.join(results,'summary.json'),JSON.stringify(summary,null,2)+'\n');fs.writeFileSync(path.join(results,'summary.md'),md);console.log(md);if(!complete)process.exitCode=2;
 module.exports={validate};
