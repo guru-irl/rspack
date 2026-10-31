@@ -1,7 +1,7 @@
-name: Native watcher PR 59 adversarial cycle 5, holder round
+name: Native watcher PR 59 adversarial cycle 5, scanfuzz repeats
 on:
   push:
-    branches: [bench/pr59-c5-adv3]
+    branches: [bench/pr59-c5-adv4]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/c4b/**']
 permissions:
   contents: read
@@ -15,10 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { unit: c5c-holder-fix, trees: 'fix', cmd: 'c5c.sh fix' }
-          - { unit: c5c-holder-base, trees: 'base', cmd: 'c5c.sh base' }
-          - { unit: c5c-holder-main, trees: 'main', cmd: 'c5c.sh main' }
-          - { unit: c5c-holder-wp, trees: 'head', cmd: 'c5c.sh wp' }
+          - { unit: c5d-fuzz, trees: 'fix base', cmd: 'fuzz-c5.sh' }
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
