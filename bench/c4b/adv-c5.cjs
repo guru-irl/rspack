@@ -109,6 +109,32 @@ async function asyncrec2(name, kind) {
   await step('Y07','c0',()=>t('c0/other/f.txt','f3'));
  });
 }
+// H: an external holder in the same user namespace takes every free watch, then frees them later.
+function startHolder(dir) {
+ const { spawn } = require('node:child_process');
+ for (let i=0;i<4000;i++) fs.mkdirSync(path.join(dir,'h'+i),{recursive:true});
+ const code = "const fs=require('fs'),p=require('path');let n=0,w=[];for(let i=0;i<4000;i++){try{w.push(fs.watch(p.join(process.argv[1],'h'+i)));n++;}catch(e){process.stdout.write('held '+n+' '+e.code+'\\n');break;}}if(n===4000)process.stdout.write('held '+n+' none\\n');process.stdin.on('data',()=>process.exit(0));process.stdin.on('end',()=>process.exit(0));";
+ const child = spawn(process.execPath, ['-e', code, dir], {stdio:['pipe','pipe','inherit']});
+ const ready = new Promise(res => child.stdout.on('data', d => res(String(d).trim())));
+ const stop = () => new Promise(res => { child.on('exit', res); child.stdin.end(); });
+ return { ready, stop, child };
+}
+async function holder(name) {
+ const defs={c0:{files:['c0/other/f.txt'],setup:otherSetup('c0')}};
+ await mc(name,'sep',defs,async({step,t,state,invalidate})=>{
+  await step('H01','c0',()=>t('c0/other/f.txt','f1'));
+  const h=startHolder(path.join(root,name,'holder')); const held=await h.ready; fs.writeSync(2,`HOLDER ${held}\n`);
+  console.log(JSON.stringify({type:'holder',scenario:name,held}));
+  try {
+   await step('H02','c0',()=>{t('c0/other2/g.txt','g'); state.c0.files.push('c0/other2/g.txt'); invalidate();});
+   await step('H03','c0',()=>t('c0/other2/g.txt','g1'));
+  } finally { await h.stop(); fs.writeSync(2,'HOLDER released\n'); }
+  await sleep(500);
+  await step('H04','c0',()=>t('c0/other2/g.txt','g2'));
+  await step('H05','c0',()=>t('c0/other/f.txt','f2'));
+  await step('H06','c0',()=>t('c0/other2/g.txt','g3'));
+ });
+}
 // S: one compiler's new dependency sits in another compiler's nested context folder.
 async function share(name) {
  const defs={c0:{files:['c0/other/f.txt'],setup:otherSetup('c0')},c1:{files:['c1/other/f.txt'],contexts:['c1/ctx'],setup:s=>{otherSetup('c1')(s); ctxSetup('c1')(s);}}};
@@ -164,6 +190,7 @@ const all = {
  'async2-single':()=>asyncrec2('async2-single','single'),
  'async2-multi':()=>asyncrec2('async2-multi','multi'),
  'async2-sep':()=>asyncrec2('async2-sep','sep'),
+ 'holder':()=>holder('holder'),
  'share':()=>share('share'),
  'gen':()=>gen('gen'),
  'busy-r1':()=>busy('busy-r1'),'busy-r2':()=>busy('busy-r2'),'busy-r3':()=>busy('busy-r3'),
