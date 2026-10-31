@@ -148,29 +148,49 @@ async function limitctxroot() {
   await step('K12',()=>t('other/f.txt','f1'),1,'rebuild',12000);
  });
 }
+// c4: notify reports the limit asynchronously while it adds watches for new folders under a recursive watch.
+async function limitasync() {
+ const D=+(process.env.LIMIT_DIRS||40);
+ await session('limitasync',s=>{
+  write(path.join(s,'index.js'),one,true); write(path.join(s,'p/a.txt'),'a',true); write(path.join(s,'other/f.txt'),'f',true);
+  return {files:['p/a.txt','other/f.txt'],missing:['p/m1/m2/x.txt']};
+ },async({source:s,state,step,watching})=>{
+  const t=T(s);
+  await step('A01',()=>t('p/a.txt','a1'),1,'rebuild',12000);
+  await step('A02',()=>{for(let i=0;i<D;i++) fs.mkdirSync(path.join(s,'p/new/i'+i),{recursive:true});},1,'observe',3000);
+  await step('A03',()=>t('p/a.txt','a2'),1,'rebuild',12000);
+  await step('A04',()=>t('p/new/i'+(D-1)+'/y.txt','y'),1,'observe',3000);
+  await step('A05',()=>t('p/m1/m2/x.txt','x'),1,'rebuild',12000);
+  await step('A06',()=>{t('other2/g.txt','g'); state.files=['p/a.txt','other/f.txt','other2/g.txt']; watching.invalidate();},1,'rebuild',12000);
+  await step('A07',()=>t('other2/g.txt','g1'),1,'rebuild',12000);
+  await step('A08',()=>t('other/f.txt','f1'),1,'rebuild',12000);
+ });
+}
 // c4: compilers in one process share the OS watch quota. Compiler c0 has only file dependencies;
 // the others register large contexts.
 async function limitmc(kind) {
- const name='limitmc-'+kind; if (only && !only.has(name)) return;
+ const name=(kind==='sep'?'limitsep-starve':'limitmc-'+kind); if (only && !only.has(name)) return;
  fs.writeSync(2, `SESSION ${name} INIT\n`);
- const D=+(process.env.LIMIT_DIRS||40), N=+(process.env.MC_N||(kind==='starve'?2:4));
+ const D=+(process.env.LIMIT_DIRS||40), N=+(process.env.MC_N||(kind==='even'?4:2));
  const source=path.join(root,name,'src'); fs.mkdirSync(source,{recursive:true});
  const names=[...Array(N).keys()].map(i=>'c'+i);
  const state={};
  for (const n of names) {
   write(path.join(source,n,'index.js'),one,true); write(path.join(source,n,'other/f.txt'),'f',true);
-  const ctx = kind==='starve' ? n!=='c0' : true;
+  const ctx = kind==='even' ? true : n!=='c0';
   if (ctx) for (let i=0;i<D;i++) write(path.join(source,n,'ctx/d'+i+'/x.txt'),'x',true);
   state[n]={contexts:ctx?[n+'/ctx']:[],files:[n+'/other/f.txt']};
  }
- const cfg=n=>({name:n,context:path.join(source,n),mode:'development',target:'node',devtool:false,entry:'./index.js',resolve:{symlinks:false},
+ const cfg=n=>({...(kind==='late'&&n==='c0'?{dependencies:['c1']}:{}),name:n,context:path.join(source,n),mode:'development',target:'node',devtool:false,entry:'./index.js',resolve:{symlinks:false},
   output:{path:path.join(root,name,'out-'+n),filename:'bundle.js',library:{type:'commonjs2'}},experiments:{nativeWatcher:mode==='native'},
   plugins:[c=>c.hooks.done.tap("advDone",()=>{per[n]++;}),c=>c.hooks.thisCompilation.tap('adv',comp=>{for(const p of state[n].contexts) comp.contextDependencies.add(path.join(source,p)); for(const p of state[n].files) comp.fileDependencies.add(path.join(source,p));})]});
  let builds=0, pending; const per=Object.fromEntries(names.map(n=>[n,0])); const errors=[];
- const compiler=rspack(names.map(cfg));
+ const compilers=kind==='sep'?names.map(n=>rspack(cfg(n))):null; const compiler=compilers?null:rspack(names.map(cfg));
  const next=(ms=4000)=>new Promise(res=>{const tm=setTimeout(()=>{pending=undefined;res(false);},ms); pending=()=>{clearTimeout(tm);pending=undefined;res(true);};});
  const first=next(60000);
- const watching=compiler.watch({aggregateTimeout:50,followSymlinks:true},(err,stats)=>{builds++; if(err||stats?.hasErrors()) errors.push(String(err||stats.toString()).slice(0,300)); pending?.();});
+ const onDone=(err,stats)=>{builds++; if(err||stats?.hasErrors()) errors.push(String(err||stats.toString()).slice(0,300)); pending?.();};
+ const ws=compilers?compilers.map(c=>c.watch({aggregateTimeout:50,followSymlinks:true},onDone)):[compiler.watch({aggregateTimeout:50,followSymlinks:true},onDone)];
+ const watching={invalidate:()=>ws.forEach(w=>w.invalidate()),close:cb=>Promise.all(ws.map(w=>new Promise(r=>w.close(()=>r())))).then(()=>cb())};
  async function settled(){let n;const t=Date.now();do{n=builds;await sleep(400);}while(n!==builds&&Date.now()-t<15000);}
  const t=T(source);
  async function step(id,who,change){await settled();const pb={...per};const b0=builds;const e0=errors.length;const raw0=rawWatches();await change();
@@ -190,7 +210,7 @@ async function limitmc(kind) {
   for (const n of names) await step('M07-'+n,n,()=>t(n+'/other/f.txt','f2'));
  } finally { await new Promise(r=>watching.close(()=>r())); }
 }
-const all = { limitpart, limitctxroot, 'limitmc-starve':()=>limitmc('starve'), 'limitmc-even':()=>limitmc('even') };
+const all = { limitpart, limitctxroot, limitasync, 'limitmc-starve':()=>limitmc('starve'), 'limitmc-even':()=>limitmc('even'), 'limitmc-late':()=>limitmc('late'), 'limitsep-starve':()=>limitmc('sep') };
 (async()=>{
  for (const [n,f] of Object.entries(all)) { if (only && !only.has(n)) continue; await f(); }
  console.log(JSON.stringify({type:'summary',label,mode,rows:results.length,passed:results.filter(r=>r.ok).length,failed:results.filter(r=>!r.ok).map(r=>r.scenario+':'+r.id),root}));
