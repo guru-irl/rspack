@@ -26,7 +26,7 @@ catch(error){console.error('WRONG_BINDING_HASH',error);process.exit(93);}
 const watchpackVersion=req('./compiled/watchpack/package.json').version;assert.equal(watchpackVersion,'2.6.3');
 console.log(JSON.stringify({kind:'binding-identity',arm,scenario,rep,identity,watchpackVersion}));
 if(mode==='identity-only')process.exit(0);
-assert(['wide','modules','symlink'].includes(scenario));assert(rep>=1&&rep<=5);
+assert(['wide','modules','symlink'].includes(scenario));assert(rep>=1&&rep<=10);
 const fixture=fs.realpathSync.native(path.join(root,'fixtures',scenario)),spec=JSON.parse(fs.readFileSync(path.join(fixture,'fixture.json'),'utf8'));
 const probeSet=spec.probeSets[rep-1],probes=probeSet.files.map(p=>({...p,absolute:path.join(fixture,p.file)}));
 for(const p of spec.probeSets.flatMap(s=>s.files)) {

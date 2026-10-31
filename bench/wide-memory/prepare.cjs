@@ -49,7 +49,8 @@ for (const scenario of ['wide', 'modules', 'symlink']) {
  }
  const targetKey = scenario === 'modules' ? `./${target}` : './target.js';
  const probeSets = [];
- for(let rep=1;rep<=5;rep++) {
+ const probeSetCount=Number(process.env.BENCH_PROBE_SETS||5);assert(probeSetCount>=5&&probeSetCount<=10);
+ for(let rep=1;rep<=probeSetCount;rep++) {
   const seed = (0x59c0ffee ^ Math.imul(rep,0x9e3779b9)) >>> 0;
   let state=seed;
   const random=()=>{state^=state<<13;state^=state>>>17;state^=state<<5;return state>>>0;};
