@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use std::sync::{Weak, atomic::Ordering};
 use std::{
   sync::{Arc, Mutex, atomic::AtomicBool},
   time::Duration,
@@ -13,6 +15,54 @@ use rspack_paths::{InternedPath, InternedPathMap};
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
+
+#[cfg(target_os = "linux")]
+static CONTEXTS_DISABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static LIVE: Mutex<Vec<Weak<Mutex<DiskWatcher>>>> = Mutex::new(Vec::new());
+#[cfg(target_os = "linux")]
+static SWEEP: Mutex<()> = Mutex::new(());
+
+#[cfg(target_os = "linux")]
+pub(crate) fn register(watcher: &Arc<Mutex<DiskWatcher>>) {
+  let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
+  live.retain(|watcher| watcher.strong_count() > 0);
+  live.push(Arc::downgrade(watcher));
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn unregister(watcher: &Arc<Mutex<DiskWatcher>>) {
+  let watcher = Arc::downgrade(watcher);
+  LIVE
+    .lock()
+    .expect("live disk watchers lock poisoned")
+    .retain(|entry| entry.strong_count() > 0 && !entry.ptr_eq(&watcher));
+}
+
+/// The caller must release every disk watcher, alias and path index guard first.
+#[cfg(target_os = "linux")]
+pub(crate) fn reclaim_and_retry_all() {
+  let _sweep = SWEEP.lock().expect("context reclaim lock poisoned");
+  let watchers: Vec<_> = {
+    let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
+    let watchers = live.iter().filter_map(Weak::upgrade).collect();
+    live.retain(|watcher| watcher.strong_count() > 0);
+    watchers
+  };
+  // Wait for in-flight registrations and finish every release before any retry.
+  for watcher in &watchers {
+    let mut disk = watcher.lock().expect("disk watcher lock poisoned");
+    if disk.inner.is_some() {
+      disk.release_context_only();
+    }
+  }
+  for watcher in &watchers {
+    let mut disk = watcher.lock().expect("disk watcher lock poisoned");
+    if disk.inner.is_some() {
+      disk.retry_missing_analyzer_patterns();
+    }
+  }
+}
 
 #[derive(Default)]
 struct PathAliases {
@@ -33,7 +83,10 @@ pub struct DiskWatcher {
   analyzer_patterns: HashSet<WatchPattern>,
   /// Descendant directories found by the filtered context scan.
   context_paths: HashSet<InternedPath>,
+  #[cfg(not(target_os = "linux"))]
   context_watch_limit_reached: bool,
+  #[cfg(target_os = "linux")]
+  reclaim_requested: bool,
   context_watch_errors: (usize, Option<notify::Error>),
 }
 
@@ -117,7 +170,10 @@ impl DiskWatcher {
       watch_patterns: HashSet::default(),
       analyzer_patterns: HashSet::default(),
       context_paths: HashSet::default(),
+      #[cfg(not(target_os = "linux"))]
       context_watch_limit_reached: false,
+      #[cfg(target_os = "linux")]
+      reclaim_requested: false,
       context_watch_errors: (0, None),
     }
   }
@@ -132,6 +188,10 @@ impl DiskWatcher {
     patterns: impl Iterator<Item = WatchPattern>,
   ) -> rspack_error::Result<()> {
     self.analyzer_patterns = patterns.collect();
+    #[cfg(target_os = "linux")]
+    if CONTEXTS_DISABLED.load(Ordering::Acquire) {
+      self.release_context_only();
+    }
     let new_patterns: HashSet<_> = self
       .analyzer_patterns
       .iter()
@@ -189,15 +249,27 @@ impl DiskWatcher {
         {
           return Err(error);
         }
-        let paths: Vec<_> = self.context_paths.iter().filter(|path| {
-          !self.analyzer_patterns.iter().any(|p| p.path == **path)
-        }).cloned().collect();
-        for path in &paths {
-          self.remove_context_directory(path, false);
+        #[cfg(target_os = "linux")]
+        {
+          let first = !CONTEXTS_DISABLED.swap(true, Ordering::AcqRel);
+          self.reclaim_requested = true;
+          let released = self.release_context_only();
+          if first {
+            eprintln!("Error in file watcher: nested context folders are no longer watched because the OS watch limit was reached; released {released} context watches");
+          }
         }
-        if !self.context_watch_limit_reached {
-          self.context_watch_limit_reached = true;
-          eprintln!("Error in file watcher: nested context folders are no longer watched because the OS watch limit was reached; released {} context watches", paths.len());
+        #[cfg(not(target_os = "linux"))]
+        {
+          let paths: Vec<_> = self.context_paths.iter().filter(|path| {
+            !self.analyzer_patterns.iter().any(|p| p.path == **path)
+          }).cloned().collect();
+          for path in &paths {
+            self.remove_context_directory(path, false);
+          }
+          if !self.context_watch_limit_reached {
+            self.context_watch_limit_reached = true;
+            eprintln!("Error in file watcher: nested context folders are no longer watched because the OS watch limit was reached; released {} context watches", paths.len());
+          }
         }
         self.watch_pattern(&pattern)
       });
@@ -216,6 +288,42 @@ impl DiskWatcher {
 
     self.report_context_watch_errors();
     Ok(())
+  }
+
+  #[cfg(target_os = "linux")]
+  pub(crate) fn take_reclaim_request(&mut self) -> bool {
+    std::mem::take(&mut self.reclaim_requested)
+  }
+
+  #[cfg(target_os = "linux")]
+  fn release_context_only(&mut self) -> usize {
+    let paths: Vec<_> = self
+      .context_paths
+      .iter()
+      .filter(|path| !self.analyzer_patterns.iter().any(|p| p.path == **path))
+      .cloned()
+      .collect();
+    for path in &paths {
+      self.remove_context_directory(path, false);
+    }
+    paths.len()
+  }
+
+  #[cfg(target_os = "linux")]
+  fn retry_missing_analyzer_patterns(&mut self) {
+    let patterns: Vec<_> = self
+      .analyzer_patterns
+      .difference(&self.watch_patterns)
+      .cloned()
+      .collect();
+    for pattern in patterns {
+      if let Err(error) = self.watch_pattern(&pattern) {
+        self.context_watch_failed(&pattern, error);
+      } else {
+        self.watch_patterns.insert(pattern);
+      }
+    }
+    self.report_context_watch_errors();
   }
 
   fn context_watch_failed(&mut self, pattern: &WatchPattern, error: notify::Error) {
@@ -249,9 +357,12 @@ impl DiskWatcher {
     &mut self,
     path: &InternedPath,
   ) -> rspack_error::Result<bool> {
+    #[cfg(target_os = "linux")]
+    let context_watch_limit_reached = CONTEXTS_DISABLED.load(Ordering::Acquire);
+    #[cfg(not(target_os = "linux"))]
+    let context_watch_limit_reached = self.context_watch_limit_reached;
     if self.inner.is_none()
-      || (self.context_watch_limit_reached
-        && !self.analyzer_patterns.iter().any(|p| p.path == *path))
+      || (context_watch_limit_reached && !self.analyzer_patterns.iter().any(|p| p.path == *path))
     {
       return Ok(false);
     }

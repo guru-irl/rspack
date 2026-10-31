@@ -169,6 +169,8 @@ impl FsWatcher {
       options.poll_interval,
       trigger.clone(),
     )));
+    #[cfg(target_os = "linux")]
+    disk_watcher::register(&disk_watcher);
     path_manager.set_context_watcher(Arc::downgrade(&disk_watcher));
     let paused = Arc::new(AtomicBool::new(false));
     let executor = Executor::new(rx, options.aggregate_timeout, Arc::clone(&paused));
@@ -401,6 +403,8 @@ impl FsWatcherInner {
       .lock()
       .expect("disk watcher lock poisoned")
       .close();
+    #[cfg(target_os = "linux")]
+    disk_watcher::unregister(&self.disk_watcher);
     self.scanner.close();
     self.executor.close().await;
     self.trigger.lock().expect("should lock trigger").take();
@@ -440,6 +444,22 @@ impl FsWatcherInner {
     self.record_initial_file_mtimes();
 
     let watch_patterns = self.analyzer.analyze(self.path_manager.access());
+    #[cfg(target_os = "linux")]
+    let watch_result = {
+      let (result, reclaim) = {
+        let mut disk = self
+          .disk_watcher
+          .lock()
+          .expect("disk watcher lock poisoned");
+        let result = disk.watch(watch_patterns.into_iter());
+        (result, disk.take_reclaim_request())
+      };
+      if reclaim {
+        disk_watcher::reclaim_and_retry_all();
+      }
+      result
+    };
+    #[cfg(not(target_os = "linux"))]
     let watch_result = self
       .disk_watcher
       .lock()
