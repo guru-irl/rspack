@@ -1,5 +1,8 @@
 #[cfg(target_os = "linux")]
-use std::sync::{Weak, atomic::Ordering};
+use std::sync::{
+  Weak,
+  atomic::{AtomicUsize, Ordering},
+};
 use std::{
   sync::{Arc, Mutex, atomic::AtomicBool},
   time::Duration,
@@ -22,12 +25,24 @@ static CONTEXTS_DISABLED: AtomicBool = AtomicBool::new(false);
 static LIVE: Mutex<Vec<Weak<Mutex<DiskWatcher>>>> = Mutex::new(Vec::new());
 #[cfg(target_os = "linux")]
 static SWEEP: Mutex<()> = Mutex::new(());
+#[cfg(target_os = "linux")]
+static C4_TRACE_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_os = "linux")]
 pub(crate) fn register(watcher: &Arc<Mutex<DiskWatcher>>) {
   let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
   prune_live_watchers(&mut live);
+  if live.is_empty() {
+    C4_TRACE_GENERATION.fetch_add(1, Ordering::Relaxed);
+  }
   live.push(Arc::downgrade(watcher));
+  eprintln!(
+    "C4_TRACE register gen={} watcher={:p} live={} flag={}",
+    C4_TRACE_GENERATION.load(Ordering::Relaxed),
+    Arc::as_ptr(watcher),
+    live.len(),
+    CONTEXTS_DISABLED.load(Ordering::Acquire)
+  );
 }
 
 #[cfg(target_os = "linux")]
@@ -44,7 +59,12 @@ fn prune_live_watchers(live: &mut Vec<Weak<Mutex<DiskWatcher>>>) {
   if live.is_empty() {
     // A new compiler generation can try nested contexts again. Live peers,
     // including those retained during a sweep, keep sharing the fallback.
+    let previous = CONTEXTS_DISABLED.load(Ordering::Acquire);
     CONTEXTS_DISABLED.store(false, Ordering::Release);
+    eprintln!(
+      "C4_TRACE reset gen={} live=0 previous_flag={previous}",
+      C4_TRACE_GENERATION.load(Ordering::Relaxed)
+    );
   }
 }
 
@@ -58,15 +78,35 @@ pub(crate) fn reclaim_and_retry_all() {
     prune_live_watchers(&mut live);
     watchers
   };
+  eprintln!(
+    "C4_TRACE sweep gen={} live={} flag={}",
+    C4_TRACE_GENERATION.load(Ordering::Relaxed),
+    watchers.len(),
+    CONTEXTS_DISABLED.load(Ordering::Acquire)
+  );
   // Wait for in-flight registrations and finish every release before any retry.
   for watcher in &watchers {
     let mut disk = watcher.lock().expect("disk watcher lock poisoned");
+    eprintln!(
+      "C4_TRACE sweep_release gen={} watcher={:p} disk={:p} open={}",
+      C4_TRACE_GENERATION.load(Ordering::Relaxed),
+      Arc::as_ptr(watcher),
+      &*disk,
+      disk.inner.is_some()
+    );
     if disk.inner.is_some() {
       disk.release_context_only();
     }
   }
   for watcher in &watchers {
     let mut disk = watcher.lock().expect("disk watcher lock poisoned");
+    eprintln!(
+      "C4_TRACE sweep_retry gen={} watcher={:p} disk={:p} open={}",
+      C4_TRACE_GENERATION.load(Ordering::Relaxed),
+      Arc::as_ptr(watcher),
+      &*disk,
+      disk.inner.is_some()
+    );
     if disk.inner.is_some() {
       disk.retry_missing_analyzer_patterns();
     }
@@ -198,7 +238,20 @@ impl DiskWatcher {
   ) -> rspack_error::Result<()> {
     self.analyzer_patterns = patterns.collect();
     #[cfg(target_os = "linux")]
+    eprintln!(
+      "C4_TRACE watch_input gen={} disk={:p} flag={} required={:?}",
+      C4_TRACE_GENERATION.load(Ordering::Relaxed),
+      self,
+      CONTEXTS_DISABLED.load(Ordering::Acquire),
+      self.analyzer_patterns
+    );
+    #[cfg(target_os = "linux")]
     if CONTEXTS_DISABLED.load(Ordering::Acquire) {
+      eprintln!(
+        "C4_TRACE role_reclaim gen={} disk={:p}",
+        C4_TRACE_GENERATION.load(Ordering::Relaxed),
+        self
+      );
       self.release_context_only();
     }
     let new_patterns: HashSet<_> = self
@@ -252,6 +305,12 @@ impl DiskWatcher {
       if self.watch_patterns.contains(&pattern) {
         continue;
       }
+      #[cfg(target_os = "linux")]
+      eprintln!(
+        "C4_TRACE watch_try gen={} disk={:p} pattern={pattern:?}",
+        C4_TRACE_GENERATION.load(Ordering::Relaxed),
+        self
+      );
       let result = self.watch_pattern(&pattern).or_else(|error| {
         if !self.analyzer_patterns.contains(&pattern)
           || !matches!(error.kind, notify::ErrorKind::MaxFilesWatch)
@@ -260,6 +319,7 @@ impl DiskWatcher {
         }
         #[cfg(target_os = "linux")]
         {
+          eprintln!("C4_TRACE limit gen={} disk={:p} pattern={pattern:?} error={error:?}", C4_TRACE_GENERATION.load(Ordering::Relaxed), self);
           let first = !CONTEXTS_DISABLED.swap(true, Ordering::AcqRel);
           self.reclaim_requested = true;
           let released = self.release_context_only();
@@ -282,6 +342,12 @@ impl DiskWatcher {
         }
         self.watch_pattern(&pattern)
       });
+      #[cfg(target_os = "linux")]
+      eprintln!(
+        "C4_TRACE watch_done gen={} disk={:p} pattern={pattern:?} result={result:?}",
+        C4_TRACE_GENERATION.load(Ordering::Relaxed),
+        self
+      );
       if let Err(error) = result {
         if self.analyzer_patterns.contains(&pattern)
           && !matches!(error.kind, notify::ErrorKind::MaxFilesWatch)
@@ -312,8 +378,20 @@ impl DiskWatcher {
       .filter(|path| !self.analyzer_patterns.iter().any(|p| p.path == **path))
       .cloned()
       .collect();
+    eprintln!(
+      "C4_TRACE release gen={} disk={:p} flag={} paths={paths:?}",
+      C4_TRACE_GENERATION.load(Ordering::Relaxed),
+      self,
+      CONTEXTS_DISABLED.load(Ordering::Acquire)
+    );
     for path in &paths {
       self.remove_context_directory(path, false);
+      eprintln!(
+        "C4_TRACE released gen={} disk={:p} path={path:?} still_in_watch_patterns={}",
+        C4_TRACE_GENERATION.load(Ordering::Relaxed),
+        self,
+        self.watch_patterns.iter().any(|p| p.path == *path)
+      );
     }
     paths.len()
   }
@@ -325,8 +403,20 @@ impl DiskWatcher {
       .difference(&self.watch_patterns)
       .cloned()
       .collect();
+    eprintln!(
+      "C4_TRACE retry_set gen={} disk={:p} flag={} patterns={patterns:?}",
+      C4_TRACE_GENERATION.load(Ordering::Relaxed),
+      self,
+      CONTEXTS_DISABLED.load(Ordering::Acquire)
+    );
     for pattern in patterns {
-      if let Err(error) = self.watch_pattern(&pattern) {
+      let result = self.watch_pattern(&pattern);
+      eprintln!(
+        "C4_TRACE retried gen={} disk={:p} pattern={pattern:?} result={result:?}",
+        C4_TRACE_GENERATION.load(Ordering::Relaxed),
+        self
+      );
+      if let Err(error) = result {
         self.context_watch_failed(&pattern, error);
       } else {
         self.watch_patterns.insert(pattern);
