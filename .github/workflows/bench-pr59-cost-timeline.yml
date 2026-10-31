@@ -1,0 +1,137 @@
+name: PR59 paired startup timeline
+on:
+  push:
+    branches: [bench/pr59-xplat-cost-timeline]
+    paths: ['.github/workflows/bench-pr59-cost-timeline.yml', 'bench/cost-timeline/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: pr59-cost-timeline-${{ github.sha }}
+  cancel-in-progress: false
+env:
+  COST_SOURCE_SHA: 1810ebe4ca553451b1f4e6237095a0329da87436
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d}
+          - {platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: cost, ref: 1810ebe4ca553451b1f4e6237095a0329da87436}
+          - {platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d}
+          - {platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: cost, ref: 1810ebe4ca553451b1f4e6237095a0329da87436}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-wide/tmp"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.ref }}
+          path: source
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - name: Repair Rust proxies on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build timeline binding
+        shell: bash
+        env:
+          SOURCE_REF: ${{ matrix.ref }}
+          RUST_TARGET: ${{ matrix.target }}
+          BENCH_INSTRUMENT: '0'
+        run: |
+          set -euo pipefail
+          node bench/cost-timeline/instrument.cjs
+          mkdir -p .bench-wide/artifact
+          git -C source diff > .bench-wide/artifact/instrumentation.patch
+          bash bench/wide-memory/build.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wide-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-wide/artifact/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  diagnose:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: macOS, runner: macos-latest}
+          - {platform: Windows, runner: windows-latest}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-wide/tmp" "$PWD/.bench-wide/results"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
+          path: source
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wide-binding-${{ matrix.platform }}-*
+          run-id: 41106150672
+          github-token: ${{ github.token }}
+          path: .bench-wide/bindings/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wide-binding-${{ matrix.platform }}-*
+          path: .bench-wide/bindings/
+      - name: Record ten alternating native pairs
+        env:
+          BENCH_DIAGNOSTIC: '1'
+          BENCH_PROBE_SETS: '10'
+        run: |
+          set -euo pipefail
+          cp bench/cost-timeline/run.cjs bench/wide-memory/diagnostic.cjs
+          bash bench/wide-memory/measure.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timeline-summary-${{ matrix.platform }}
+          path: |
+            .bench-wide/results/timeline-summary.json
+            .bench-wide/results/timeline-summary.md
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timeline-raw-${{ matrix.platform }}
+          path: .bench-wide/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
