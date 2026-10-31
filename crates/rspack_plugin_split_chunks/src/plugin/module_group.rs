@@ -214,6 +214,16 @@ enum SelectedChunks<'a> {
   Filtered(Vec<ChunkUkey>),
 }
 
+enum PreparedSelectedChunks {
+  All(ChunkCombination),
+  Filtered(Vec<ChunkUkey>),
+}
+
+struct PreparedNamedItem {
+  module_index: usize,
+  selected_chunks: PreparedSelectedChunks,
+}
+
 impl SelectedChunks<'_> {
   fn len(&self) -> usize {
     match self {
@@ -1012,13 +1022,26 @@ impl SplitChunksPlugin {
         }
       }
     }
-    for stage in &mut matches {
-      if stage.as_ref().is_some_and(|groups| {
-        groups
+    for (groups, stage) in stages.iter().zip(&mut matches) {
+      if stage.as_ref().is_some_and(|matches| {
+        matches
           .iter()
           .any(|modules| modules.count_ones(..) == all_modules.len())
       }) {
-        *stage = None;
+        // Keep filtered stages with a hot static name. Their named matches
+        // are accumulated by Rayon folds instead of contending on one map entry.
+        let keep_matches = groups.iter().any(|indexed| {
+          !is_default_module_type_filter(&indexed.cache_group.r#type)
+            || !is_default_module_layer_filter(&indexed.cache_group.layer)
+        }) && stage.as_ref().is_some_and(|matches| {
+          groups.iter().zip(matches).any(|(indexed, modules)| {
+            matches!(&indexed.cache_group.name, ChunkNameGetter::String(_))
+              && modules.count_ones(..) == all_modules.len()
+          })
+        });
+        if !keep_matches {
+          *stage = None;
+        }
       }
     }
     matches
@@ -1084,9 +1107,20 @@ impl SplitChunksPlugin {
     // These filters cannot yield or invoke user callbacks. Run their CPU work
     // on Rayon instead of allocating and joining one Tokio task per module.
     let use_native_preparation = self.can_prepare_native_cache_groups(&cache_groups);
+    // Only filtered stages with a full static name retain full bitmaps.
+    let buffer_named_matches = !all_modules.is_empty()
+      && native_matches.as_ref().is_some_and(|matches| {
+        matches
+          .iter()
+          .any(|modules| modules.count_ones(..) == all_modules.len())
+      });
+    let mut prepared_named_matches = None;
     let process_module = async |module_index: usize,
                                 module_identifier: ModuleIdentifier,
-                                name_sender: Option<mpsc::UnboundedSender<PendingNameRequest>>|
+                                name_sender: Option<mpsc::UnboundedSender<PendingNameRequest>>,
+                                mut named_matches: Option<
+      &mut FxHashMap<u32, Vec<PreparedNamedItem>>,
+    >|
            -> Result<()> {
       let belong_to_chunks = module_chunks
         .get(module_index)
@@ -1306,6 +1340,23 @@ impl SplitChunksPlugin {
             }
           };
 
+          if let Some(named_matches) = named_matches.as_deref_mut()
+            && matches!(&cache_group.name, ChunkNameGetter::String(_))
+          {
+            let selected_chunks = match selected_chunks {
+              SelectedChunks::All(chunks) => PreparedSelectedChunks::All(chunks.clone()),
+              SelectedChunks::Filtered(chunks) => PreparedSelectedChunks::Filtered(chunks),
+            };
+            named_matches
+              .entry(indexed_cache_group.cache_group_index)
+              .or_default()
+              .push(PreparedNamedItem {
+                module_index,
+                selected_chunks,
+              });
+            continue;
+          }
+
           merge_matched_item_into_module_group_map(
             MatchedItem {
               module,
@@ -1327,21 +1378,47 @@ impl SplitChunksPlugin {
       for modules in matches {
         candidates.union_with(modules);
       }
-      candidates
-        .ones()
-        .collect::<Vec<_>>()
-        .par_iter()
-        .try_for_each(|&module_index| {
-          process_module(module_index, all_modules[module_index], None)
+      let candidates = candidates.ones().collect::<Vec<_>>();
+      if buffer_named_matches {
+        let new_map = || -> Result<_> { Ok(FxHashMap::<u32, Vec<PreparedNamedItem>>::default()) };
+        let matches = candidates
+          .par_iter()
+          .fold(new_map, |matches, &module_index| {
+            let mut matches = matches?;
+            process_module(
+              module_index,
+              all_modules[module_index],
+              None,
+              Some(&mut matches),
+            )
+            .now_or_never()
+            .expect("native cache-group preparation should not yield")?;
+            Ok(matches)
+          })
+          .reduce(new_map, |left, right| {
+            let mut left = left?;
+            for (index, mut items) in right? {
+              left
+                .entry(index)
+                .and_modify(|existing| existing.append(&mut items))
+                .or_insert(items);
+            }
+            Ok(left)
+          })?;
+        prepared_named_matches = Some(matches);
+      } else {
+        candidates.par_iter().try_for_each(|&module_index| {
+          process_module(module_index, all_modules[module_index], None, None)
             .now_or_never()
             .expect("native cache-group preparation should not yield")
         })?;
+      }
     } else if use_native_preparation {
       all_modules
         .par_iter()
         .enumerate()
         .try_for_each(|(module_index, module_identifier)| {
-          process_module(module_index, *module_identifier, None)
+          process_module(module_index, *module_identifier, None, None)
             .now_or_never()
             .expect("native cache-group preparation should not yield")
         })?;
@@ -1378,7 +1455,7 @@ impl SplitChunksPlugin {
             };
             s.spawn(
               |(process_module, module_index, module_identifier, name_sender)| async move {
-                process_module(module_index, module_identifier, name_sender).await
+                process_module(module_index, module_identifier, name_sender, None).await
               },
             );
           });
@@ -1390,6 +1467,43 @@ impl SplitChunksPlugin {
       .collect::<Result<Vec<_>>>()?;
       for result in module_group_results {
         result?;
+      }
+    }
+
+    if let Some(prepared_named_matches) = prepared_named_matches {
+      let mut matches = prepared_named_matches.into_iter().collect::<Vec<_>>();
+      matches.sort_unstable_by_key(|(index, _)| *index);
+      for (cache_group_index, mut items) in matches {
+        let cache_group = &self.cache_groups[cache_group_index as usize];
+        let ChunkNameGetter::String(name) = &cache_group.name else {
+          unreachable!("prepared named matches should have a static name");
+        };
+        let mut module_group = module_group_map
+          .entry(ModuleGroupKey::Named {
+            cache_group_index,
+            chunk_name: name.clone(),
+          })
+          .or_insert_with(|| ModuleGroup::new(Some(name.clone()), cache_group_index, cache_group));
+        // A module is processed by one fold. Stable sorting keeps its original
+        // combination order regardless of how Rayon partitions or reduces maps.
+        items.sort_by_key(|item| item.module_index);
+        for mut item in items {
+          let module = module_graph
+            .module_by_identifier(&all_modules[item.module_index])
+            .expect("should have module");
+          let selected_chunks = match &mut item.selected_chunks {
+            PreparedSelectedChunks::All(chunks) => SelectedChunks::All(chunks),
+            PreparedSelectedChunks::Filtered(chunks) => {
+              SelectedChunks::Filtered(std::mem::take(chunks))
+            }
+          };
+          merge_matched_item_into_module_group(
+            module.as_ref(),
+            selected_chunks,
+            true,
+            &mut module_group,
+          );
+        }
       }
     }
 
