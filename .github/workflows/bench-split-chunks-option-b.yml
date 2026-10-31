@@ -1,7 +1,7 @@
-name: Native watcher c3 cross-platform verification
+name: Native watcher c3 fix cross-platform verification
 on:
   push:
-    branches: [bench/pr59-c3-xplat]
+    branches: [bench/pr59-c3fix-xplat]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/alias-xplat/**']
 permissions:
   contents: read
@@ -15,9 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: macOS, runner: macos-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, tree: cd0558dab30380f26e030f652954edb832b0f884 }
-          - { platform: Windows, runner: windows-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, tree: cd0558dab30380f26e030f652954edb832b0f884 }
-          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, tree: cd0558dab30380f26e030f652954edb832b0f884 }
+          - { platform: macOS, runner: macos-latest, arm: head, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: Windows, runner: windows-latest, arm: head, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
           - { platform: macOS, runner: macos-latest, arm: base, sha: 90f41a8ac8200533cdc96aa31b4b818bf8a75561, tree: 51f2676af734fbbbd3c17df49222e9c59ca65e7c }
           - { platform: Windows, runner: windows-latest, arm: base, sha: 90f41a8ac8200533cdc96aa31b4b818bf8a75561, tree: 51f2676af734fbbbd3c17df49222e9c59ca65e7c }
           - { platform: macOS, runner: macos-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, tree: 11587ee715e5c9122ae9b1a440dad97ff3489bcc }
