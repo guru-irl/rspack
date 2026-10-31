@@ -1,13 +1,13 @@
-name: Native watcher c3 cross-platform verification
+name: Native watcher c3 cross-platform verification, round 2
 on:
   push:
-    branches: [bench/pr59-c3-xplat]
+    branches: [bench/pr59-c3-xplat2]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/alias-xplat/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: native-watcher-c3-${{ github.sha }}
+  group: native-watcher-c3-2-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   verify:
@@ -15,19 +15,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: macOS, runner: macos-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, tree: cd0558dab30380f26e030f652954edb832b0f884 }
-          - { platform: Windows, runner: windows-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, tree: cd0558dab30380f26e030f652954edb832b0f884 }
-          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, tree: cd0558dab30380f26e030f652954edb832b0f884 }
-          - { platform: macOS, runner: macos-latest, arm: base, sha: 90f41a8ac8200533cdc96aa31b4b818bf8a75561, tree: 51f2676af734fbbbd3c17df49222e9c59ca65e7c }
-          - { platform: Windows, runner: windows-latest, arm: base, sha: 90f41a8ac8200533cdc96aa31b4b818bf8a75561, tree: 51f2676af734fbbbd3c17df49222e9c59ca65e7c }
-          - { platform: macOS, runner: macos-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, tree: 11587ee715e5c9122ae9b1a440dad97ff3489bcc }
-          - { platform: Windows, runner: windows-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, tree: 11587ee715e5c9122ae9b1a440dad97ff3489bcc }
+          - { platform: macOS, runner: macos-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, binding: 34a9f11bea8537c800d7186ae35bf929609707e5ab1b76afb703478fd323a5c0 }
+          - { platform: macOS, runner: macos-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, binding: a6d5dada3b620e60b699daa6ff12a20380872d4d9dbb05501dccb4b37b36eb27 }
+          - { platform: Windows, runner: windows-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, binding: bf1b43398c4871400f77b777adf9b1c0b59d63be83edce8fa6d84ac017e61d94 }
+          - { platform: Windows, runner: windows-latest, arm: main, sha: 79c650c24e4b468e743ebfe6454b3b2bc6650938, binding: 8fd99b58b2eddf181dfc2dd10c660f0c72bc96a1a34ca275acb65bbfe54197ed }
+          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 6433cb8ccfef1ab755d0510a089446be417fae67, binding: 844f065c3adf1c138bb7840cc598afba18359c51a90ff2b69eb5474e2e033421 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    env:
-      CARGO_PROFILE_DEV_DEBUG: 0
-      CARGO_INCREMENTAL: 0
-      CARGO_BUILD_JOBS: 3
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -48,66 +42,43 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C head rev-parse HEAD)" = ${{ matrix.sha }}
-          test "$(git -C head rev-parse HEAD^{tree})" = ${{ matrix.tree }}
           git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - name: Repair Rust proxies on macOS
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Install Rust
-        run: rustup toolchain install nightly-2026-04-16 --profile minimal
-      - name: Install dependencies
-        working-directory: head
-        run: pnpm install --frozen-lockfile
-      - name: Build development binding
-        working-directory: head
-        run: pnpm run build:binding:dev
-      - name: Build JavaScript
-        working-directory: head
-        run: pnpm run build:js
-      - uses: actions/upload-artifact@v4
+      - name: Reuse the binding built in run 41170523541
+        uses: actions/download-artifact@v4
         with:
           name: c3-binding-${{ matrix.platform }}-${{ matrix.arm }}
-          path: head/crates/node_binding/*.node
-          if-no-files-found: error
-      - name: Pin the binding
+          run-id: 41170523541
+          github-token: ${{ github.token }}
+          path: head/crates/node_binding
+      - name: Install dependencies and build JavaScript
+        working-directory: head
+        run: pnpm install --frozen-lockfile && pnpm run build:js
+      - name: Pin and check the reused binding
         run: |
           set -euo pipefail
           PIN="$(find "$PWD/head/crates/node_binding" -name '*.node' -type f)"
-          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"); const p=fs.realpathSync.native(process.argv[1]),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:p,sha256:h}));' "$PIN" | tee .bench-alias/results/binding.json
-      - name: Compare alias steps with Watchpack
-        if: matrix.arm == 'head'
-        run: |
-          set -euo pipefail
-          node bench/alias-xplat/reference.cjs head head .bench-alias/results/head.jsonl
-          node bench/alias-xplat/reference.cjs head wp .bench-alias/results/wp.jsonl
-          node bench/alias-xplat/audit-reference.cjs .bench-alias/results --controls --require-parity=head | tee .bench-alias/results/audit.log
-      - name: Run the c3 steps on the native watcher and on Watchpack
+          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.realpathSync.native(process.argv[1]),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); assert.equal(h,process.argv[2]); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:p,sha256:h,producer:41170523541}));' "$PIN" ${{ matrix.binding }} | tee .bench-alias/results/binding.json
+      - name: Run the round 2 steps on the native watcher and on Watchpack
         run: |
           set -uo pipefail
-          rc=0
-          node bench/alias-xplat/c3-steps.cjs head ${{ matrix.arm }} .bench-alias/results/c3-${{ matrix.arm }}.jsonl > .bench-alias/results/c3-${{ matrix.arm }}.log 2>&1 || rc=$?
-          echo "native rc=$rc"
-          rc=0
-          node bench/alias-xplat/c3-steps.cjs head wp .bench-alias/results/c3-wp.jsonl > .bench-alias/results/c3-wp.log 2>&1 || rc=$?
-          echo "wp rc=$rc"
-          node bench/alias-xplat/c3-compare.cjs .bench-alias/results/c3-${{ matrix.arm }}.jsonl .bench-alias/results/c3-wp.jsonl | tee .bench-alias/results/c3-compare.log
-      - name: Run native watcher compiler cases with worker binding proof
-        if: matrix.arm == 'head'
-        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates compiler
-      - name: Check the source stayed unchanged
-        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
+          R=.bench-alias/results
+          run() {
+            local tag=$1; shift
+            rc=0; env "$@" node bench/alias-xplat/c3-steps.cjs head ${{ matrix.arm }} $R/$tag-${{ matrix.arm }}.jsonl > $R/$tag-${{ matrix.arm }}.log 2>&1 || rc=$?; echo "$tag native rc=$rc"
+            rc=0; env "$@" node bench/alias-xplat/c3-steps.cjs head wp $R/$tag-wp.jsonl > $R/$tag-wp.log 2>&1 || rc=$?; echo "$tag wp rc=$rc"
+            node bench/alias-xplat/c3-compare.cjs $R/$tag-${{ matrix.arm }}.jsonl $R/$tag-wp.jsonl | tee $R/$tag-compare.log
+          }
+          run r2 C3_ONLY=rootlink
+          if [[ "$RUNNER_OS" == Windows ]]; then run r2dir C3_ONLY=chain,retarget,rootlink,rootcycle C3_LINKTYPE=dir; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: c3-${{ matrix.platform }}-${{ matrix.arm }}
+          name: c3r2-${{ matrix.platform }}-${{ matrix.arm }}
           path: .bench-alias/results/
           include-hidden-files: true
           if-no-files-found: error

@@ -48,7 +48,7 @@ function write(root, file, content, initial = false) {
 function link(root, target, at) {
   const dest = path.join(root, at);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  if (win) fs.symlinkSync(path.join(root, target), dest, 'junction');
+  if (win) fs.symlinkSync(path.join(root, target), dest, process.env.C3_LINKTYPE || 'junction');
   else fs.symlinkSync(path.relative(path.dirname(dest), path.join(root, target)), dest);
 }
 const ctxIndex = dir => `const c = require.context(${JSON.stringify(dir)}, true, /\\.js$/); module.exports = c.keys().sort().map(k => [k, c(k)]);`;
@@ -219,6 +219,24 @@ const scenarios = {
       await step('rc-relink', () => link(root, 'ext/t', 'ctx/l'));
       await step('rc-edit-ext', () => W(root, 'ext/t/x.js', 7));
       await step('rc-edit-after', () => W(root, 'ctx/c.js', 8));
+    }
+  }),
+  // The context root itself is a link; delete and recreate its target.
+  rootlink: () => scenario('rootlink', {
+    setup: root => {
+      write(root, 'index.js', ctxIndex('./lctx'), true);
+      write(root, 'realctx/a.js', 'module.exports = 1;', true);
+      write(root, 'realctx/sub/b.js', 'module.exports = 2;', true);
+      link(root, 'realctx', 'lctx');
+    },
+    run: async ({ root, step }) => {
+      await step('rl-edit', () => W(root, 'realctx/a.js', 3));
+      await step('rl-new-deep', () => W(root, 'realctx/d/e/n.js', 4));
+      await step('rl-delete-target', () => fs.rmSync(path.join(root, 'realctx'), { recursive: true, force: true }));
+      await step('rl-recreate-target', () => W(root, 'realctx/c.js', 5));
+      await step('rl-new-sub', () => W(root, 'realctx/sub2/d.js', 6));
+      await step('rl-edit-after', () => W(root, 'realctx/c.js', 7));
+      await step('rl-edit-via-link', () => W(root, 'lctx/c.js', 8));
     }
   }),
   // Retarget a link from one directory to another.
