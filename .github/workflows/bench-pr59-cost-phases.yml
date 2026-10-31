@@ -1,0 +1,125 @@
+name: PR59 remaining watcher cost phases
+on:
+  push:
+    branches: [bench/pr59-xplat-cost]
+    paths: ['.github/workflows/bench-pr59-cost-phases.yml', 'bench/cost-phases/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: pr59-cost-phases-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: macOS, runner: macos-latest, target: aarch64-apple-darwin, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: before, ref: b87c553ce76f2055d2ee19de589f5bbc106ff23d }
+          - { platform: Windows, runner: windows-latest, target: x86_64-pc-windows-msvc, arm: fix, ref: 90f41a8ac8200533cdc96aa31b4b818bf8a75561 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 220
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-wide/tmp"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.ref }}
+          path: source
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - name: Repair Rust proxies on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build temporary diagnostic binding
+        shell: bash
+        env:
+          SOURCE_REF: ${{ matrix.ref }}
+          RUST_TARGET: ${{ matrix.target }}
+          BENCH_INSTRUMENT: '0'
+        run: |
+          set -euo pipefail
+          node bench/cost-phases/instrument.cjs
+          mkdir -p .bench-wide/artifact
+          git -C source diff > .bench-wide/artifact/instrumentation.patch
+          bash bench/wide-memory/build.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wide-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-wide/artifact/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  diagnose:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macOS, runner: macos-latest }
+          - { platform: Windows, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-wide/tmp" "$PWD/.bench-wide/results"
+          P="$PWD/.bench-wide/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
+          path: source
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wide-binding-${{ matrix.platform }}-*
+          path: .bench-wide/bindings/
+      - uses: actions/download-artifact@v4
+        with:
+          name: wide-binding-${{ matrix.platform }}-main
+          run-id: 41106150672
+          github-token: ${{ github.token }}
+          path: .bench-wide/bindings/wide-binding-${{ matrix.platform }}-main/
+      - name: Diagnose registration, canonicalization and alias retention
+        env:
+          BENCH_DIAGNOSTIC: '1'
+        run: |
+          set -euo pipefail
+          cp bench/cost-phases/diagnostic.cjs bench/wide-memory/diagnostic.cjs
+          bash bench/wide-memory/measure.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cost-phases-${{ matrix.platform }}
+          path: .bench-wide/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
