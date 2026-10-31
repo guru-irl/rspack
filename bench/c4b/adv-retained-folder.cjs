@@ -11,7 +11,11 @@ assert(process.env.NAPI_RS_NATIVE_LIBRARY_PATH, 'binding pin missing');
 const only = onlyArg ? new Set(onlyArg.split(',')) : null;
 const { rspack } = require(repo + '/packages/rspack/dist/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const root = fs.mkdtempSync(process.env.ADV_BASE + '/' + label + '-');
+const root = process.env.C4_RETAINED_ROOT || fs.mkdtempSync(process.env.ADV_BASE + '/' + label + '-');
+if (process.env.C4_RETAINED_ROOT) {
+ assert(root.startsWith(process.env.ADV_BASE + '/'), 'seeded fixture must stay under ADV_BASE');
+ fs.mkdirSync(root);
+}
 const results = [];
 let bindingChecked = false;
 function identity() {

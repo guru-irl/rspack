@@ -1,41 +1,23 @@
-name: Native watcher c4 fix generation-reset limit and replay checks
+name: Native watcher retained-folder timing diagnostics
 on:
   push:
-    branches: [bench/pr59-c4fix-r2-limits]
+    branches: [bench/pr59-c4fix-retained-timing]
     paths: ['.github/workflows/bench-split-chunks-option-b.yml', 'bench/c4b/**']
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: native-watcher-c4fix-\${{ github.sha }}
+  group: native-watcher-retained-timing-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   run:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { unit: lim30real-fix, trees: 'fix', cmd: 'limits.sh fix lim30real' }
-          - { unit: lim30real-head, trees: 'head', cmd: 'limits.sh head lim30real' }
-          - { unit: lim30real-main, trees: 'main', cmd: 'limits.sh main lim30real' }
-          - { unit: lim30real-wp, trees: 'head', cmd: 'limits.sh wp lim30real' }
-          - { unit: lim30link-fix, trees: 'fix', cmd: 'limits.sh fix lim30link' }
-          - { unit: lim30link-head, trees: 'head', cmd: 'limits.sh head lim30link' }
-          - { unit: lim30link-main, trees: 'main', cmd: 'limits.sh main lim30link' }
-          - { unit: lim30link-wp, trees: 'head', cmd: 'limits.sh wp lim30link' }
-          - { unit: lim300-fix, trees: 'fix', cmd: 'limits.sh fix lim300' }
-          - { unit: lim300-head, trees: 'head', cmd: 'limits.sh head lim300' }
-          - { unit: lim300-main, trees: 'main', cmd: 'limits.sh main lim300' }
-          - { unit: lim300-wp, trees: 'head', cmd: 'limits.sh wp lim300' }
-          - { unit: unlimited-fix, trees: 'fix', cmd: 'limits.sh fix unlimited' }
-          - { unit: unlimited-head, trees: 'head', cmd: 'limits.sh head unlimited' }
-          - { unit: unlimited-main, trees: 'main', cmd: 'limits.sh main unlimited' }
-          - { unit: unlimited-wp, trees: 'head', cmd: 'limits.sh wp unlimited' }
-          - { unit: retained, trees: 'fix head main', cmd: 'retained.sh' }
-          - { unit: replay-real, trees: 'fix head', cmd: 'replay.sh real' }
-          - { unit: replay-link, trees: 'fix head', cmd: 'replay.sh link' }
+        seed: [1, 2, 3, 4, 5]
+        root: [real, link]
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
     defaults:
@@ -44,17 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        if: contains(matrix.trees, 'fix')
         with:
           ref: 124beab203d064b899d86b652d8b76b7ea12576a
           path: t-fix
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        if: contains(matrix.trees, 'head')
         with:
           ref: 360667e8f049fdea70d03e357e0018aa62553d23
           path: t-head
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        if: contains(matrix.trees, 'main')
         with:
           ref: 79c650c24e4b468e743ebfe6454b3b2bc6650938
           path: t-main
@@ -63,42 +42,33 @@ jobs:
           set -euo pipefail
           mkdir -p .c4b/results
           check() { test "$(git -C t-$1 rev-parse HEAD)" = $2; test "$(git -C t-$1 rev-parse HEAD^{tree})" = $3; git -C t-$1 show -s --format="$1 %H %T %s" | tee -a .c4b/results/source.txt; }
-          for t in ${{ matrix.trees }}; do
-            case $t in
-              fix) check fix 124beab203d064b899d86b652d8b76b7ea12576a 5420f948b72ceb83eccdf454d589470c37ae5440;;
-              head) check head 360667e8f049fdea70d03e357e0018aa62553d23 3bafe42e2eae81274f30802126a499ecbb60da4a;;
-              main) check main 79c650c24e4b468e743ebfe6454b3b2bc6650938 11587ee715e5c9122ae9b1a440dad97ff3489bcc;;
-            esac
-          done
+          check fix 124beab203d064b899d86b652d8b76b7ea12576a 5420f948b72ceb83eccdf454d589470c37ae5440
+          check head 360667e8f049fdea70d03e357e0018aa62553d23 3bafe42e2eae81274f30802126a499ecbb60da4a
+          check main 79c650c24e4b468e743ebfe6454b3b2bc6650938 11587ee715e5c9122ae9b1a440dad97ff3489bcc
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Wait for the main binding run and read its logged SHA-256
-        if: contains(matrix.trees, 'main')
+      - name: Verify main producer and its logged SHA-256
         run: |
           set -euo pipefail
-          for i in $(seq 1 60); do s=$(gh run view 41202980589 -R ${{ github.repository }} --json status -q .status); [ "$s" = completed ] && break; sleep 60; done
           test "$(gh run view 41202980589 -R ${{ github.repository }} --json conclusion -q .conclusion)" = success
           H=$(gh run view 41202980589 -R ${{ github.repository }} --log | grep -oE "[0-9a-f]{64}  crates/node_binding/[^ ]+[.]node" | head -1 | cut -c1-64)
           test ${#H} = 64
           echo "MAIN_BINDING_SHA256=$H" | tee -a "$GITHUB_ENV" .c4b/results/main-producer-sha.txt
       - uses: actions/download-artifact@v4
-        if: contains(matrix.trees, 'fix')
         with:
           name: c4fix-binding-Linux-head
           run-id: 41212550652
           github-token: ${{ github.token }}
           path: t-fix/crates/node_binding
       - uses: actions/download-artifact@v4
-        if: contains(matrix.trees, 'head')
         with:
           name: c4fix-binding-Linux-base
           run-id: 41212550652
           github-token: ${{ github.token }}
           path: t-head/crates/node_binding
       - uses: actions/download-artifact@v4
-        if: contains(matrix.trees, 'main')
         with:
           name: c4b-binding-Linux-main
           run-id: 41202980589
@@ -107,36 +77,52 @@ jobs:
       - name: Install dependencies and build JavaScript
         run: |
           set -euo pipefail
-          for t in ${{ matrix.trees }}; do (cd t-$t && pnpm install --frozen-lockfile && pnpm run build:js); done
+          for t in fix head main; do (cd t-$t && pnpm install --frozen-lockfile && pnpm run build:js); done
           sha256sum t-*/crates/node_binding/*.node | tee -a .c4b/results/bindings.txt
       - name: Allow private user namespaces on this throwaway runner
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Run
-        run: bash bench/c4b/${{ matrix.cmd }} 2>&1 | tee .c4b/results/run.log
-      - name: Run unlimited c3 sessions on link roots
-        if: startsWith(matrix.unit, 'unlimited-')
+      - name: Repeat matched retained-folder inputs
+        env:
+          SEED: ${{ matrix.seed }}
+          ROOT_KIND: ${{ matrix.root }}
         run: |
           set -euo pipefail
-          ARM="${{ matrix.trees }}"
-          if [[ "${{ matrix.unit }}" == unlimited-wp ]]; then ARM=wp; fi
-          bash bench/c4b/arm.sh "$ARM" adv-c3.cjs unlimited link limit,limitrec,limitretry,limitdrop,limitdrop2-ctx,limitdrop2-file
-      - name: Run retained folders at 300
-        if: matrix.unit == 'retained'
+          export NSLIMIT=30 LIMIT_DIRS=40 PREFIX="$GITHUB_WORKSPACE/bench/c4b/nslimit.sh"
+          mkdir -p "$GITHUB_WORKSPACE/.c4b/real"
+          ln -sfn "$GITHUB_WORKSPACE/.c4b/real" "$GITHUB_WORKSPACE/.c4b/link"
+          case "$SEED" in
+            1) ARMS='fix head main';;
+            2) ARMS='head main fix';;
+            3) ARMS='main fix head';;
+            4) ARMS='fix main head';;
+            5) ARMS='main head fix';;
+          esac
+          for LIMIT_FILLERS in 21 20; do
+            export LIMIT_FILLERS
+            export C4_RETAINED_ROOT="$GITHUB_WORKSPACE/.c4b/$ROOT_KIND/retained-seed-$SEED-fill-$LIMIT_FILLERS"
+            PHYSICAL="$GITHUB_WORKSPACE/.c4b/real/retained-seed-$SEED-fill-$LIMIT_FILLERS"
+            for arm in $ARMS; do
+              test ! -e "$PHYSICAL"
+              printf '%s\t%s\t%s\t%s\t%s\n' "$SEED" "$ROOT_KIND" "$LIMIT_FILLERS" "$arm" "$C4_RETAINED_ROOT" | tee -a .c4b/results/inputs.tsv
+              bash bench/c4b/arm.sh "$arm" adv-retained-folder.cjs "seed$SEED-f$LIMIT_FILLERS" "$ROOT_KIND" limitretain
+              test -d "$PHYSICAL"
+              mv -- "$PHYSICAL" "$PHYSICAL.completed-$arm"
+            done
+          done
+      - name: Check source identity after the cases
+        if: always()
         run: |
           set -euo pipefail
-          export NSLIMIT=300 PREFIX="$GITHUB_WORKSPACE/bench/c4b/nslimit.sh"
-          unset LIMIT_FILLERS
-          bash bench/c4b/arm.sh fix adv-retained-folder.cjs lim300-retained real limitretain
-          LIMIT_FILLERS=$(grep '"type":"fill-meta"' .c4b/results/lim300-retained-real-fix.jsonl | sed -E 's/.*"fillers":([0-9]+).*/\1/')
-          export LIMIT_FILLERS
-          for arm in head main wp; do bash bench/c4b/arm.sh "$arm" adv-retained-folder.cjs lim300-retained real limitretain; done
+          test "$(git -C t-fix rev-parse HEAD) $(git -C t-fix rev-parse HEAD^{tree})" = '124beab203d064b899d86b652d8b76b7ea12576a 5420f948b72ceb83eccdf454d589470c37ae5440'
+          test "$(git -C t-head rev-parse HEAD) $(git -C t-head rev-parse HEAD^{tree})" = '360667e8f049fdea70d03e357e0018aa62553d23 3bafe42e2eae81274f30802126a499ecbb60da4a'
+          test "$(git -C t-main rev-parse HEAD) $(git -C t-main rev-parse HEAD^{tree})" = '79c650c24e4b468e743ebfe6454b3b2bc6650938 11587ee715e5c9122ae9b1a440dad97ff3489bcc'
       - name: Check for leftover processes
         if: always()
         run: ps -eo pid,etimes,args | grep -E 'node .*bench/c4b' | grep -v grep | tee .c4b/results/leftover.txt || echo none
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: c4fix-${{ matrix.unit }}
+          name: c4fix-retained-seed${{ matrix.seed }}-${{ matrix.root }}
           path: .c4b/results/
           if-no-files-found: error
           retention-days: 14
