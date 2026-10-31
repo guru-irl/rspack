@@ -11,7 +11,8 @@ TREE=$W/t-$T
 N=$(realpath "$(ls "$TREE"/crates/node_binding/*.node)")
 H=$(sha256sum "$N" | cut -d' ' -f1)
 case $T in
-  fix) E=7e1270efda52f9006efb7cb1bdc54f54e43454f7283001236b89ffc0db265974;;
+  fix) E=3f06ab2fa4dca23c61af09dbf94504b1d3f683c885c8c051d47063bb3a812f9c;;
+  base) E=39f24209df40c9a8f33d5f1d575598e82033733677d95e0ac81eb6b1553387b7;;
   head) E=844f065c3adf1c138bb7840cc598afba18359c51a90ff2b69eb5474e2e033421;;
   main) E=$MAIN_BINDING_SHA256;;
 esac
