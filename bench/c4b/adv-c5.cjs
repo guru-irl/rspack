@@ -49,7 +49,7 @@ async function mc(name, kind, defs, run) {
  async function stopSep(n) { const l=live[n]; delete live[n]; await new Promise(r=>l.watching.close(()=>r())); await new Promise(r=>l.compiler.close(()=>r())); }
  const first=next(60000);
  if (kind==='multi'||kind==='late') { const c=rspack(Object.keys(defs).map(n=>cfg(n))); multi={compiler:c, watching:c.watch({aggregateTimeout:50,followSymlinks:true},onDone)}; }
- else for (const n of Object.keys(defs)) startSep(n);
+ else for (const n of Object.keys(defs)) if (!defs[n].lazy) startSep(n);
  const invalidate=(names)=>{ if (multi) multi.watching.invalidate(); else for (const n of (names||Object.keys(live))) live[n]?.watching.invalidate(); };
  async function settled(){let n;const t=Date.now();do{n=builds;await sleep(400);}while(n!==builds&&Date.now()-t<15000);}
  const t=(p,v)=>write(path.join(source,p),v);
@@ -135,6 +135,27 @@ async function holder(name) {
   await step('H06','c0',()=>t('c0/other2/g.txt','g3'));
  });
 }
+// C: a peer closes, and a new compiler starts, while c0 hits the limit. CLOSE_DELAY ms after c0's
+// invalidation, c1 (whose nested contexts hold the quota) closes and c2 starts.
+async function closing(name) {
+ const delay=+(process.env.CLOSE_DELAY||0);
+ const defs={
+  c0:{files:['c0/other/f.txt'],setup:otherSetup('c0')},
+  c1:{files:['c1/other/f.txt'],contexts:['c1/ctx'],setup:s=>{otherSetup('c1')(s); ctxSetup('c1')(s);}},
+  c2:{lazy:true,files:['c2/other/f.txt'],contexts:['c2/ctx'],setup:s=>{otherSetup('c2')(s); ctxSetup('c2')(s);}},
+ };
+ await mc(name,'sep',defs,async({step,t,state,invalidate,startSep,stopSep})=>{
+  await step('C01','c0',()=>t('c0/other/f.txt','f1'));
+  let closed;
+  await step('C02',['c0','c2'],async()=>{t('c0/other2/g.txt','g'); state.c0.files.push('c0/other2/g.txt'); invalidate(['c0']); if (delay) await sleep(delay); closed=stopSep('c1'); startSep('c2');});
+  await closed; console.log(JSON.stringify({type:'closed',scenario:name,delay}));
+  await step('C03','c0',()=>t('c0/other2/g.txt','g1'));
+  await step('C04','c2',()=>t('c2/other/f.txt','f1'));
+  await step('C05','c2',()=>{t('c2/other2/g.txt','g'); state.c2.files.push('c2/other2/g.txt'); invalidate(['c2']);});
+  await step('C06','c2',()=>t('c2/other2/g.txt','g1'));
+  await step('C07','c0',()=>t('c0/other2/g.txt','g2'));
+ });
+}
 // S: one compiler's new dependency sits in another compiler's nested context folder.
 async function share(name) {
  const defs={c0:{files:['c0/other/f.txt'],setup:otherSetup('c0')},c1:{files:['c1/other/f.txt'],contexts:['c1/ctx'],setup:s=>{otherSetup('c1')(s); ctxSetup('c1')(s);}}};
@@ -191,6 +212,7 @@ const all = {
  'async2-multi':()=>asyncrec2('async2-multi','multi'),
  'async2-sep':()=>asyncrec2('async2-sep','sep'),
  'holder':()=>holder('holder'),
+ 'closing':()=>closing('closing'),
  'share':()=>share('share'),
  'gen':()=>gen('gen'),
  'busy-r1':()=>busy('busy-r1'),'busy-r2':()=>busy('busy-r2'),'busy-r3':()=>busy('busy-r3'),
