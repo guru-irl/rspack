@@ -33,6 +33,7 @@ pub struct DiskWatcher {
   analyzer_patterns: HashSet<WatchPattern>,
   /// Descendant directories found by the filtered context scan.
   context_paths: HashSet<InternedPath>,
+  context_watch_limit_reached: bool,
   context_watch_errors: (usize, Option<notify::Error>),
 }
 
@@ -116,6 +117,7 @@ impl DiskWatcher {
       watch_patterns: HashSet::default(),
       analyzer_patterns: HashSet::default(),
       context_paths: HashSet::default(),
+      context_watch_limit_reached: false,
       context_watch_errors: (0, None),
     }
   }
@@ -181,7 +183,25 @@ impl DiskWatcher {
       if self.watch_patterns.contains(&pattern) {
         continue;
       }
-      if let Err(error) = self.watch_pattern(&pattern) {
+      let result = self.watch_pattern(&pattern).or_else(|error| {
+        if !self.analyzer_patterns.contains(&pattern)
+          || !matches!(error.kind, notify::ErrorKind::MaxFilesWatch)
+        {
+          return Err(error);
+        }
+        let paths: Vec<_> = self.context_paths.iter().filter(|path| {
+          !self.analyzer_patterns.iter().any(|p| p.path == **path)
+        }).cloned().collect();
+        for path in &paths {
+          self.remove_context_directory(path, false);
+        }
+        if !self.context_watch_limit_reached {
+          self.context_watch_limit_reached = true;
+          eprintln!("Error in file watcher: nested context folders are no longer watched because the OS watch limit was reached; released {} context watches", paths.len());
+        }
+        self.watch_pattern(&pattern)
+      });
+      if let Err(error) = result {
         if self.analyzer_patterns.contains(&pattern)
           && !matches!(error.kind, notify::ErrorKind::MaxFilesWatch)
         {
@@ -199,9 +219,11 @@ impl DiskWatcher {
   }
 
   fn context_watch_failed(&mut self, pattern: &WatchPattern, error: notify::Error) {
-    self.context_paths.remove(&pattern.path);
-    self.watch_patterns.retain(|p| p.path != pattern.path);
-    let _ = self.unwatch_path(&pattern.path);
+    if !self.analyzer_patterns.contains(pattern) {
+      self.context_paths.remove(&pattern.path);
+      self.watch_patterns.retain(|p| p.path != pattern.path);
+      let _ = self.unwatch_path(&pattern.path);
+    }
     self.context_watch_errors.0 += 1;
     self.context_watch_errors.1.get_or_insert(error);
   }
@@ -210,8 +232,13 @@ impl DiskWatcher {
     let (watch_errors, first_error) = std::mem::take(&mut self.context_watch_errors);
     if let Some(error) = first_error {
       tracing::error!(target: "rspack_watcher::disk_watcher", watch_errors, "{error}");
+      let failed = if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
+        "watch patterns"
+      } else {
+        "context directories"
+      };
       eprintln!(
-        "Error in file watcher: failed to watch {watch_errors} context directories; first error: {error}"
+        "Error in file watcher: failed to watch {watch_errors} {failed}; first error: {error}"
       );
     }
   }
@@ -222,7 +249,10 @@ impl DiskWatcher {
     &mut self,
     path: &InternedPath,
   ) -> rspack_error::Result<bool> {
-    if self.inner.is_none() {
+    if self.inner.is_none()
+      || (self.context_watch_limit_reached
+        && !self.analyzer_patterns.iter().any(|p| p.path == *path))
+    {
       return Ok(false);
     }
     let pattern = WatchPattern {
@@ -317,7 +347,11 @@ impl DiskWatcher {
       && let Err(error) = watcher.watch(&path, mode)
     {
       if !self.watch_patterns.contains(pattern) {
-        let _ = self.unwatch_path(&pattern.path);
+        if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
+          let _ = self.unwatch_patterns(&pattern.path, Some(pattern.mode));
+        } else {
+          let _ = self.unwatch_path(&pattern.path);
+        }
       }
       return Err(error);
     }
@@ -325,9 +359,17 @@ impl DiskWatcher {
   }
 
   fn unwatch_path(&mut self, path: &InternedPath) -> notify::Result<()> {
+    self.unwatch_patterns(path, None)
+  }
+
+  fn unwatch_patterns(
+    &mut self,
+    path: &InternedPath,
+    mode: Option<notify::RecursiveMode>,
+  ) -> notify::Result<()> {
     let (path, restore) = {
       let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
-      let Some(native) = aliases.native_paths.remove(path) else {
+      let Some(native) = aliases.native_paths.get(path).cloned() else {
         return Ok(());
       };
       let patterns = aliases
@@ -335,11 +377,15 @@ impl DiskWatcher {
         .get_mut(&native)
         .expect("native watch aliases");
       let recursive = patterns.iter().any(|p| p.mode == Recursive);
-      patterns.retain(|p| p.path != *path);
+      patterns.retain(|p| p.path != *path || mode.is_some_and(|mode| p.mode != mode));
+      let remaining_path = patterns.iter().any(|p| p.path == *path);
       let remaining_recursive = patterns.iter().any(|p| p.mode == Recursive);
       let remaining = !patterns.is_empty();
       if !remaining {
         aliases.patterns.remove(&native);
+      }
+      if !remaining_path {
+        aliases.native_paths.remove(path);
       }
       let covered = native.ancestors().skip(1).any(|ancestor| {
         aliases
