@@ -356,6 +356,10 @@ impl Compiler {
       .this_compilation
       .call(&mut self.compilation, &mut compilation_params)
       .await?;
+    // The JS compiler always taps `thisCompilation`, and the call returns only
+    // after the JS thread ran it, so no JS read of the previous assets is still
+    // in progress.
+    self.incremental_artifacts.free_previous_assets();
     self
       .plugin_driver
       .compiler_hooks
