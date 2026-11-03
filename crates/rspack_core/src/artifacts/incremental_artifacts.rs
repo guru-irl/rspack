@@ -23,13 +23,20 @@ impl IncrementalArtifacts {
     self.build_chunk_graph_artifact_snapshot = BuildChunkGraphArtifact::default();
   }
 
-  pub(crate) fn store_previous_compilation(&mut self, mut compilation: Box<Compilation>) {
-    // Recovery reads only artifacts from the previous compilation, and JS
-    // `Compilation` handles resolve through the compiler's current compilation,
-    // which no longer holds this one. Nothing reads these assets again, so free
-    // them now instead of when the next rebuild replaces this compilation.
-    *compilation.assets_mut() = Default::default();
+  pub(crate) fn store_previous_compilation(&mut self, compilation: Box<Compilation>) {
     self.previous_compilation = Some(compilation);
+  }
+
+  /// Frees the previous compilation's assets. Recovery never reads them.
+  ///
+  /// JS getters copy an asset out of the compilation the compiler holds. A copy
+  /// that started before the rebuild swapped compilations still points into the
+  /// previous compilation's assets, so call this only after the new compilation's
+  /// `thisCompilation` hook has run on the JS thread.
+  pub(crate) fn free_previous_assets(&mut self) {
+    if let Some(compilation) = &mut self.previous_compilation {
+      *compilation.assets_mut() = Default::default();
+    }
   }
 
   pub(crate) fn recover(&mut self, passes: IncrementalPasses, compilation: &mut Compilation) {
