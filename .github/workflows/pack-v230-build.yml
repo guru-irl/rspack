@@ -61,10 +61,6 @@ jobs:
             profile: profiling
             allocative: ''
             cross: '1'
-          - arm: allocative-profiling-native
-            profile: profiling
-            allocative: ''
-            cross: ''
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,6 +78,16 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE"
           printf 'arm=%s profile=%s allocative=%s cross=%s\n' '${{ matrix.arm }}' '${{ matrix.profile }}' '${{ matrix.allocative }}' '${{ matrix.cross }}' | tee bench-data/results/arm.txt
           test ! -d target
+      - name: Apply upstream allocative root macro fix (#16385) to allocative arms
+        if: ${{ matrix.arm != 'control' }}
+        run: |
+          set -euo pipefail
+          fix=1bd28315243e5351a41384366307cbd689c71d54
+          git fetch --no-tags --depth=2 https://github.com/web-infra-dev/rspack.git "$fix"
+          git diff "$fix~1" "$fix" -- crates/rspack_allocative_derive/src/root.rs crates/rspack_tracing_perfetto/src/lib.rs > bench-data/results/source-patch-16385.diff
+          git apply --verbose bench-data/results/source-patch-16385.diff
+          git diff --stat | tee bench-data/results/source-patch-applied.txt
+          test "$(git diff --name-only | wc -l)" -eq 2
       - uses: ./.github/actions/pnpm/setup
       - name: Install binding dependencies
         run: |
