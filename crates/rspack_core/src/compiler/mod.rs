@@ -356,9 +356,10 @@ impl Compiler {
       .this_compilation
       .call(&mut self.compilation, &mut compilation_params)
       .await?;
-    // The JS compiler always taps `thisCompilation`, and the call returns only
-    // after the JS thread ran it, so no JS read of the previous assets is still
-    // in progress.
+    // The binding registers the JS `thisCompilation` taps with `cache = false,
+    // skip = false`, so this call always waits for the JS thread to answer. No
+    // JS read of the previous assets that started before the swap is still in
+    // progress, so they can be freed now.
     self.incremental_artifacts.free_previous_assets();
     self
       .plugin_driver
