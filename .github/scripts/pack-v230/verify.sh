@@ -70,7 +70,10 @@ for a in "${ARMS[@]}"; do
   [ "$a" = official ] && continue
   out=$W/results/allocative/$a
   rm -rf "$out"; mkdir -p "$out"
-  if ! run_arm "$a" "$a.alloc" "$out" > "$W/results/allocative-$a.log" 2>&1; then echo "$a: allocative run failed" | tee -a "$W/results/problems.txt"; fail=1; continue; fi
+  # Same run name as the parity pass: the name sets work/ and dist/ paths, and R1 showed a
+  # different name alone changes main.js. Compare against this arm's own parity manifests.
+  for sc in cold warm watch prod; do cp "results/$a-$sc.txt" "results/$a.parity-$sc.txt"; done
+  if ! run_arm "$a" "$a" "$out" > "$W/results/allocative-$a.log" 2>&1; then echo "$a: allocative run failed" | tee -a "$W/results/problems.txt"; fail=1; continue; fi
   for sc in cold warm watch prod; do
     n=$(find "$out/$sc" -name '*.allocative' -size +0 | wc -l)
     echo "$a $sc snapshots=$n" | tee -a "$W/results/allocative.txt"
@@ -79,7 +82,7 @@ for a in "${ARMS[@]}"; do
       control) [ "$n" -eq 0 ] || { echo "control wrote snapshots in $sc" | tee -a "$W/results/problems.txt"; fail=1; } ;;
       *) [ "$n" -ge "$want" ] || { echo "$a: missing snapshots in $sc" | tee -a "$W/results/problems.txt"; fail=1; } ;;
     esac
-    cmp -s "results/official-$sc.txt" "results/$a.alloc-$sc.txt" || { echo "$a: $sc output changed while collecting" | tee -a "$W/results/problems.txt"; fail=1; }
+    cmp -s "results/$a.parity-$sc.txt" "results/$a-$sc.txt" || { echo "$a: $sc output changed while collecting" | tee -a "$W/results/problems.txt"; fail=1; }
   done
   find "$out" -type f -printf '%s %p\n' | sort -k2 >> "$W/results/allocative.txt"
 done
