@@ -1,7 +1,7 @@
-name: v2.3.0 fix packs
+name: v2.3.0 fix12 packs
 on:
   push:
-    branches: [bench/v230-fix-packs]
+    branches: [bench/v230-fix12-packs]
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,6 +15,7 @@ env:
   VERSION: 2.3.0
   BASE: ca0d75f5444f182acd571968395a3ac1aaff894c
   FIX1: 5a0bd2f0bdda68d3efbac62604a94b7d88ec5249
+  FIX12: f998c49df43153ce58c7cac0050c8ecf7d7c7935
 jobs:
   official:
     name: Published 2.3.0 tarballs
@@ -51,11 +52,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: v2.3.0
-            ref: ca0d75f5444f182acd571968395a3ac1aaff894c
-            expect: fail
-          - name: fix1
-            ref: 5a0bd2f0bdda68d3efbac62604a94b7d88ec5249
+          - name: fix12
+            ref: f998c49df43153ce58c7cac0050c8ecf7d7c7935
             expect: pass
     steps:
       - uses: actions/checkout@v4
@@ -107,13 +105,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: fix1
-            ref: 5a0bd2f0bdda68d3efbac62604a94b7d88ec5249
+          - arm: fix12
+            ref: f998c49df43153ce58c7cac0050c8ecf7d7c7935
             profile: release
             allocative: ''
             cross: '1'
-          - arm: fix1-allocative
-            ref: 5a0bd2f0bdda68d3efbac62604a94b7d88ec5249
+          - arm: fix12-allocative
+            ref: f998c49df43153ce58c7cac0050c8ecf7d7c7935
             profile: release
             allocative: '1'
             cross: '1'
@@ -121,7 +119,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ matrix.ref }}
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - name: Record exact source
         run: |
@@ -132,7 +130,8 @@ jobs:
           date -u +%FT%TZ > bench-data/results/start-utc.txt
           git rev-parse HEAD | tee bench-data/results/source.sha
           test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
-          test "$(git rev-parse HEAD~1)" = "$BASE"
+          test "$(git rev-parse HEAD~1)" = "$FIX1"
+          test "$(git rev-parse HEAD~2)" = "$BASE"
           git diff "$BASE" HEAD > bench-data/results/source-diff-from-v2.3.0.patch
           git diff --stat "$BASE" HEAD | tee bench-data/results/source-diff-stat.txt
           printf 'arm=%s ref=%s profile=%s allocative=%s cross=%s\n' '${{ matrix.arm }}' '${{ matrix.ref }}' '${{ matrix.profile }}' '${{ matrix.allocative }}' '${{ matrix.cross }}' | tee bench-data/results/arm.txt
@@ -249,12 +248,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v230-fix-verification
+          name: v230-fix12-verification
           path: bench-data/results/
           if-no-files-found: error
           compression-level: 1
   measure:
-    name: Synthetic memory A/B
+    name: Previous-compilation assets A/B
     needs: [official, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-22.04
@@ -278,12 +277,12 @@ jobs:
           run-id: 41599649630
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
-      - name: Peak RSS, wall time and RuntimeSpec bytes
-        run: bash .github/scripts/pack-v230/measure.sh
+      - name: Previous-compilation asset bytes in the rebuild snapshot
+        run: bash .github/scripts/pack-v230/measure-fix2.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v230-fix-measure
+          name: v230-fix12-measure
           path: bench-data/results/
           if-no-files-found: error
           compression-level: 1
