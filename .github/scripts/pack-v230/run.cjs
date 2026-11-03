@@ -66,14 +66,15 @@ setTimeout(() => { console.error(`[${arm}/${scenario}] timeout`); process.exit(3
 
 if (scenario === "watch") {
   const compiler = rspack(config("dev", out));
-  let n = 0;
+  let n = 0, tEdit = 0;
   const watching = compiler.watch({ aggregateTimeout: 50 }, (err, stats) => {
     check(err, stats);
     n++;
     if (n === 1) {
-      setTimeout(() => fs.appendFileSync(path.join(work, "src", "shared-3.ts"),
-        `export const extra3 = ${JSON.stringify("édit 🚀 漢 3")};\n`), 300);
+      setTimeout(() => { tEdit = Date.now(); fs.appendFileSync(path.join(work, "src", "shared-3.ts"),
+        `export const extra3 = ${JSON.stringify("édit 🚀 漢 3")};\n`); }, 300);
     } else if (n === 2) {
+      console.log(`[${arm}/watch] rebuild_ms=${Date.now() - tEdit} rss_after_rebuild_kib=${Math.round(process.memoryUsage().rss / 1024)}`);
       watching.close(() => finish(out));
     }
   });

@@ -52,8 +52,10 @@ run_arm() {
 }
 
 fail=0
+# Every arm builds from the same work path: hash-ordered output can depend on absolute paths.
 for a in "${ARMS[@]}"; do
-  if ! run_arm "$a" "$a" >> "$W/results/parity.log" 2>&1; then echo "$a: parity run failed" | tee -a "$W/results/problems.txt"; fail=1; fi
+  if ! run_arm "$a" same >> "$W/results/parity.log" 2>&1; then echo "$a: parity run failed" | tee -a "$W/results/problems.txt"; fail=1; fi
+  for sc in "${SCENARIOS[@]}"; do [ -f "results/same-$sc.txt" ] && mv "results/same-$sc.txt" "results/$a-$sc.txt"; done
 done
 : > "$W/results/parity.txt"
 for a in "${ARMS[@]}"; do
@@ -75,7 +77,8 @@ for a in "${ARMS[@]}"; do
   out=$W/results/allocative/$a
   rm -rf "$out"; mkdir -p "$out"
   for sc in "${SCENARIOS[@]}"; do cp "results/$a-$sc.txt" "results/$a.parity-$sc.txt"; done
-  if ! run_arm "$a" "$a" "$out" > "$W/results/allocative-$a.log" 2>&1; then echo "$a: allocative run failed" | tee -a "$W/results/problems.txt"; fail=1; continue; fi
+  if ! run_arm "$a" same "$out" > "$W/results/allocative-$a.log" 2>&1; then echo "$a: allocative run failed" | tee -a "$W/results/problems.txt"; fail=1; continue; fi
+  for sc in "${SCENARIOS[@]}"; do mv "results/same-$sc.txt" "results/$a-$sc.txt"; done
   for sc in "${SCENARIOS[@]}"; do
     n=$(find "$out/$sc" -name '*.allocative' -size +0 | wc -l)
     echo "$a $sc snapshots=$n" | tee -a "$W/results/allocative.txt"
