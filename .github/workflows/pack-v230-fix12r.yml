@@ -1,7 +1,7 @@
-name: v2.3.0 fix12c packs
+name: v2.3.0 fix12r packs
 on:
   push:
-    branches: [bench/v230-fix12c-packs]
+    branches: [bench/v230-fix12r-packs]
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,8 +16,7 @@ env:
   BASE: ca0d75f5444f182acd571968395a3ac1aaff894c
   FIX1: 5a0bd2f0bdda68d3efbac62604a94b7d88ec5249
   FIX12: f998c49df43153ce58c7cac0050c8ecf7d7c7935
-  FIX12C: 5b76e49ead148f0f8d617936b2a282caf07e94b0
-  FIX12C_END: 54f32849a7e23fe9c4e6b6e1df7b45d25b4beaa5
+  FIX12R: 179b41b93cd909fb434c722c9d37213388c5239e
 jobs:
   official:
     name: Published 2.3.0 tarballs
@@ -54,15 +53,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: fix12c
-            ref: 5b76e49ead148f0f8d617936b2a282caf07e94b0
+          - arm: fix12r
+            ref: 179b41b93cd909fb434c722c9d37213388c5239e
             commits: 3
-            profile: release
-            allocative: ''
-            cross: '1'
-          - arm: fix12c-end
-            ref: 54f32849a7e23fe9c4e6b6e1df7b45d25b4beaa5
-            commits: 4
             profile: release
             allocative: ''
             cross: '1'
@@ -81,7 +74,7 @@ jobs:
           date -u +%FT%TZ > bench-data/results/start-utc.txt
           git rev-parse HEAD | tee bench-data/results/source.sha
           test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
-          git merge-base --is-ancestor "$FIX12" HEAD
+          git merge-base --is-ancestor "$FIX1" HEAD
           test "$(git rev-list --count "$BASE"..HEAD)" = '${{ matrix.commits }}'
           git diff "$BASE" HEAD > bench-data/results/source-diff-from-v2.3.0.patch
           git diff --stat "$BASE" HEAD | tee bench-data/results/source-diff-stat.txt
@@ -199,12 +192,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v230-fix12c-verification
+          name: v230-fix12r-verification
           path: bench-data/results/
           if-no-files-found: error
           compression-level: 1
   measure:
-    name: Collect smoke, fix12 vs fix12c vs fix12c-end
+    name: Smoke, fix1 vs fix12 vs fix12r
     needs: [official, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-22.04
@@ -220,6 +213,14 @@ jobs:
         with:
           pattern: v230-*-binding
           path: bench-data/bindings
+      - name: Download the fix1 build from run 41609779047
+        uses: actions/download-artifact@v4
+        with:
+          name: v230-fix1-binding
+          path: bench-data/fix1
+          run-id: 41609779047
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
       - name: Download the fix12 build from run 41610719789
         uses: actions/download-artifact@v4
         with:
@@ -229,11 +230,120 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
       - name: Peak RSS, RSS after the rebuild and rebuild time
-        run: bash .github/scripts/pack-v230/measure-collect.sh
+        run: bash .github/scripts/pack-v230/measure-fix12r.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v230-fix12c-measure
+          name: v230-fix12r-measure
           path: bench-data/results/
           if-no-files-found: error
           compression-level: 1
+  regression-prior:
+    name: Regression test on ${{ matrix.arm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: fix1
+            run: '41609779047'
+            sha: b61e0726228ef54d431adb4c7179e3b2047f30151a1783c95f4e2b17dab3f31a
+            expect: pass
+          - arm: fix12
+            run: '41610719789'
+            sha: 7c4ecbc1dc7501bcbcb85ad7bf8f1b621c3e33294ad15bd61c1abcca67dad39a
+            expect: fail
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIX12R }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install and build the JS packages
+        run: |
+          set -euo pipefail
+          mkdir -p reg-results
+          pnpm install --frozen-lockfile > reg-results/install.log 2>&1 || { tail -60 reg-results/install.log; exit 1; }
+          pnpm run build:js > reg-results/build-js.log 2>&1 || { tail -80 reg-results/build-js.log; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-${{ matrix.arm }}-binding
+          path: reg-binding
+          run-id: ${{ matrix.run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Run the case 3 times
+        env:
+          ARM: ${{ matrix.arm }}
+          EXPECT: ${{ matrix.expect }}
+          WANT_SHA: ${{ matrix.sha }}
+        run: |
+          set -uo pipefail
+          echo "$WANT_SHA  reg-binding/rspack.linux-x64-gnu.node" | sha256sum -c || exit 1
+          cp reg-binding/rspack.linux-x64-gnu.node crates/node_binding/rspack.linux-x64-gnu.node
+          node -e 'require("./crates/node_binding"); const l = require("fs").readFileSync("/proc/self/maps", "utf8").split("\n").find(x => x.includes("rspack.linux-x64-gnu.node")); console.log("loaded:", l ? l.split(/\s+/).pop() : "none")' 2>&1 | tee reg-results/loaded.txt
+          git rev-parse HEAD > reg-results/source.sha
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node | tee reg-results/binding.sha256
+          fails=0
+          for i in 1 2 3; do
+            pnpm --dir tests/rspack-test run test Compiler.test.mjs -t previous-assets-read-during-rebuild > reg-results/run-$i.log 2>&1
+            rc=$?
+            grep -E "Tests +[0-9]|passed|failed|Segmentation|SIGSEGV|signal" reg-results/run-$i.log | tail -5
+            echo "run $i exit=$rc" | tee -a reg-results/outcome.txt
+            [ "$rc" -ne 0 ] && fails=$((fails + 1))
+          done
+          echo "arm=$ARM expect=$EXPECT fails=$fails/3" | tee -a reg-results/outcome.txt
+          if [ "$EXPECT" = pass ]; then test "$fails" -eq 0; else test "$fails" -ge 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-regression-${{ matrix.arm }}
+          path: reg-results/
+          if-no-files-found: error
+  regression-fix12r:
+    name: Regression test on fix12r
+    needs: [build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIX12R }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install and build the JS packages
+        run: |
+          set -euo pipefail
+          mkdir -p reg-results
+          pnpm install --frozen-lockfile > reg-results/install.log 2>&1 || { tail -60 reg-results/install.log; exit 1; }
+          pnpm run build:js > reg-results/build-js.log 2>&1 || { tail -80 reg-results/build-js.log; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-fix12r-binding
+          path: reg-binding
+      - name: Run the case 3 times
+        run: |
+          set -uo pipefail
+          cp reg-binding/rspack.linux-x64-gnu.node crates/node_binding/rspack.linux-x64-gnu.node
+          git rev-parse HEAD > reg-results/source.sha
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node | tee reg-results/binding.sha256
+          fails=0
+          for i in 1 2 3; do
+            pnpm --dir tests/rspack-test run test Compiler.test.mjs -t previous-assets-read-during-rebuild > reg-results/run-$i.log 2>&1
+            rc=$?
+            grep -E "Tests +[0-9]|passed|failed|Segmentation|SIGSEGV|signal" reg-results/run-$i.log | tail -5
+            echo "run $i exit=$rc" | tee -a reg-results/outcome.txt
+            [ "$rc" -ne 0 ] && fails=$((fails + 1))
+          done
+          echo "arm=fix12r expect=pass fails=$fails/3" | tee -a reg-results/outcome.txt
+          test "$fails" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-regression-fix12r
+          path: reg-results/
+          if-no-files-found: error
