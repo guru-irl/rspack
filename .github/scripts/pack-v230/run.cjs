@@ -1,4 +1,5 @@
-// Usage: node run.cjs <arm> <cold|warm|watch|prod>
+// Usage: node run.cjs <arm> <cold|warm|watch|prod|multi>
+// multi: production build with three entries (three runtimes) and every shared module split out.
 // Proves the loaded binding via /proc/self/maps (EXPECT_SHA), builds, and writes results/<arm>-<scenario>.txt
 // with one "<sha256>  <relative path>" line per emitted file.
 const fs = require("fs");
@@ -19,11 +20,13 @@ console.log(`[${arm}/${scenario}] binding ${loaded[0]} ${loadedSha}`);
 if (process.env.EXPECT_SHA && process.env.EXPECT_SHA !== loadedSha) { console.error("binding sha mismatch"); process.exit(91); }
 
 function config(kind, outDir) {
-  const dev = kind !== "prod";
+  const dev = kind === "dev";
+  const multi = kind === "multi";
   return {
     context: work,
     mode: dev ? "development" : "production",
-    entry: "./src/index.ts",
+    entry: multi ? { a: "./src/index.ts", b: "./src/route-0.ts", c: "./src/route-1.ts" } : "./src/index.ts",
+    ...(multi ? { optimization: { splitChunks: { chunks: "all", minSize: 0 } } } : {}),
     devtool: dev ? "cheap-module-source-map" : "source-map",
     output: { path: outDir, clean: true },
     resolve: { extensions: [".ts", ".js"] },
@@ -75,7 +78,7 @@ if (scenario === "watch") {
     }
   });
 } else {
-  const compiler = rspack(config(scenario === "prod" ? "prod" : "dev", out));
+  const compiler = rspack(config(scenario === "prod" || scenario === "multi" ? scenario : "dev", out));
   compiler.run((err, stats) => {
     check(err, stats);
     compiler.close(() => finish(out));
