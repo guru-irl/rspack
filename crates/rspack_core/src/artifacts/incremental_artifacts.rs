@@ -24,8 +24,10 @@ impl IncrementalArtifacts {
   }
 
   pub(crate) fn store_previous_compilation(&mut self, mut compilation: Box<Compilation>) {
-    // Recovery never reads the previous assets, and the binding only reaches the
-    // current compilation, so free them now instead of through the next rebuild.
+    // Recovery reads only artifacts from the previous compilation, and JS
+    // `Compilation` handles resolve through the compiler's current compilation,
+    // which no longer holds this one. Nothing reads these assets again, so free
+    // them now instead of when the next rebuild replaces this compilation.
     *compilation.assets_mut() = Default::default();
     self.previous_compilation = Some(compilation);
   }
