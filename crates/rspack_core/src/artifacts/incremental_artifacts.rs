@@ -23,7 +23,10 @@ impl IncrementalArtifacts {
     self.build_chunk_graph_artifact_snapshot = BuildChunkGraphArtifact::default();
   }
 
-  pub(crate) fn store_previous_compilation(&mut self, compilation: Box<Compilation>) {
+  pub(crate) fn store_previous_compilation(&mut self, mut compilation: Box<Compilation>) {
+    // Recovery never reads the previous assets, and the binding only reaches the
+    // current compilation, so free them now instead of through the next rebuild.
+    *compilation.assets_mut() = Default::default();
     self.previous_compilation = Some(compilation);
   }
 
