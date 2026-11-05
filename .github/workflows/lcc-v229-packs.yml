@@ -1,0 +1,271 @@
+name: v2.2.9 LimitChunkCountPlugin packs
+on:
+  push:
+    branches: [bench/v229-lcc-packs]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  VERSION: 2.2.9
+  BASE: 428b70684309de4068e32baf81d28194441dd64e
+  FIX: 356256687f0a4daaf3df5da626a4e97b63f70352
+  INSTRUMENTED: c6127180b7c3360239d686b11f7961b2115447b9
+jobs:
+  official:
+    name: Published 2.2.9 binding
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Pack the published binding and check registry integrity
+        run: |
+          set -euo pipefail
+          mkdir -p official && cd official
+          p=@rspack/binding-linux-x64-gnu
+          npm pack "$p@$VERSION" --json > pack.json
+          want=$(npm view "$p@$VERSION" dist.integrity)
+          got=$(node -e 'console.log(require(process.argv[1])[0].integrity)' "$PWD/pack.json")
+          test "$want" = "$got"
+          echo "$p@$VERSION $want" | tee integrity.txt
+          tar -xzf rspack-binding-linux-x64-gnu-$VERSION.tgz
+          cp package/rspack.linux-x64-gnu.node official.node
+          rm -rf package
+          sha256sum ./*.tgz ./*.node | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v229-official
+          path: official/
+          if-no-files-found: error
+          compression-level: 0
+  build:
+    name: Build ${{ matrix.arm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: fix
+            ref: 356256687f0a4daaf3df5da626a4e97b63f70352
+            commits: 2
+          - arm: instrumented
+            ref: c6127180b7c3360239d686b11f7961b2115447b9
+            commits: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 5
+          persist-credentials: false
+      - name: Record exact source
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
+          date -u +%FT%TZ > bench-data/results/start-utc.txt
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
+          test "$(git rev-list --count "$BASE"..HEAD)" = '${{ matrix.commits }}'
+          git diff "$BASE" HEAD > bench-data/results/source-diff-from-v2.2.9.patch
+          git diff --stat "$BASE" HEAD | tee bench-data/results/source-diff-stat.txt
+          test ! -d target
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install binding dependencies
+        run: |
+          set -euo pipefail
+          pnpm --filter @rspack/binding install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: v229-lcc-${{ matrix.arm }}
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare release-style build
+        run: |
+          set -euo pipefail
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { date -u; node --version; pnpm --version; rustc -Vv; clang --version; gcc --version; ldd --version; df -h .; } > bench-data/results/environment.txt
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}${ALLOCATIVE:-}"
+      - name: Build binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+        run: |
+          set -euo pipefail
+          export USE_NAPI_CROSS=1 TARGET_CC=clang
+          start=$(date +%s)
+          pnpm run build:binding:release 2>&1 | tee bench-data/results/native-build.log
+          echo "$(( $(date +%s) - start ))" > bench-data/results/build-seconds.txt
+          date -u +%FT%TZ > bench-data/results/build-end-utc.txt
+          grep -E 'Compiling (rspack_napi|rspack_binding_api|rspack_core|rspack_plugin_limit_chunk_count) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -ge 4
+          grep -F -- '-Zbuild-std=panic_abort,std' bench-data/results/native-build.log > /dev/null
+          grep -oE -- '--features [a-z0-9,-]+' bench-data/results/native-build.log | head -1 | tee bench-data/results/features.txt
+          grep -qx -- '--features plugin,info-level' bench-data/results/features.txt
+          ! grep -F -q -- '--cfg=allocative' bench-data/results/native-build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node "bench-data/pack/${{ matrix.arm }}.node"
+      - name: Record checksums and glibc
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official
+          (cd bench-data/official; npm pack "@rspack/binding-linux-x64-gnu@$VERSION"; tar -xzf "rspack-binding-linux-x64-gnu-$VERSION.tgz")
+          sha256sum bench-data/pack/* | tee bench-data/results/pack.sha256
+          ls -l bench-data/pack/ | tee bench-data/results/pack-sizes.txt
+          official=$(readelf --version-info bench-data/official/package/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          built=$(readelf --version-info "bench-data/pack/${{ matrix.arm }}.node" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
+          test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v229-lcc-${{ matrix.arm }}-binding
+          path: bench-data/pack/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-lcc-${{ matrix.arm }}-evidence
+          path: bench-data/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 1
+  rust-test:
+    name: Plugin crate unit test on the fix
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIX }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/rustup
+        with:
+          key: v229-lcc-test
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: cargo test -p rspack_plugin_limit_chunk_count
+        env:
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: |
+          set -euo pipefail
+          mkdir -p rt-results
+          cargo test -p rspack_plugin_limit_chunk_count 2>&1 | tee rt-results/cargo-test.log
+          grep -E 'test result: ok\. [1-9]' rt-results/cargo-test.log
+          grep -E 'pop_delete_and_update \.\.\. ok' rt-results/cargo-test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-lcc-rust-test
+          path: rt-results/
+          if-no-files-found: error
+  tests:
+    name: Repository cases on each binding
+    needs: [official, build]
+    if: ${{ !cancelled() && needs.official.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install and build the JS packages
+        run: |
+          set -euo pipefail
+          mkdir -p t-results
+          pnpm install --frozen-lockfile > t-results/install.log 2>&1 || { tail -60 t-results/install.log; exit 1; }
+          pnpm run build:js > t-results/build-js.log 2>&1 || { tail -80 t-results/build-js.log; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v229-lcc-*-binding
+          path: bindings
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: v229-official
+          path: official
+      - name: Run the cases
+        run: |
+          bash .github/scripts/lcc/tests.sh t-results \
+            official="$PWD/official/official.node" \
+            instrumented="$PWD/bindings/instrumented.node" \
+            fix="$PWD/bindings/fix.node"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-lcc-tests
+          path: t-results/
+          if-no-files-found: error
+  stress:
+    name: Stress ${{ matrix.name }}
+    needs: [official, build]
+    if: ${{ !cancelled() && needs.official.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: async-500
+            variant: '{"spec":{"asyncChunks":500,"commons":20,"commonsPerChunk":2,"commonSize":300},"options":{"maxChunks":1},"runs":3,"arms":["official","instrumented","fix"]}'
+          - name: async-1000
+            variant: '{"spec":{"asyncChunks":1000,"commons":20,"commonsPerChunk":2,"commonSize":300},"options":{"maxChunks":1},"runs":1,"arms":["official","instrumented","fix"]}'
+          - name: async-1500
+            variant: '{"spec":{"asyncChunks":1500,"commons":20,"commonsPerChunk":2,"commonSize":300},"options":{"maxChunks":1},"runs":1,"arms":["instrumented","fix"]}'
+          - name: async-700-empty-300
+            variant: '{"spec":{"asyncChunks":700,"emptyChunks":300,"commons":20,"commonsPerChunk":2,"commonSize":300},"options":{"maxChunks":1},"runs":1,"arms":["official","instrumented","fix"]}'
+          - name: named-400-max-60
+            variant: '{"spec":{"asyncChunks":400,"commons":10,"commonsPerChunk":1,"commonSize":300,"names":true},"options":{"maxChunks":60},"runs":2,"arms":["official","instrumented","fix"]}'
+          - name: split-two-entries-max-25
+            variant: '{"spec":{"asyncChunks":300,"emptyChunks":40,"commons":30,"commonsPerChunk":3,"commonSize":30000,"names":true,"secondEntry":true},"options":{"maxChunks":25,"splitChunks":true,"chunkOverhead":5000,"entryChunkMultiplicator":3},"runs":2,"arms":["official","instrumented","fix"]}'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install and build the JS packages
+        run: |
+          set -euo pipefail
+          mkdir -p s-results s-work
+          pnpm install --frozen-lockfile > s-results/install.log 2>&1 || { tail -60 s-results/install.log; exit 1; }
+          pnpm run build:js > s-results/build-js.log 2>&1 || { tail -80 s-results/build-js.log; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v229-lcc-*-binding
+          path: bindings
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: v229-official
+          path: official
+      - name: Run the variant
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -uo pipefail
+          { nproc; uptime; free -m; } > s-results/host.txt
+          sha256sum bindings/*.node official/official.node | tee s-results/bindings.sha256
+          bindings=$(printf '{"official":"%s","instrumented":"%s","fix":"%s"}' "$PWD/official/official.node" "$PWD/bindings/instrumented.node" "$PWD/bindings/fix.node")
+          node .github/scripts/lcc/stress.cjs "$PWD" "$PWD/s-work" "$PWD/s-results" '${{ matrix.name }}' "$VARIANT" "$bindings"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-lcc-stress-${{ matrix.name }}
+          path: s-results/
+          if-no-files-found: error
+          compression-level: 1
