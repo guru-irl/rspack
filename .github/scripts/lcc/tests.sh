@@ -13,8 +13,9 @@ fails=0
 for pair in "$@"; do
   arm=${pair%%=*}
   node_file=${pair#*=}
+  # Copy over the workspace binding only. Don't set NAPI_RS_NATIVE_LIBRARY_PATH:
+  # the test runner bundles with its own published @rspack/core, which honors it too.
   cp "$node_file" "$target"
-  export NAPI_RS_NATIVE_LIBRARY_PATH="$target"
   node -e '
     require("./crates/node_binding");
     const fs = require("fs");

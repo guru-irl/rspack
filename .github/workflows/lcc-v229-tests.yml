@@ -1,0 +1,57 @@
+name: v2.2.9 LimitChunkCountPlugin repository cases
+on:
+  push:
+    branches: [bench/v229-lcc-tests]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  PACKS_RUN: 42088173844
+jobs:
+  tests:
+    name: Repository cases on each binding
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install and build the JS packages
+        run: |
+          set -euo pipefail
+          mkdir -p t-results
+          pnpm install --frozen-lockfile > t-results/install.log 2>&1 || { tail -60 t-results/install.log; exit 1; }
+          pnpm run build:js > t-results/build-js.log 2>&1 || { tail -80 t-results/build-js.log; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v229-lcc-*-binding
+          path: bindings
+          merge-multiple: true
+          run-id: ${{ env.PACKS_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: v229-official
+          path: official
+          run-id: ${{ env.PACKS_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Run the cases
+        run: |
+          sha256sum bindings/*.node official/official.node | tee t-results/bindings.sha256
+          bash .github/scripts/lcc/tests.sh t-results \
+            official="$PWD/official/official.node" \
+            instrumented="$PWD/bindings/instrumented.node" \
+            fix="$PWD/bindings/fix.node"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v229-lcc-tests
+          path: t-results/
+          if-no-files-found: error
