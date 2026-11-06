@@ -1,0 +1,76 @@
+name: v2.3.0 native watcher W9 JS gates
+on:
+  push:
+    branches: [bench/v230-native-watcher-w9-checks]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  SOURCE: f31547f0a2bb5fc3a1ff304e5f7f050156092997
+  npm_config_registry: https://registry.npmjs.org
+jobs:
+  javascript:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: recipe
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE }}
+          persist-credentials: false
+          path: source
+      - uses: ./source/.github/actions/pnpm/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-w9-development
+          path: binding
+          run-id: 42281114552
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Build matching JS and verify binding
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          git rev-parse HEAD > results/source.sha
+          (cd ../binding; sha256sum -c SHA256SUMS)
+          cp ../binding/rspack.linux-x64-gnu.node crates/node_binding/
+          sha256sum crates/node_binding/rspack.linux-x64-gnu.node > results/binding.sha256
+          pnpm install --frozen-lockfile > results/install.log 2>&1 || { tail -80 results/install.log; exit 1; }
+          pnpm run build:js > results/build-js.log 2>&1 || { tail -80 results/build-js.log; exit 1; }
+          node -e 'require("./crates/node_binding"); const f=require("fs"); const m=f.readFileSync("/proc/self/maps","utf8").split("\n").filter(x=>x.includes("rspack.linux-x64-gnu.node")); if(!m.length)throw Error("binding not mapped"); console.log(m.join("\n"))' > results/mapped-binding.txt
+          python3 ../recipe/.github/scripts/pack-v230/check-count.py --selftest > results/count-controls.txt
+      - name: Native watcher compiler cases
+        working-directory: source
+        run: |
+          set -euo pipefail
+          pnpm --dir tests/rspack-test run test Compiler.test.mjs -t native-watcher- 2>&1 | tee results/compiler.log
+          python3 ../recipe/.github/scripts/pack-v230/check-count.py results/compiler.log
+      - name: Watch cases with native watcher disabled
+        if: ${{ !cancelled() }}
+        working-directory: source
+        run: |
+          set -euo pipefail
+          pnpm --dir tests/rspack-test run test Watch.part1.test.mjs Watch.part2.test.mjs Watch.part3.test.mjs 2>&1 | tee results/watch-off.log
+          python3 ../recipe/.github/scripts/pack-v230/check-count.py results/watch-off.log
+      - name: Watch cases with native watcher enabled
+        if: ${{ !cancelled() }}
+        working-directory: source
+        run: |
+          set -euo pipefail
+          pnpm --dir tests/rspack-test run test NativeWatcher.part1.test.mjs NativeWatcher.part2.test.mjs NativeWatcher.part3.test.mjs 2>&1 | tee results/watch-on.log
+          python3 ../recipe/.github/scripts/pack-v230/check-count.py results/watch-on.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-w9-js-gate-evidence
+          path: source/results/
+          if-no-files-found: error
