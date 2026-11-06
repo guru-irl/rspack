@@ -1,0 +1,203 @@
+name: v2.3.0 emitted sources pack
+on:
+  push:
+    branches: [bench/v230-mem4-m2-ci]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  VERSION: 2.3.0
+  SOURCE: e1e6c6aa64fa49a0570487c8e3395ca0a6ac4547
+  BASE: a757666ff20b5a17aed5fe514c15c2e4bf245935
+jobs:
+  official:
+    name: Published 2.3.0 tarballs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Pack published tarballs and check registry integrity
+        run: |
+          set -euo pipefail
+          mkdir -p official && cd official
+          for p in @rspack/core @rspack/binding @rspack/binding-linux-x64-gnu; do
+            j="$(echo "$p" | tr -d '@' | tr '/' '-').pack.json"
+            npm pack "$p@$VERSION" --json > "$j"
+            want=$(npm view "$p@$VERSION" dist.integrity)
+            got=$(node -e 'console.log(require(process.argv[1])[0].integrity)' "$PWD/$j")
+            test "$want" = "$got"
+            echo "$p@$VERSION $want" | tee -a integrity.txt
+          done
+          sha256sum ./*.tgz | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m2-official
+          path: official/
+          if-no-files-found: error
+          compression-level: 0
+  build:
+    name: Build release binding and core
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record exact source
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
+          date -u +%FT%TZ > bench-data/results/start-utc.txt
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff "$BASE" HEAD > bench-data/results/source-diff.patch
+          git diff --stat "$BASE" HEAD | tee bench-data/results/source-diff-stat.txt
+          test ! -d target
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: v230-m2
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare release-style build
+        run: |
+          set -euo pipefail
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { date -u; node --version; pnpm --version; rustc -Vv; clang --version; gcc --version; ldd --version; df -h .; } > bench-data/results/environment.txt
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}"
+      - name: Build binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          USE_NAPI_CROSS: 1
+          TARGET_CC: clang
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          pnpm run build:binding:release 2>&1 | tee bench-data/results/native-build.log
+          echo "$(( $(date +%s) - start ))" > bench-data/results/build-seconds.txt
+          date -u +%FT%TZ > bench-data/results/build-end-utc.txt
+          grep -E 'Compiling (rspack_napi|rspack_binding_api|rspack_core) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -ge 3
+          grep -F -- '-Zbuild-std=panic_abort,std' bench-data/results/native-build.log > /dev/null
+          grep -oE -- '--features [a-z0-9,-]+' bench-data/results/native-build.log | head -1 | tee bench-data/results/features.txt
+          grep -qx -- '--features plugin,info-level' bench-data/results/features.txt
+          ! grep -F -q -- '--cfg=allocative' bench-data/results/native-build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
+      - name: Build and pack matching core JavaScript
+        run: |
+          set -euo pipefail
+          pnpm run build:js 2>&1 | tee bench-data/results/js-build.log
+          pnpm --dir packages/rspack pack --pack-destination "$GITHUB_WORKSPACE/bench-data/pack" 2>&1 | tee bench-data/results/core-pack.log
+          test -s bench-data/pack/rspack-core-2.3.0.tgz
+      - name: Package native binding and record glibc
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official bench-data/package bench-data/unpacked
+          (cd bench-data/official; npm pack "@rspack/binding-linux-x64-gnu@$VERSION")
+          tar -xzf "bench-data/official/rspack-binding-linux-x64-gnu-$VERSION.tgz" -C bench-data/official
+          cp -a bench-data/official/package bench-data/package/
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/package/package/
+          node -e 'const p=require("./bench-data/package/package/package.json"); if(p.name!=="@rspack/binding-linux-x64-gnu"||p.version!==process.env.VERSION)throw Error("Wrong package identity")'
+          (cd bench-data/package/package; npm pack --pack-destination ../../pack)
+          tar -xzf "bench-data/pack/rspack-binding-linux-x64-gnu-$VERSION.tgz" -C bench-data/unpacked
+          cmp bench-data/pack/rspack.linux-x64-gnu.node bench-data/unpacked/package/rspack.linux-x64-gnu.node
+          (cd bench-data/pack; sha256sum rspack.linux-x64-gnu.node rspack-binding-linux-x64-gnu-2.3.0.tgz rspack-core-2.3.0.tgz > SHA256SUMS; sha256sum -c SHA256SUMS)
+          cp bench-data/pack/SHA256SUMS bench-data/results/pack.sha256
+          ls -l bench-data/pack/ | tee bench-data/results/pack-sizes.txt
+          official=$(readelf --version-info bench-data/official/package/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          built=$(readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
+          test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m2-pack
+          path: bench-data/pack/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m2-build-evidence
+          path: bench-data/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 1
+  verify:
+    name: Verify output parity
+    needs: [official, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: m2-pack
+          path: bench-data/pack
+      - uses: actions/download-artifact@v4
+        with:
+          name: m2-official
+          path: bench-data/official
+      - name: Check pack and compare emitted files
+        run: |
+          (cd bench-data/pack && sha256sum -c SHA256SUMS)
+          bash .github/scripts/pack-v230/verify-mem4.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m2-parity
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
+  measure:
+    name: Same-binary watch memory A/B
+    needs: [build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: m2-pack
+          path: bench-data/pack
+      - name: Five alternating pairs, cold and two edits
+        run: |
+          (cd bench-data/pack && sha256sum -c SHA256SUMS)
+          node .github/scripts/pack-v230/measure-mem4.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m2-measure
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
