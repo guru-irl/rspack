@@ -20,7 +20,11 @@ mkdir -p work/same
 cp -R template/src work/same/src
 printf '%s  %s\n' "$EXPECTED_CONTROL" "$CONTROL" | sha256sum -c
 sha256sum "$CONTROL" "$CANDIDATE" | tee "$W/results/bindings.sha256"
-cmp -s "$CONTROL" "$CANDIDATE" && { echo "bindings are identical" >&2; exit 1; }
+if cmp -s "$CONTROL" "$CANDIDATE"; then
+  test "${ALLOW_IDENTICAL:-0}" = 1 || { echo "bindings are unexpectedly identical" >&2; exit 1; }
+else
+  test "${ALLOW_IDENTICAL:-0}" = 0 || { echo "A/A bindings differ" >&2; exit 1; }
+fi
 { date -u; uname -a; node --version; npm --version; lscpu; free -h; df -h .; } > "$W/results/environment.txt"
 
 for i in $(seq 1 "$PAIRS"); do

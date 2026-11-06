@@ -7,6 +7,7 @@ import statistics
 import sys
 
 STAGES = ("build", "edit1", "edit2")
+MEMORY_FIELDS = ("rss_bytes", "heap_used_bytes", "heap_total_bytes", "external_bytes", "array_buffers_bytes")
 PASS_FIELDS = (
     "elapsed_ms",
     "stats_ms",
@@ -52,7 +53,7 @@ def load_samples(directory, pairs):
             if usage["peak_kib"] == 0:
                 raise ValueError(f"invalid peak RSS {arm}/{pair}")
             for build in record["builds"]:
-                for field in ("rss_bytes", *PASS_FIELDS):
+                for field in (*MEMORY_FIELDS, *PASS_FIELDS):
                     value = build.get(field)
                     if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                         raise ValueError(f"invalid {field} in {arm}/{pair}")
@@ -69,7 +70,9 @@ def analyze(directory, pairs):
         "process_system_s": lambda rec, usage: usage["system_s"],
     }
     for index, stage in enumerate(STAGES):
-        selectors[f"{stage}_rss_mib"] = lambda rec, usage, index=index: rec["builds"][index]["rss_bytes"] / 1048576
+        for field in MEMORY_FIELDS:
+            name = field.removesuffix("_bytes")
+            selectors[f"{stage}_{name}_mib"] = lambda rec, usage, index=index, field=field: rec["builds"][index][field] / 1048576
         for field in PASS_FIELDS:
             selectors[f"{stage}_{field}"] = lambda rec, usage, index=index, field=field: rec["builds"][index][field]
     result = {"pairs": pairs, "candidate_minus_control": {}}

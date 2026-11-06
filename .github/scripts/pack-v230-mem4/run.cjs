@@ -64,10 +64,17 @@ const watching = compiler.watch({ aggregateTimeout: 50 }, (err, stats) => {
       throw err || new Error(stats ? stats.toString("errors-warnings") : "missing stats");
     }
     const elapsed_ms = Number(process.hrtime.bigint() - started) / 1e6;
-    const rss_bytes = process.memoryUsage.rss();
+    const memory = process.memoryUsage();
+    const sizes = {
+      rss_bytes: memory.rss,
+      heap_used_bytes: memory.heapUsed,
+      heap_total_bytes: memory.heapTotal,
+      external_bytes: memory.external,
+      array_buffers_bytes: memory.arrayBuffers,
+    };
     const passes = readPasses(stats);
-    builds.push({ elapsed_ms, rss_bytes, ...passes });
-    console.log(JSON.stringify({ build: builds.length - 1, elapsed_ms, rss_bytes, ...passes }));
+    builds.push({ elapsed_ms, ...sizes, ...passes });
+    console.log(JSON.stringify({ build: builds.length - 1, elapsed_ms, ...sizes, ...passes }));
     if (builds.length < 3) {
       const edit = builds.length;
       setTimeout(() => {
