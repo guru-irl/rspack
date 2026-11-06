@@ -1,0 +1,241 @@
+name: v2.3.0 memory packs
+on:
+  push:
+    branches: [bench/v230-mem4-m1-packs]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  VERSION: 2.3.0
+  BASE: ca0d75f5444f182acd571968395a3ac1aaff894c
+  FIX1: 5a0bd2f0bdda68d3efbac62604a94b7d88ec5249
+  FIX12: f998c49df43153ce58c7cac0050c8ecf7d7c7935
+  FIX12R: 179b41b93cd909fb434c722c9d37213388c5239e
+jobs:
+  official:
+    name: Published 2.3.0 tarballs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Pack published tarballs and check registry integrity
+        run: |
+          set -euo pipefail
+          mkdir -p official && cd official
+          for p in @rspack/core @rspack/binding @rspack/binding-linux-x64-gnu; do
+            j="$(echo "$p" | tr -d '@' | tr '/' '-').pack.json"
+            npm pack "$p@$VERSION" --json > "$j"
+            want=$(npm view "$p@$VERSION" dist.integrity)
+            got=$(node -e 'console.log(require(process.argv[1])[0].integrity)' "$PWD/$j")
+            test "$want" = "$got"
+            echo "$p@$VERSION $want" | tee -a integrity.txt
+          done
+          sha256sum ./*.tgz | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v230-official
+          path: official/
+          if-no-files-found: error
+          compression-level: 0
+  build:
+    name: Build ${{ matrix.arm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: m1
+            ref: 05e375b224c97f2abb6d39c9d816cae0981f0516
+            commits: 6
+            profile: release
+            allocative: ''
+            cross: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 20
+          persist-credentials: false
+      - name: Record exact source
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
+          date -u +%FT%TZ > bench-data/results/start-utc.txt
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
+          git merge-base --is-ancestor "$FIX1" HEAD
+          git merge-base --is-ancestor a757666ff20b5a17aed5fe514c15c2e4bf245935 HEAD
+          test "$(git rev-list --count "$BASE"..HEAD)" = '${{ matrix.commits }}'
+          git diff "$BASE" HEAD > bench-data/results/source-diff-from-v2.3.0.patch
+          git diff --stat "$BASE" HEAD | tee bench-data/results/source-diff-stat.txt
+          printf 'arm=%s ref=%s profile=%s allocative=%s cross=%s\n' '${{ matrix.arm }}' '${{ matrix.ref }}' '${{ matrix.profile }}' '${{ matrix.allocative }}' '${{ matrix.cross }}' | tee bench-data/results/arm.txt
+          test ! -d target
+      - name: Apply upstream allocative root macro fix (#16385) to allocative arms
+        if: ${{ matrix.allocative == '1' }}
+        run: |
+          set -euo pipefail
+          fix=1bd28315243e5351a41384366307cbd689c71d54
+          git fetch --no-tags --depth=2 https://github.com/web-infra-dev/rspack.git "$fix"
+          git diff "$fix~1" "$fix" -- crates/rspack_allocative_derive/src/root.rs crates/rspack_tracing_perfetto/src/lib.rs > bench-data/results/source-patch-16385.diff
+          git apply --verbose bench-data/results/source-patch-16385.diff
+          git diff --stat | tee bench-data/results/source-patch-applied.txt
+          test "$(git diff --name-only | wc -l)" -eq 2
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install binding dependencies
+        run: |
+          set -euo pipefail
+          pnpm --filter @rspack/binding install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: v230-${{ matrix.arm }}
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare release-style build
+        run: |
+          set -euo pipefail
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { date -u; node --version; pnpm --version; rustc -Vv; clang --version; gcc --version; ldd --version; df -h .; } > bench-data/results/environment.txt
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}"
+      - name: Build binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          ARM_CROSS: ${{ matrix.cross }}
+          ARM_ALLOCATIVE: ${{ matrix.allocative }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ARM_CROSS" ]; then export USE_NAPI_CROSS=1 TARGET_CC=clang; fi
+          if [ -n "$ARM_ALLOCATIVE" ]; then export ALLOCATIVE=1; fi
+          start=$(date +%s)
+          pnpm run build:binding:${{ matrix.profile }} 2>&1 | tee bench-data/results/native-build.log
+          echo "$(( $(date +%s) - start ))" > bench-data/results/build-seconds.txt
+          date -u +%FT%TZ > bench-data/results/build-end-utc.txt
+          grep -E 'Compiling (rspack_napi|rspack_binding_api|rspack_core) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -ge 3
+          grep -F -- '-Zbuild-std=panic_abort,std' bench-data/results/native-build.log > /dev/null
+          grep -oE -- '--features [a-z0-9,-]+' bench-data/results/native-build.log | head -1 | tee bench-data/results/features.txt
+          if [ -n "$ARM_ALLOCATIVE" ]; then
+            grep -q allocative bench-data/results/features.txt; grep -F -q -- '--cfg=allocative' bench-data/results/native-build.log
+          else
+            grep -qx -- '--features plugin,info-level' bench-data/results/features.txt; ! grep -F -q -- '--cfg=allocative' bench-data/results/native-build.log
+          fi
+          cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
+      - name: Package as @rspack/binding-linux-x64-gnu 2.3.0 and record glibc
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official bench-data/package bench-data/unpacked
+          (cd bench-data/official; npm pack "@rspack/binding-linux-x64-gnu@$VERSION")
+          tar -xzf "bench-data/official/rspack-binding-linux-x64-gnu-$VERSION.tgz" -C bench-data/official
+          cp -a bench-data/official/package bench-data/package/
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/package/package/
+          node -e 'const p=require("./bench-data/package/package/package.json"); if(p.name!=="@rspack/binding-linux-x64-gnu"||p.version!==process.env.VERSION)throw Error("Wrong package identity")'
+          (cd bench-data/package/package; npm pack --pack-destination ../../pack)
+          tar -xzf "bench-data/pack/rspack-binding-linux-x64-gnu-$VERSION.tgz" -C bench-data/unpacked
+          cmp bench-data/pack/rspack.linux-x64-gnu.node bench-data/unpacked/package/rspack.linux-x64-gnu.node
+          sha256sum bench-data/pack/* | tee bench-data/results/pack.sha256
+          ls -l bench-data/pack/ | tee bench-data/results/pack-sizes.txt
+          official=$(readelf --version-info bench-data/official/package/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          built=$(readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
+          if [ -n '${{ matrix.cross }}' ]; then test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v230-${{ matrix.arm }}-binding
+          path: bench-data/pack/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-${{ matrix.arm }}-evidence
+          path: bench-data/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 1
+  verify:
+    name: Verify output parity
+    needs: [official, build]
+    if: ${{ !cancelled() && needs.official.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v230-*-binding
+          path: bench-data/bindings
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-official
+          path: bench-data/official
+      - name: Download the fix12r reference
+        uses: actions/download-artifact@v4
+        with:
+          name: v230-fix12r-binding
+          path: bench-data/bindings/v230-fix12r-binding
+          run-id: 41730434649
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Output parity and allocative smoke
+        run: bash .github/scripts/pack-v230/verify-fix.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-mem4-verification
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
+  measure:
+    name: Paired graph memory measurements
+    needs: [build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v230-*-binding
+          path: bench-data/bindings
+      - name: Download the fix12r reference
+        uses: actions/download-artifact@v4
+        with:
+          name: v230-fix12r-binding
+          path: bench-data/fix12r
+          run-id: 41730434649
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Compare memory, time and output
+        run: bash .github/scripts/pack-v230/measure-mem4.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-mem4-measure
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
