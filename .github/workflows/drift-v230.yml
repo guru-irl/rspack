@@ -1,7 +1,7 @@
 name: v2.3.0 split chunk drift revert bindings
 on:
   push:
-    branches: [bench/v230-drift-reverts3]
+    branches: [bench/v230-named-group-fallback]
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,9 +22,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: sc229
-            ref: 0bc403ead61c394a5705354ee7ebf834f2afdebf
-            commits: 3
+          - arm: fallback
+            ref: 6e5ec96f9de1daedc0011de81058e576bf2142c2
+            commits: 1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,7 +45,7 @@ jobs:
         run: pnpm --filter @rspack/binding install --frozen-lockfile > bench-data/results/install.log 2>&1 || { tail -60 bench-data/results/install.log; exit 1; }
       - uses: ./.github/actions/rustup
         with:
-          key: v230-drift-reverts3
+          key: v230-named-group-fallback
           use-cache: false
       - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
