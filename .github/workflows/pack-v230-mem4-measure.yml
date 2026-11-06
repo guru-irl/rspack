@@ -1,0 +1,86 @@
+name: v2.3.0 memory experiments
+on:
+  push:
+    branches: [bench/v230-mem4-m3-measure]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  measure:
+    name: Compare ${{ matrix.arm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: f5
+            profile: rope
+            run: '42282473247'
+            artifact: v230-f5-binding
+            evidence: v230-f5-evidence
+            source: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
+          - arm: arena256
+            profile: arena
+            run: '42281303126'
+            artifact: v230-arena256-binding
+            evidence: v230-arena256-evidence
+            source: a757666ff20b5a17aed5fe514c15c2e4bf245935
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Wait for the candidate release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: timeout 5400s gh run watch '${{ matrix.run }}' --repo '${{ github.repository }}' --exit-status
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-fix12r-binding
+          path: bench-data/control
+          run-id: 41730434649
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: bench-data/candidate
+          run-id: ${{ matrix.run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.evidence }}
+          path: bench-data/candidate-evidence
+          run-id: ${{ matrix.run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Verify candidate provenance
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\n' < bench-data/candidate-evidence/source.sha)" = '${{ matrix.source }}'
+          expected=$(awk '$2 ~ /rspack.linux-x64-gnu.node$/ {print $1}' bench-data/candidate-evidence/pack.sha256)
+          test -n "$expected"
+          printf '%s  %s\n' "$expected" bench-data/candidate/rspack.linux-x64-gnu.node | sha256sum -c
+          if [ '${{ matrix.arm }}' = arena256 ]; then
+            grep -F '.min(256 * 1024)' bench-data/candidate-evidence/arena-change.txt
+          fi
+      - name: Compare peak, steady RSS and build phases
+        env:
+          PROFILE: ${{ matrix.profile }}
+          PAIRS: 8
+        run: bash .github/scripts/pack-v230-mem4/measure.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-mem4-${{ matrix.arm }}-measure
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
