@@ -117,13 +117,68 @@ export class RspackReplaceSource extends webpackSources.ReplaceSource {
   }
 }
 
+class LazyNativeSource extends webpackSources.Source {
+  private materialized?: Source;
+
+  constructor(private readonly nativeSource: JsNativeSource) {
+    super();
+  }
+
+  private getMaterialized(): Source {
+    return (this.materialized ??= SourceAdapter.fromBinding(
+      this.nativeSource.getSource(),
+      this.nativeSource,
+    ));
+  }
+
+  source() {
+    return this.getMaterialized().source();
+  }
+
+  buffer() {
+    return this.getMaterialized().buffer();
+  }
+
+  buffers() {
+    return this.getMaterialized().buffers();
+  }
+
+  size() {
+    return this.nativeSource.size();
+  }
+
+  map(options?: Source.MapOptions) {
+    return this.getMaterialized().map(options);
+  }
+
+  sourceAndMap(options?: Source.MapOptions) {
+    return this.getMaterialized().sourceAndMap(options);
+  }
+
+  updateHash(hash: Source.HashLike) {
+    this.getMaterialized().updateHash(hash);
+  }
+
+  clearCache(options?: Source.ClearCacheOptions, visited?: WeakSet<Source>) {
+    this.materialized?.clearCache(options, visited);
+  }
+}
+
 export class SourceAdapter {
+  static fromNative(nativeSource: JsNativeSource): Source {
+    const source = new LazyNativeSource(nativeSource);
+    nativeSources.set(source, nativeSource);
+    return source;
+  }
+
   static fromBinding(
     cache: JsSource | JsSourceWithLazyMap,
     nativeSource?: JsNativeSource | null,
   ): Source {
     let source: Source;
-    if (!cache.map) {
+    if ('sizeOnly' in cache && typeof cache.sizeOnly === 'number') {
+      source = new webpackSources.SizeOnlySource(cache.sizeOnly);
+    } else if (!cache.map) {
       source = new RawSource(cache.source);
     } else if (typeof cache.map === 'string') {
       source = new SourceMapSource(

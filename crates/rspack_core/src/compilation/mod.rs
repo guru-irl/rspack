@@ -233,6 +233,7 @@ pub struct Compilation {
   assets: CompilationAssets,
   assets_related_in: HashMap<String, HashSet<String>>,
   pub emitted_assets: DashSet<String, BuildHasherDefault<FxHasher>>,
+  pub(crate) preserve_asset_emitted_source: bool,
   diagnostics: Vec<Diagnostic>,
   logging: CompilationLogging,
   pub cache: CompilerCache,
@@ -393,6 +394,7 @@ impl Compilation {
       assets: Default::default(),
       assets_related_in: Default::default(),
       emitted_assets: Default::default(),
+      preserve_asset_emitted_source: false,
       diagnostics: Default::default(),
       logging,
       cache,
@@ -962,6 +964,11 @@ impl Compilation {
         self.assets.insert(new_name, asset);
       }
     }
+  }
+
+  #[doc(hidden)]
+  pub fn preserve_asset_emitted_source(&self) -> bool {
+    self.preserve_asset_emitted_source
   }
 
   pub fn assets(&self) -> &CompilationAssets {

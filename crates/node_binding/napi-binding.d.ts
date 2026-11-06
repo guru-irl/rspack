@@ -74,6 +74,7 @@ export type DependencyLocation = SyntheticDependencyLocation | RealDependencyLoc
 export interface JsSource {
 	source: string | Buffer
 	map?: string
+	sizeOnly?: number
 }
 
 export type JsSourceFromJs =
@@ -421,6 +422,8 @@ export declare class JsModuleGraph {
  * JavaScript uses this as an opaque handle when updating an existing asset.
  */
 export declare class JsNativeSource {
+  size(): number
+  getSource(): JsSource
   static fromSource(source: JsSourceFromJs): JsNativeSource
 }
 
@@ -733,6 +736,7 @@ export interface JsAssetEmittedArgs {
   filename: string
   outputPath: string
   targetPath: string
+  source?: JsNativeSource
 }
 
 export interface JsBannerContentFnCtx {
@@ -1370,6 +1374,7 @@ export interface JsRuntimeRequirementInTreeResult {
 export interface JsSourceToJs {
   source: string | Buffer
   map?: string
+  sizeOnly?: number
 }
 
 export interface JsSourceWithLazyMap {

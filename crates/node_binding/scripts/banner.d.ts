@@ -74,6 +74,7 @@ export type DependencyLocation = SyntheticDependencyLocation | RealDependencyLoc
 export interface JsSource {
 	source: string | Buffer
 	map?: string
+	sizeOnly?: number
 }
 
 export type JsSourceFromJs =

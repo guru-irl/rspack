@@ -109,7 +109,7 @@ use crate::{
     JsCreateLinkData, JsCreateScriptData, JsLinkPrefetchData, JsLinkPreloadData, JsRuntimeGlobals,
     JsRuntimeRequirementInTreeArg, JsRuntimeRequirementInTreeResult, JsRuntimeSpec,
   },
-  source::JsSourceToJs,
+  source::{JsNativeSource, JsSourceToJs},
 };
 
 #[napi(object)]
@@ -1244,7 +1244,7 @@ impl CompilerAfterEmit for CompilerAfterEmitTap {
 impl CompilerAssetEmitted for CompilerAssetEmittedTap {
   async fn run(
     &self,
-    _compilation: &Compilation,
+    compilation: &Compilation,
     filename: &str,
     info: &AssetEmittedInfo,
   ) -> rspack_error::Result<()> {
@@ -1254,6 +1254,11 @@ impl CompilerAssetEmitted for CompilerAssetEmittedTap {
         filename: filename.to_string(),
         output_path: info.output_path.as_str().to_owned(),
         target_path: info.target_path.as_str().to_owned(),
+        source: compilation
+          .preserve_asset_emitted_source()
+          .then(|| JsNativeSource {
+            inner: Arc::clone(&info.source),
+          }),
       })
       .await
   }

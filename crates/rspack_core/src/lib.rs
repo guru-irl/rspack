@@ -82,6 +82,9 @@ mod self_module;
 pub use self_module::*;
 mod compiler;
 pub use compiler::*;
+mod size_only_source;
+#[doc(hidden)]
+pub use size_only_source::SizeOnlySource;
 mod options;
 pub use options::*;
 mod module_graph;

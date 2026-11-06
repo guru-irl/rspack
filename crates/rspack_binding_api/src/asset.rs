@@ -12,6 +12,8 @@ use rspack_napi::unknown_to_json_value;
 use rspack_napi_macros::field_names;
 use rustc_hash::FxHashSet;
 
+use crate::source::JsNativeSource;
+
 #[derive(Clone)]
 #[napi(object)]
 pub struct AssetInfoRelated {
@@ -256,9 +258,10 @@ impl From<rspack_core::AssetInfo> for AssetInfo {
   }
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 pub struct JsAssetEmittedArgs {
   pub filename: String,
   pub output_path: String,
   pub target_path: String,
+  pub source: Option<JsNativeSource>,
 }

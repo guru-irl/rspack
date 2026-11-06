@@ -1,5 +1,6 @@
 import binding from '@rspack/binding';
 import type { Source } from 'webpack-sources';
+import { SourceAdapter } from '../util/source';
 import type { CreatePartialRegisters } from './types';
 
 export const createCompilerHooksRegisters: CreatePartialRegisters<
@@ -129,6 +130,7 @@ export const createCompilerHooksRegisters: CreatePartialRegisters<
           filename,
           targetPath,
           outputPath,
+          source: nativeSource,
         }: binding.JsAssetEmittedArgs) {
           let source: Source | undefined;
           let content: Buffer | undefined;
@@ -137,6 +139,9 @@ export const createCompilerHooksRegisters: CreatePartialRegisters<
             targetPath,
             outputPath,
             get source() {
+              if (source === undefined && nativeSource) {
+                source = SourceAdapter.fromNative(nativeSource);
+              }
               if (source === undefined) {
                 const assetSource = getCompiler()
                   .__internal__get_compilation()!

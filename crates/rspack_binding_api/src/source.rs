@@ -148,6 +148,7 @@ impl<'jsobject> TryFrom<JsSourceFromJs<'jsobject>> for BoxSource {
 pub struct JsSourceToJs {
   pub source: Either<String, Buffer>,
   pub map: Option<String>,
+  pub size_only: Option<f64>,
 }
 
 impl From<String> for JsSourceToJs {
@@ -155,6 +156,7 @@ impl From<String> for JsSourceToJs {
     Self {
       source: Either::A(source),
       map: None,
+      size_only: None,
     }
   }
 }
@@ -163,6 +165,17 @@ impl TryFrom<&BoxSource> for JsSourceToJs {
   type Error = napi::Error;
 
   fn try_from(value: &BoxSource) -> Result<Self> {
+    if let Some(size_only) = value
+      .as_ref()
+      .as_any()
+      .downcast_ref::<rspack_core::SizeOnlySource>()
+    {
+      return Ok(Self {
+        source: Either::A(String::new()),
+        map: None,
+        size_only: Some(size_only.size() as f64),
+      });
+    }
     match value.source() {
       SourceValue::String(string) => {
         let map = value.map(&MapOptions::default());
@@ -170,11 +183,13 @@ impl TryFrom<&BoxSource> for JsSourceToJs {
         Ok(JsSourceToJs {
           source: Either::A(string.into_owned()),
           map: json,
+          size_only: None,
         })
       }
       SourceValue::Buffer(bytes) => Ok(JsSourceToJs {
         source: Either::B(Buffer::from(bytes.to_vec())),
         map: None,
+        size_only: None,
       }),
     }
   }
@@ -182,6 +197,9 @@ impl TryFrom<&BoxSource> for JsSourceToJs {
 
 impl From<JsSourceToJs> for BoxSource {
   fn from(value: JsSourceToJs) -> Self {
+    if let Some(size) = value.size_only {
+      return rspack_core::SizeOnlySource::new(size as usize).boxed();
+    }
     match value.source {
       Either::A(string) => match value.map {
         Some(map) => SourceMapSource::new(WithoutOriginalOptions {
@@ -316,6 +334,16 @@ fn floor_js_source_index(index: f64) -> Option<u32> {
 
 #[napi]
 impl JsNativeSource {
+  #[napi]
+  pub fn size(&self) -> f64 {
+    self.inner.size() as f64
+  }
+
+  #[napi(ts_return_type = "JsSource")]
+  pub fn get_source(&self) -> Result<JsSourceToJs> {
+    JsSourceToJs::try_from(&self.inner)
+  }
+
   #[napi(factory, ts_args_type = "source: JsSourceFromJs")]
   pub fn from_source(source: JsSourceFromJs) -> Result<Self> {
     Ok(Self {

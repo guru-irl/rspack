@@ -7,7 +7,7 @@ use rspack_error::Result;
 use rspack_fs::{IntermediateFileSystem, ReadableFileSystem, WritableFileSystem};
 use rspack_hook::define_hook;
 use rspack_paths::{InternedPath, Utf8Path, Utf8PathBuf};
-use rspack_sources::BoxSource;
+use rspack_sources::{BoxSource, SourceExt};
 use rspack_tasks::{CompilerContext, within_compiler_context};
 use rspack_util::{node_path::NodePath, tracing_preset::TRACING_BENCH_TARGET};
 use rustc_hash::FxHashMap as HashMap;
@@ -19,6 +19,7 @@ use crate::{
   BoxPlugin, CacheOptions, CleanOptions, Compilation, CompilationAsset, CompilationLogging,
   CompilerOptions, CompilerPlatform, ContextModuleFactory, Filename, InfrastructureLogSink,
   KeepPattern, NormalModuleFactory, PluginDriver, ResolverFactory, SharedPluginDriver,
+  SizeOnlySource,
   artifacts::IncrementalArtifacts,
   compilation::build_module_graph::ModuleExecutor,
   fast_set,
@@ -445,6 +446,8 @@ impl Compiler {
       .call(&mut self.compilation)
       .await?;
 
+    let size_only = std::env::var("RSPACK_EMITTED_SOURCES").as_deref() == Ok("size-only");
+    self.compilation.preserve_asset_emitted_source = size_only;
     let mut new_emitted_asset_versions = HashMap::default();
     let emit_assets_incremental = self
       .compilation
@@ -488,6 +491,16 @@ impl Compiler {
 
     for result in emit_results {
       result.map_err(|error| rspack_error::error!("Emit asset failed: {error}"))??;
+    }
+
+    if size_only {
+      // All filesystem tasks and assetEmitted hooks have finished. Include assets
+      // skipped by the incremental version check, which still belong to this compilation.
+      for asset in self.compilation.assets_mut().values_mut() {
+        if let Some(source) = asset.source.as_mut() {
+          *source = SizeOnlySource::new(source.size()).boxed();
+        }
+      }
     }
 
     self.emitted_asset_versions = new_emitted_asset_versions;
