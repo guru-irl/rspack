@@ -17,7 +17,7 @@ cmp "$OFF" "$TMPDIR/official-gnu/package/rspack.linux-x64-gnu.node"
 M2="$W/pack/rspack.linux-x64-gnu.node"
 CORE="$W/pack/rspack-core-2.3.0.tgz"
 node gen.cjs | tee "$W/results/parity-fixture.txt"
-SCENARIOS=(cold warm watch prod multi)
+SCENARIOS=(cold warm watch prod multi child)
 run_arm() {
   local arm=$1 lib=$2 sha sc
   sha=$(sha256sum "$lib" | cut -d' ' -f1)
@@ -31,6 +31,7 @@ run_arm() {
     env -u NAPI_RS_NATIVE_LIBRARY_PATH -u RSPACK_ALLOCATIVE_DIR -u RSPACK_EMITTED_SOURCES "${envs[@]}" \
       node run.cjs same "$sc" >> "$W/results/parity.log" 2>&1
     test -s "results/same-$sc.txt"
+    if [ "$sc" = child ]; then test -s "dist/same/child/child.js"; fi
     mv "results/same-$sc.txt" "results/$arm-$sc.txt"
   done
 }

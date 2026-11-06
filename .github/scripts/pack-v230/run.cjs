@@ -1,4 +1,4 @@
-// Usage: node run.cjs <arm> <cold|warm|watch|prod|multi>
+// Usage: node run.cjs <arm> <cold|warm|watch|prod|multi|child>
 // multi: production build with three entries (three runtimes) and every shared module split out.
 // Proves the loaded binding via /proc/self/maps (EXPECT_SHA), builds, and writes results/<arm>-<scenario>.txt
 // with one "<sha256>  <relative path>" line per emitted file.
@@ -79,7 +79,22 @@ if (scenario === "watch") {
     }
   });
 } else {
-  const compiler = rspack(config(scenario === "prod" || scenario === "multi" ? scenario : "dev", out));
+  const options = config(scenario === "prod" || scenario === "multi" ? scenario : "dev", out);
+  if (scenario === "child") {
+    options.plugins = [{
+      apply(compiler) {
+        compiler.hooks.thisCompilation.tap("child-parity", compilation => {
+          compilation.hooks.processAssets.tapAsync("child-parity", (_assets, callback) => {
+            const child = compiler.createChildCompiler(compilation, "child", 0, { filename: "child.js" }, [
+              new compiler.rspack.EntryPlugin(work, "./src/route-0.ts", { name: "child" }),
+            ]);
+            child.runAsChild(error => callback(error));
+          });
+        });
+      },
+    }];
+  }
+  const compiler = rspack(options);
   compiler.run((err, stats) => {
     check(err, stats);
     compiler.close(() => finish(out));
