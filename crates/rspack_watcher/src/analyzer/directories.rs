@@ -79,9 +79,7 @@ impl Analyzer for WatcherDirectoriesAnalyzer {
     }
     let mut invalidated_paths = invalidated.paths.into_iter().collect();
     let prefixes = PathPrefixes::new(&mut invalidated_paths);
-    let is_invalidated = |path: &InternedPath| {
-      invalidated.all || prefixes.contains(path.as_path())
-    };
+    let is_invalidated = |path: &InternedPath| invalidated.all || prefixes.contains(path.as_path());
     if invalidated.all || !invalidated_paths.is_empty() {
       for path in path_accessor.all() {
         if is_invalidated(&path) {

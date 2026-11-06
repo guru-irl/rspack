@@ -358,10 +358,7 @@ impl DiskWatcher {
 
   /// Register before reading a directory, so a file is found either by the scan
   /// or by its live event. The caller has already applied the ignored filter.
-  pub(crate) fn watch_context_directory(
-    &mut self,
-    path: &InternedPath,
-  ) -> notify::Result<bool> {
+  pub(crate) fn watch_context_directory(&mut self, path: &InternedPath) -> notify::Result<bool> {
     #[cfg(target_os = "linux")]
     let context_watch_limit_reached = CONTEXTS_DISABLED.load(Ordering::Acquire);
     #[cfg(not(target_os = "linux"))]
