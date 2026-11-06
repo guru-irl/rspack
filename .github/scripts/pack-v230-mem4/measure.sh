@@ -39,17 +39,24 @@ for i in $(seq 1 "$PAIRS"); do
     library=$CONTROL
     if [ "$arm" = candidate ]; then library=$CANDIDATE; fi
     cp template/src/index.js work/same/src/index.js
+    if [ "$PROFILE" = mixed ]; then
+      cp template/src/modules/m0.js template/src/modules/m1.js work/same/src/modules/
+    fi
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$i" "$arm" | tee -a "$W/results/order.txt"
     timeout --signal=TERM --kill-after=30s 600s \
       /usr/bin/time -o "$W/results/time-$arm-$i.json" \
       -f '{"peak_kib":%M,"wall_s":%e,"user_s":%U,"system_s":%S,"major_faults":%F,"involuntary_context_switches":%c}' \
       env -u NAPI_RS_NATIVE_LIBRARY_PATH -u RSPACK_ALLOCATIVE_DIR -u RSPACK_MEM_DIAG \
-      EXPECT_LIBRARY="$library" NAPI_RS_NATIVE_LIBRARY_PATH="$library" \
+      PROFILE="$PROFILE" EXPECT_LIBRARY="$library" NAPI_RS_NATIVE_LIBRARY_PATH="$library" \
       node run.cjs "$W/results/metrics-$arm-$i.json" > "$W/results/run-$arm-$i.log" 2>&1
     test -s "$W/results/metrics-$arm-$i.json"
     test -s "$W/results/time-$arm-$i.json"
     (cd work/same/dist; find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$W/results/manifest-$arm-$i.txt"
     test -s "$W/results/manifest-$arm-$i.txt"
+    if [ "$PROFILE" = mixed ]; then
+      grep -qE '\.css$' "$W/results/manifest-$arm-$i.txt"
+      test "$(grep -cE '\.js$' "$W/results/manifest-$arm-$i.txt")" -ge 2
+    fi
   done
   cmp "$W/results/manifest-control-$i.txt" "$W/results/manifest-candidate-$i.txt"
   cmp "$W/results/manifest-control-1.txt" "$W/results/manifest-control-$i.txt"
