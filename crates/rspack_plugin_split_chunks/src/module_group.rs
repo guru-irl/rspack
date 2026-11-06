@@ -452,8 +452,41 @@ impl ModuleGroup {
     keep_chunks > keep_modules
   }
 
+  /// Preview the named-candidate narrowing below without changing the candidate: subtract the
+  /// placed copies, drop modules left below `minimum` chunks and keep the chunks that every
+  /// remaining module still has. Returns `None` when the placement takes no selected copy, and
+  /// otherwise whether the narrowed candidate keeps a module and at least `minimum` chunks.
+  fn named_narrowing_keeps_candidate(
+    sources: &IdentifierMap<FxHashSet<ChunkUkey>>,
+    chunks: &FxHashSet<ChunkUkey>,
+    placed: &ModuleChunkMap,
+    minimum: usize,
+  ) -> Option<bool> {
+    let mut changed = false;
+    let mut kept_module = false;
+    let mut narrowed = chunks.clone();
+    for (module, module_chunks) in sources {
+      let Some(removed) = placed.get(module) else {
+        kept_module = true;
+        narrowed.retain(|chunk| module_chunks.contains(chunk));
+        continue;
+      };
+      let lost = module_chunks
+        .iter()
+        .filter(|chunk| removed.contains(*chunk))
+        .count();
+      changed |= lost > 0;
+      if module_chunks.len() - lost < minimum {
+        continue;
+      }
+      kept_module = true;
+      narrowed.retain(|chunk| module_chunks.contains(chunk) && !removed.contains(chunk));
+    }
+    changed.then_some(kept_module && narrowed.len() >= minimum)
+  }
+
   /// Subtract committed placements from this candidate in the existing cleanup
-  /// traversal. Keep one remaining rectangle; never fork or rebuild a candidate.
+  /// traversal. Never fork a candidate.
   pub fn update_candidate(
     &mut self,
     placed: &ModuleChunkMap,
@@ -463,6 +496,28 @@ impl ModuleGroup {
   ) -> CandidateUpdate {
     let minimum = (cache.min_chunks as usize).max(1);
     if let ModuleGroupChunks::ByModule(sources) = &mut self.module_chunks {
+      if Self::named_narrowing_keeps_candidate(sources, &self.chunks, placed, minimum) == Some(false)
+      {
+        // Narrowing would leave no module or fewer than `minChunks` chunks, and the group would
+        // be dropped. Like webpack, drop only the modules that lost a selected copy and keep the
+        // other modules with their own chunks; the caller rebuilds the group's chunks from them.
+        // The kept modules lost no copy, so no extracted module gains a consumer.
+        scratch.extend(
+          sources
+            .iter()
+            .filter(|(module, chunks)| {
+              placed
+                .get(module)
+                .is_some_and(|removed| !chunks.is_disjoint(removed))
+            })
+            .map(|(module, _)| *module),
+        );
+        self.remove_modules(scratch.drain(..));
+        if self.modules.is_empty() {
+          return CandidateUpdate::Discard;
+        }
+        return CandidateUpdate::Updated;
+      }
       let mut changed = false;
       sources.retain(|module, chunks| {
         let Some(removed) = placed.get(module) else {
