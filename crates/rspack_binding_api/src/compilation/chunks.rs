@@ -46,13 +46,19 @@ impl Chunks {
   #[napi(js_name = "_values", ts_return_type = "Chunk[]")]
   pub fn values(&self) -> napi::Result<Vec<ChunkWrapper>> {
     let compilation = self.as_ref()?;
+    let mut chunk_ukeys = compilation
+      .build_chunk_graph_artifact
+      .chunk_by_ukey
+      .keys()
+      .copied()
+      .collect::<Vec<_>>();
+    // Keys increase at creation, even when other compilers allocate chunks concurrently.
+    chunk_ukeys.sort_unstable();
     Ok(
-      compilation
-        .build_chunk_graph_artifact
-        .chunk_by_ukey
-        .keys()
-        .map(|chunk_ukey| ChunkWrapper::new(*chunk_ukey, compilation))
-        .collect::<Vec<_>>(),
+      chunk_ukeys
+        .into_iter()
+        .map(|chunk_ukey| ChunkWrapper::new(chunk_ukey, compilation))
+        .collect(),
     )
   }
 
