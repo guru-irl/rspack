@@ -1,7 +1,7 @@
-name: v2.3.0 M3 final comparison
+name: v2.3.0 M3 callback order comparison
 on:
   push:
-    branches: [bench/v230-mem4-m3-final]
+    branches: [bench/v230-mem4-m3-safe-compare]
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,8 +10,8 @@ defaults:
   run:
     shell: bash
 env:
-  SOURCE: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
-  RELEASE_RUN: '42290127457'
+  SOURCE: b4aa409cf126d30a4dc3f94a8c4750f74f522c92
+  RELEASE_RUN: '42293433698'
   CONTROL_RUN: '42290127457'
   CONTROL_SOURCE: a757666ff20b5a17aed5fe514c15c2e4bf245935
   CONTROL_BINDING: v230-m3-base-binding
@@ -25,9 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: m3-mixed
-            profile: mixed
-          - arm: m3-rope
+          - arm: m3-safe-rope
             profile: rope
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +86,7 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
           PAIRS: 8
+          REPORT_METRICS: edit2_rss_mib,edit2_devtool_collect_ms
         run: bash .github/scripts/pack-v230-mem4/measure.sh
       - uses: actions/upload-artifact@v4
         if: always()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import math
+import os
 import pathlib
 import random
 import statistics
@@ -61,6 +62,15 @@ def load_samples(directory, pairs):
     return samples
 
 
+def selected_metrics(selectors, requested):
+    if not requested:
+        return selectors
+    names = requested.split(",")
+    if len(set(names)) != len(names) or any(name not in selectors for name in names):
+        raise ValueError(f"invalid metric selection: {requested}")
+    return {name: selectors[name] for name in names}
+
+
 def analyze(directory, pairs):
     samples = load_samples(directory, pairs)
     selectors = {
@@ -75,6 +85,7 @@ def analyze(directory, pairs):
             selectors[f"{stage}_{name}_mib"] = lambda rec, usage, index=index, field=field: rec["builds"][index][field] / 1048576
         for field in PASS_FIELDS:
             selectors[f"{stage}_{field}"] = lambda rec, usage, index=index, field=field: rec["builds"][index][field]
+    selectors = selected_metrics(selectors, os.environ.get("REPORT_METRICS"))
     result = {"pairs": pairs, "candidate_minus_control": {}}
     for number, (name, select) in enumerate(selectors.items()):
         a = [select(*samples["control", i]) for i in range(1, pairs + 1)]
@@ -84,6 +95,13 @@ def analyze(directory, pairs):
 
 
 def self_test():
+    assert selected_metrics({"a": 1, "b": 2}, "b") == {"b": 2}
+    try:
+        selected_metrics({"a": 1}, "missing")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown metric was accepted")
     better = paired_summary([10] * 5, [8] * 5)
     assert (better["paired_delta_median"], better["bootstrap_95_low"], better["bootstrap_95_high"]) == (-2, -2, -2)
     equal = paired_summary([10] * 5, [10] * 5)
