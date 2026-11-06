@@ -1,0 +1,98 @@
+name: v2.3.0 split chunks debug binding
+on:
+  push:
+    branches: [bench/v230-sc-debug]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  BASE: ca0d75f5444f182acd571968395a3ac1aaff894c
+  VERSION: 2.3.0
+jobs:
+  build:
+    name: Build ${{ matrix.arm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: debug
+            ref: 7009d570a4083b2baab420c54bbd508a511a99ff
+            commits: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 5
+          persist-credentials: false
+      - name: Record exact source
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
+          test "$(git rev-list --count "$BASE"..HEAD)" = '${{ matrix.commits }}'
+          git diff --stat "$BASE" HEAD | tee bench-data/results/source-diff-stat.txt
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install binding dependencies
+        run: pnpm --filter @rspack/binding install --frozen-lockfile > bench-data/results/install.log 2>&1 || { tail -60 bench-data/results/install.log; exit 1; }
+      - uses: ./.github/actions/rustup
+        with:
+          key: v230-sc-debug
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare release-style build
+        run: |
+          set -euo pipefail
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen > bench-data/results/codegen.log 2>&1
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}${ALLOCATIVE:-}"
+      - name: Build binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+        run: |
+          set -euo pipefail
+          export USE_NAPI_CROSS=1 TARGET_CC=clang
+          start=$(date +%s)
+          pnpm run build:binding:release > bench-data/results/native-build.log 2>&1 || { tail -80 bench-data/results/native-build.log; exit 1; }
+          echo "$(( $(date +%s) - start ))" > bench-data/results/build-seconds.txt
+          grep -E 'Compiling (rspack_core|rspack_plugin_split_chunks|rspack_binding_api) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -ge 3
+          grep -oE -- '--features [a-z0-9,-]+' bench-data/results/native-build.log | head -1 | tee bench-data/results/features.txt
+          grep -qx -- '--features plugin,info-level' bench-data/results/features.txt
+          ! grep -F -q -- '--cfg=allocative' bench-data/results/native-build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node "bench-data/pack/${{ matrix.arm }}.node"
+      - name: Record checksums and glibc
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official
+          (cd bench-data/official; npm pack "@rspack/binding-linux-x64-gnu@$VERSION" > /dev/null; tar -xzf "rspack-binding-linux-x64-gnu-$VERSION.tgz")
+          sha256sum bench-data/pack/* bench-data/official/package/rspack.linux-x64-gnu.node | tee bench-data/results/pack.sha256
+          official=$(readelf --version-info bench-data/official/package/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          built=$(readelf --version-info "bench-data/pack/${{ matrix.arm }}.node" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
+          test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v230-sc-${{ matrix.arm }}-binding
+          path: bench-data/pack/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-sc-${{ matrix.arm }}-evidence
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
