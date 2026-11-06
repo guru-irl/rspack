@@ -53,6 +53,25 @@ impl Chunk {
 
 #[napi]
 impl Chunk {
+  #[napi(
+    js_name = "_collectionStamp",
+    ts_args_type = "kind: 0 | 1 | 2, scope: JsCompilation",
+    ts_return_type = "number | undefined"
+  )]
+  pub fn collection_stamp(
+    &self,
+    kind: u32,
+    scope: &crate::compilation::JsCompilation,
+  ) -> Either<f64, ()> {
+    if self.compilation_id != scope.id {
+      return Either::B(());
+    }
+    match crate::chunk_collections::stamp(self.compilation_id, kind) {
+      Some(stamp) => Either::A(stamp),
+      None => Either::B(()),
+    }
+  }
+
   #[napi(getter)]
   pub fn name<'a>(&self, env: &'a Env) -> napi::Result<Either<JsString<'a>, ()>> {
     self.with_ref(|_, chunk| {
@@ -313,7 +332,7 @@ impl Chunk {
 }
 
 thread_local! {
-  static CHUNK_INSTANCE_REFS: RefCell<FxHashMap<CompilationId, FxHashMap<rspack_core::ChunkUkey, OneShotRef>>> = Default::default();
+  static CHUNK_INSTANCE_REFS: RefCell<FxHashMap<CompilationId, crate::chunk_collections::InstanceRefs<rspack_core::ChunkUkey>>> = Default::default();
 }
 
 pub struct ChunkWrapper {
@@ -346,11 +365,18 @@ impl ChunkWrapper {
     }
   }
 
-  pub fn cleanup_last_compilation(compilation_id: CompilationId) {
+  pub(crate) fn generation(compilation_id: CompilationId) -> Option<u64> {
     CHUNK_INSTANCE_REFS.with(|refs| {
-      let mut refs_by_compilation_id = refs.borrow_mut();
-      refs_by_compilation_id.remove(&compilation_id)
-    });
+      refs
+        .borrow()
+        .get(&compilation_id)
+        .map(|refs| refs.generation())
+    })
+  }
+
+  pub fn cleanup_last_compilation(compilation_id: CompilationId) {
+    let removed = CHUNK_INSTANCE_REFS.with(|refs| refs.borrow_mut().remove(&compilation_id));
+    drop(removed);
   }
 }
 
@@ -378,34 +404,33 @@ impl ToNapiValue for ChunkWrapper {
     env: napi::sys::napi_env,
     val: Self,
   ) -> napi::Result<napi::sys::napi_value> {
-    unsafe {
-      CHUNK_INSTANCE_REFS.with(|refs| {
-        let mut refs_by_compilation_id = refs.borrow_mut();
-        let entry = refs_by_compilation_id.entry(val.compilation_id);
-        let refs = match entry {
-          std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-          std::collections::hash_map::Entry::Vacant(entry) => {
-            let refs = FxHashMap::default();
-            entry.insert(refs)
-          }
-        };
-
-        match refs.entry(val.chunk_ukey) {
-          std::collections::hash_map::Entry::Occupied(entry) => {
-            let r = entry.get();
-            ToNapiValue::to_napi_value(env, r)
-          }
-          std::collections::hash_map::Entry::Vacant(entry) => {
-            let js_chunk = Chunk {
-              chunk_ukey: val.chunk_ukey,
-              compilation_id: val.compilation_id,
-            };
-            let r = entry.insert(OneShotRef::new(env, js_chunk)?);
-            ToNapiValue::to_napi_value(env, r)
-          }
-        }
-      })
+    if let Some(value) = CHUNK_INSTANCE_REFS
+      .with(|refs| {
+        refs
+          .borrow()
+          .get(&val.compilation_id)
+          .map(|refs| unsafe { refs.get(env, &val.chunk_ukey) })
+          .transpose()
+      })?
+      .flatten()
+    {
+      return Ok(value);
     }
+    // Allocation can re-enter JS: do not hold either map borrow here.
+    let value = unsafe {
+      OneShotRef::new(
+        env,
+        Chunk {
+          chunk_ukey: val.chunk_ukey,
+          compilation_id: val.compilation_id,
+        },
+      )?
+    };
+    CHUNK_INSTANCE_REFS.with(|refs| {
+      let mut refs = refs.borrow_mut();
+      let refs = refs.entry(val.compilation_id).or_default();
+      unsafe { refs.get_or_insert(env, val.chunk_ukey, value) }
+    })
   }
 }
 
