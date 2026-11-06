@@ -1,0 +1,186 @@
+name: v2.3.0 rope cache experiment
+on:
+  push:
+    branches: [bench/v230-mem4-f5build]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: 0
+  npm_config_registry: https://registry.npmjs.org
+  VERSION: 2.3.0
+  SOURCE: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
+jobs:
+  source-check:
+    name: Check and test source crate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
+          persist-credentials: false
+      - uses: ./.github/actions/rustup
+        with:
+          key: v230-rope-source
+          use-cache: false
+      - name: Check format
+        run: rustfmt --check --edition 2024 crates/rspack_sources/src/cached_source.rs
+      - name: Check source crate
+        run: cargo clippy -p rspack_sources --all-targets --all-features
+      - name: Test source crate
+        run: cargo test -p rspack_sources
+  official:
+    name: Published 2.3.0 tarballs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Pack published tarballs and check registry integrity
+        run: |
+          set -euo pipefail
+          mkdir -p official && cd official
+          for p in @rspack/core @rspack/binding @rspack/binding-linux-x64-gnu; do
+            j="$(echo "$p" | tr -d '@' | tr '/' '-').pack.json"
+            npm pack "$p@$VERSION" --json > "$j"
+            want=$(npm view "$p@$VERSION" dist.integrity)
+            got=$(node -e 'console.log(require(process.argv[1])[0].integrity)' "$PWD/$j")
+            test "$want" = "$got"
+            echo "$p@$VERSION $want" | tee -a integrity.txt
+          done
+          sha256sum ./*.tgz | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v230-official
+          path: official/
+          if-no-files-found: error
+          compression-level: 0
+  build:
+    name: Build rope cache candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
+          fetch-depth: 5
+          persist-credentials: false
+      - name: Record exact source
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/tmp bench-data/results bench-data/pack
+          echo "TMPDIR=$GITHUB_WORKSPACE/bench-data/tmp" >> "$GITHUB_ENV"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
+          date -u +%FT%TZ > bench-data/results/start-utc.txt
+          git rev-parse HEAD | tee bench-data/results/source.sha
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          git diff ca0d75f5444f182acd571968395a3ac1aaff894c HEAD > bench-data/results/source-diff-from-v2.3.0.patch
+          test ! -d target
+      - uses: ./.github/actions/pnpm/setup
+      - name: Install binding dependencies
+        run: |
+          set -euo pipefail
+          pnpm --filter @rspack/binding install --frozen-lockfile 2>&1 | tee bench-data/results/install.log
+      - uses: ./.github/actions/rustup
+        with:
+          key: v230-rope-experiment
+          use-cache: false
+      - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
+        with:
+          tool-cache: false
+      - name: Prepare release-style build
+        run: |
+          set -euo pipefail
+          command -v clang || { sudo apt-get update; sudo apt-get install -y clang; }
+          rustup target add x86_64-unknown-linux-gnu
+          cargo codegen 2>&1 | tee bench-data/results/codegen.log
+          printf '\ntrim-paths = true\n' >> .cargo/config.toml
+          { date -u; node --version; pnpm --version; rustc -Vv; clang --version; gcc --version; ldd --version; df -h .; } > bench-data/results/environment.txt
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${SFTRACE:-}${TRACY:-}${DISABLE_PLUGIN:-}"
+      - name: Build binding from scratch
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          USE_NAPI_CROSS: 1
+          TARGET_CC: clang
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          pnpm run build:binding:release 2>&1 | tee bench-data/results/native-build.log
+          echo "$(( $(date +%s) - start ))" > bench-data/results/build-seconds.txt
+          date -u +%FT%TZ > bench-data/results/build-end-utc.txt
+          grep -E 'Compiling (rspack_napi|rspack_binding_api|rspack_core) ' bench-data/results/native-build.log | tee bench-data/results/recompiled-crates.txt
+          test "$(wc -l < bench-data/results/recompiled-crates.txt)" -ge 3
+          grep -F -- '-Zbuild-std=panic_abort,std' bench-data/results/native-build.log > /dev/null
+          grep -oE -- '--features [a-z0-9,-]+' bench-data/results/native-build.log | head -1 | tee bench-data/results/features.txt
+          grep -qx -- '--features plugin,info-level' bench-data/results/features.txt
+          ! grep -F -q -- '--cfg=allocative' bench-data/results/native-build.log
+          cp crates/node_binding/rspack.linux-x64-gnu.node bench-data/pack/
+      - name: Package native binding and record glibc
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/official bench-data/package bench-data/unpacked
+          (cd bench-data/official; npm pack "@rspack/binding-linux-x64-gnu@$VERSION")
+          tar -xzf "bench-data/official/rspack-binding-linux-x64-gnu-$VERSION.tgz" -C bench-data/official
+          cp -a bench-data/official/package bench-data/package/
+          cp bench-data/pack/rspack.linux-x64-gnu.node bench-data/package/package/
+          node -e 'const p=require("./bench-data/package/package/package.json"); if(p.name!=="@rspack/binding-linux-x64-gnu"||p.version!==process.env.VERSION)throw Error("Wrong package identity")'
+          (cd bench-data/package/package; npm pack --pack-destination ../../pack)
+          tar -xzf "bench-data/pack/rspack-binding-linux-x64-gnu-$VERSION.tgz" -C bench-data/unpacked
+          cmp bench-data/pack/rspack.linux-x64-gnu.node bench-data/unpacked/package/rspack.linux-x64-gnu.node
+          sha256sum bench-data/pack/* | tee bench-data/results/pack.sha256
+          official=$(readelf --version-info bench-data/official/package/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          built=$(readelf --version-info bench-data/pack/rspack.linux-x64-gnu.node | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          printf 'official=%s\nbuilt=%s\n' "$official" "$built" | tee bench-data/results/glibc.txt
+          test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v230-f5-binding
+          path: bench-data/pack/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-f5-evidence
+          path: bench-data/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 1
+  verify:
+    name: Verify output parity
+    needs: [official, build]
+    if: ${{ !cancelled() && needs.official.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v230-*-binding
+          path: bench-data/bindings
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-official
+          path: bench-data/official
+      - name: Compare output with the published binding
+        run: bash .github/scripts/pack-v230/verify-fix.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-f5-verification
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1
