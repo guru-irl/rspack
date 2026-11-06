@@ -154,6 +154,32 @@ use crate::{
   },
 };
 
+fn record_memory_diagnostic(compiler: &Compiler) {
+  rspack_allocator::memory_diagnostic::record_done(compiler.id().as_u32(), || {
+    let Some(graph) = compiler.compilation.try_get_module_graph() else {
+      return "null".to_owned();
+    };
+    let stats = graph.memory_storage_stats();
+    let map = |s: &rspack_core::MemoryMapStats| serde_json::json!({"len": s.len, "some": s.some, "capacity": s.capacity});
+    let overlay = |s: &rspack_core::MemoryOverlayStats| {
+      serde_json::json!({
+        "base": map(&s.base),
+        "overlay": map(&s.overlay),
+        "overlay_values": s.overlay_values,
+        "both_values": s.both_values,
+        "same_values": s.same_values,
+      })
+    };
+    serde_json::json!({
+      "dep_meta_map": map(&stats.dep_meta_map),
+      "connection_to_condition": map(&stats.connection_to_condition),
+      "connections": overlay(&stats.connections),
+      "dependency_id_to_connection_id": overlay(&stats.dependency_id_to_connection_id),
+    })
+    .to_string()
+  });
+}
+
 // Export expected @rspack/core version
 /// Expected version of @rspack/core to the current binding version
 /// @internal
@@ -455,6 +481,7 @@ impl JsCompiler {
               print_error_diagnostic(e, compiler.options.stats.colors)
             });
             result?;
+            record_memory_diagnostic(compiler);
             tracing::debug!("build ok");
             Ok(())
           },
@@ -491,6 +518,7 @@ impl JsCompiler {
                 print_error_diagnostic(e, compiler.options.stats.colors)
               });
             result?;
+            record_memory_diagnostic(compiler);
             tracing::debug!("rebuild ok");
             Ok(())
           },

@@ -12,6 +12,14 @@ impl<V> Default for DenseDependencyIdMap<V> {
 }
 
 impl<V> DenseDependencyIdMap<V> {
+  pub(crate) fn memory_stats(&self) -> crate::MemoryMapStats {
+    crate::MemoryMapStats {
+      len: self.values.len(),
+      some: self.values.iter().filter(|value| value.is_some()).count(),
+      capacity: self.values.capacity(),
+    }
+  }
+
   #[inline]
   pub fn insert(&mut self, key: DependencyId, value: V) -> Option<V> {
     let index = key.as_u32() as usize;

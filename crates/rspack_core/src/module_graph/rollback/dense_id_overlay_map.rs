@@ -20,6 +20,38 @@ impl<K, V> Default for DenseIdOverlayMap<K, V> {
 }
 
 impl<K: Deref<Target = u32>, V> DenseIdOverlayMap<K, V> {
+  pub(crate) fn memory_stats_by(
+    &self,
+    same_value: impl Fn(&V, &V) -> bool,
+  ) -> crate::MemoryOverlayStats {
+    let base = crate::MemoryMapStats {
+      len: self.base.len(),
+      some: self.base.iter().filter(|value| value.is_some()).count(),
+      capacity: self.base.capacity(),
+    };
+    let mut result = crate::MemoryOverlayStats {
+      base,
+      ..Default::default()
+    };
+    if let Some(overlay) = &self.overlay {
+      result.overlay.len = overlay.len();
+      result.overlay.capacity = overlay.capacity();
+      for (index, slot) in overlay.iter().enumerate() {
+        if let Some(value) = slot {
+          result.overlay.some += 1;
+          if let OverlayValue::Value(value) = value {
+            result.overlay_values += 1;
+            if let Some(base_value) = self.base.get(index).and_then(Option::as_ref) {
+              result.both_values += 1;
+              result.same_values += usize::from(same_value(base_value, value));
+            }
+          }
+        }
+      }
+    }
+    result
+  }
+
   /// The first index beyond all allocated slots in the current graph snapshot.
   #[inline]
   pub fn next_index(&self) -> usize {

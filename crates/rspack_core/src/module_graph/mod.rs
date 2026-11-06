@@ -83,6 +83,36 @@ impl<'a> IncomingConnectionsByOriginModule<'a> {
   }
 }
 
+/// Counts used by the opt-in memory diagnostic.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct MemoryMapStats {
+  pub len: usize,
+  pub some: usize,
+  pub capacity: usize,
+}
+
+/// Occupancy and duplicate-value counts for a rollback map.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct MemoryOverlayStats {
+  pub base: MemoryMapStats,
+  pub overlay: MemoryMapStats,
+  pub overlay_values: usize,
+  pub both_values: usize,
+  pub same_values: usize,
+}
+
+/// Module-graph storage counts for a completed compilation.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ModuleGraphMemoryStats {
+  pub dep_meta_map: MemoryMapStats,
+  pub connection_to_condition: MemoryMapStats,
+  pub connections: MemoryOverlayStats,
+  pub dependency_id_to_connection_id: MemoryOverlayStats,
+}
+
 /// Internal data structure for ModuleGraph
 /// There're 3 kinds of data in module_graph here
 /// 1. Data only setting during Make Phase which no need for clone or overlay to recover
@@ -164,6 +194,22 @@ pub struct ModuleGraph {
 }
 
 impl ModuleGraph {
+  /// Count initialized slots and duplicated rollback values for diagnostics.
+  #[doc(hidden)]
+  pub fn memory_storage_stats(&self) -> ModuleGraphMemoryStats {
+    ModuleGraphMemoryStats {
+      dep_meta_map: self.inner.dep_meta_map.memory_stats(),
+      connection_to_condition: self.inner.connection_to_condition.memory_stats(),
+      connections: self
+        .inner
+        .connections
+        .memory_stats_by(ModuleGraphConnection::same_storage_value),
+      dependency_id_to_connection_id: self
+        .inner
+        .dependency_id_to_connection_id
+        .memory_stats_by(|a, b| a == b),
+    }
+  }
   // checkpoint
   pub fn checkpoint(&mut self) {
     self.inner.checkpoint()

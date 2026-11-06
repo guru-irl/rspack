@@ -58,6 +58,27 @@ impl PartialEq for ModuleGraphConnection {
 }
 
 impl ModuleGraphConnection {
+  pub(crate) fn same_storage_value(&self, other: &Self) -> bool {
+    let Self {
+      id,
+      dependency_id,
+      original_module_identifier,
+      resolved_original_module_identifier,
+      resolved_module,
+      module_identifier,
+      active,
+      conditional,
+    } = self;
+    id == &other.id
+      && dependency_id == &other.dependency_id
+      && original_module_identifier == &other.original_module_identifier
+      && resolved_original_module_identifier == &other.resolved_original_module_identifier
+      && resolved_module == &other.resolved_module
+      && module_identifier == &other.module_identifier
+      && active == &other.active
+      && conditional == &other.conditional
+  }
+
   pub fn new(
     id: ModuleGraphConnectionId,
     dependency_id: DependencyId,
