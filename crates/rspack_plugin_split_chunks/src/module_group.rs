@@ -452,10 +452,11 @@ impl ModuleGroup {
     keep_chunks > keep_modules
   }
 
-  /// Preview the named-candidate narrowing below without changing the candidate: subtract the
-  /// placed copies, drop modules left below `minimum` chunks and keep the chunks that every
-  /// remaining module still has. Returns `None` when the placement takes no selected copy, and
-  /// otherwise whether the narrowed candidate keeps a module and at least `minimum` chunks.
+  /// Decide, without changing the candidate, whether the named-candidate narrowing below keeps
+  /// it: after the placed copies are subtracted and modules left below `minimum` chunks are
+  /// dropped, at least one module must remain and at least `minimum` of the candidate's chunks
+  /// must hold every remaining module. Returns `None` when the placement takes no selected copy.
+  /// Counting stops at `minimum` common chunks, so this is cheaper than the narrowing itself.
   fn named_narrowing_keeps_candidate(
     sources: &IdentifierMap<FxHashSet<ChunkUkey>>,
     chunks: &FxHashSet<ChunkUkey>,
@@ -463,12 +464,9 @@ impl ModuleGroup {
     minimum: usize,
   ) -> Option<bool> {
     let mut changed = false;
-    let mut kept_module = false;
-    let mut narrowed = chunks.clone();
+    let mut dropped = IdentifierSet::default();
     for (module, module_chunks) in sources {
       let Some(removed) = placed.get(module) else {
-        kept_module = true;
-        narrowed.retain(|chunk| module_chunks.contains(chunk));
         continue;
       };
       let lost = module_chunks
@@ -477,12 +475,32 @@ impl ModuleGroup {
         .count();
       changed |= lost > 0;
       if module_chunks.len() - lost < minimum {
-        continue;
+        dropped.insert(*module);
       }
-      kept_module = true;
-      narrowed.retain(|chunk| module_chunks.contains(chunk) && !removed.contains(chunk));
     }
-    changed.then_some(kept_module && narrowed.len() >= minimum)
+    if !changed {
+      return None;
+    }
+    if dropped.len() == sources.len() {
+      return Some(false);
+    }
+    let mut common = 0;
+    for chunk in chunks {
+      let held_by_all = sources.iter().all(|(module, module_chunks)| {
+        dropped.contains(module)
+          || (module_chunks.contains(chunk)
+            && placed
+              .get(module)
+              .is_none_or(|removed| !removed.contains(chunk)))
+      });
+      if held_by_all {
+        common += 1;
+        if common == minimum {
+          return Some(true);
+        }
+      }
+    }
+    Some(false)
   }
 
   /// Subtract committed placements from this candidate in the existing cleanup
@@ -500,7 +518,7 @@ impl ModuleGroup {
         == Some(false)
       {
         // Narrowing would leave no module or fewer than `minChunks` chunks, and the group would
-        // be dropped. Like webpack, drop only the modules that lost a selected copy and keep the
+        // be dropped. As 2.2.9 did, drop only the modules that lost a selected copy and keep the
         // other modules with their own chunks; the caller rebuilds the group's chunks from them.
         // The kept modules lost no copy, so no extracted module gains a consumer.
         scratch.extend(
