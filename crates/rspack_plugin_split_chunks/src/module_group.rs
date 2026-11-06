@@ -496,7 +496,8 @@ impl ModuleGroup {
   ) -> CandidateUpdate {
     let minimum = (cache.min_chunks as usize).max(1);
     if let ModuleGroupChunks::ByModule(sources) = &mut self.module_chunks {
-      if Self::named_narrowing_keeps_candidate(sources, &self.chunks, placed, minimum) == Some(false)
+      if Self::named_narrowing_keeps_candidate(sources, &self.chunks, placed, minimum)
+        == Some(false)
       {
         // Narrowing would leave no module or fewer than `minChunks` chunks, and the group would
         // be dropped. Like webpack, drop only the modules that lost a selected copy and keep the
