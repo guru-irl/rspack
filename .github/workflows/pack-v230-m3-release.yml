@@ -1,7 +1,7 @@
-name: v2.3.0 M3 memory pack
+name: v2.3.0 M3 safe memory pack
 on:
   push:
-    branches: [bench/v230-mem4-m3-build]
+    branches: [bench/v230-mem4-m3-safe-build]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,8 +13,7 @@ env:
   CARGO_INCREMENTAL: 0
   npm_config_registry: https://registry.npmjs.org
   VERSION: 2.3.0
-  SOURCE: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
-  CONTROL_SOURCE: a757666ff20b5a17aed5fe514c15c2e4bf245935
+  SOURCE: b4aa409cf126d30a4dc3f94a8c4750f74f522c92
 jobs:
   source-check:
     name: Check and test source crate
@@ -70,17 +69,13 @@ jobs:
           if-no-files-found: error
           compression-level: 0
   build:
-    name: Build ${{ matrix.arm }} binding
+    name: Build M3 binding
     runs-on: ubuntu-22.04
     timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      matrix:
-        arm: [m3-base, m3]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.arm == 'm3-base' && env.CONTROL_SOURCE || env.SOURCE }}
+          ref: ${{ env.SOURCE }}
           fetch-depth: 0
           persist-credentials: false
       - name: Record exact source
@@ -91,9 +86,7 @@ jobs:
           printf '%s\n' "$ImageOS" "$ImageVersion" > bench-data/results/runner-image.txt
           date -u +%FT%TZ > bench-data/results/start-utc.txt
           git rev-parse HEAD | tee bench-data/results/source.sha
-          expected="$SOURCE"
-          if [ '${{ matrix.arm }}' = m3-base ]; then expected="$CONTROL_SOURCE"; fi
-          test "$(git rev-parse HEAD)" = "$expected"
+          test "$(git rev-parse HEAD)" = "$SOURCE"
           git diff ca0d75f5444f182acd571968395a3ac1aaff894c HEAD > bench-data/results/source-diff-from-v2.3.0.patch
           test ! -d target
       - uses: ./.github/actions/pnpm/setup
@@ -154,14 +147,14 @@ jobs:
           test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
       - uses: actions/upload-artifact@v4
         with:
-          name: v230-${{ matrix.arm }}-binding
+          name: v230-m3-binding
           path: bench-data/pack/
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v230-${{ matrix.arm }}-evidence
+          name: v230-m3-evidence
           path: bench-data/results/
           include-hidden-files: true
           if-no-files-found: error
