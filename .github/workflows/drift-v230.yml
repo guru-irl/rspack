@@ -1,7 +1,7 @@
-name: v2.3.0 named split chunk group rule binding
+name: v2.3.0 split chunk drift revert bindings
 on:
   push:
-    branches: [bench/v230-named-group-rule]
+    branches: [bench/v230-drift-reverts]
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,9 +22,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: fix
-            ref: dcf0ad42db95636c5fce0a5aed1306ee33ae2891
-            commits: 1
+          - arm: r16312
+            ref: 2d27a255334e446b87d2b2b19ac9b2aa9ef52eac
+            commits: 2
+          - arm: r16075
+            ref: 4951d8b9df6dc3c02f6a8c378d17011b90cc6a21
+            commits: 2
+          - arm: r16129
+            ref: 150a19e3b1e2e6fd4ff1eb49c08c7802705bdb9d
+            commits: 2
+          - arm: r16197
+            ref: 684a8a1365fb737006b8081f51134d39352fb6ca
+            commits: 2
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,7 +54,7 @@ jobs:
         run: pnpm --filter @rspack/binding install --frozen-lockfile > bench-data/results/install.log 2>&1 || { tail -60 bench-data/results/install.log; exit 1; }
       - uses: ./.github/actions/rustup
         with:
-          key: v230-named-group-rule
+          key: v230-drift-reverts
           use-cache: false
       - uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe
         with:
@@ -85,14 +94,14 @@ jobs:
           test "$(printf '%s\n' "$official" "$built" | sort -V | tail -1)" = "$official"
       - uses: actions/upload-artifact@v4
         with:
-          name: v230-named-group-${{ matrix.arm }}-binding
+          name: v230-drift-${{ matrix.arm }}-binding
           path: bench-data/pack/
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v230-named-group-${{ matrix.arm }}-evidence
+          name: v230-drift-${{ matrix.arm }}-evidence
           path: bench-data/results/
           if-no-files-found: error
           compression-level: 1
