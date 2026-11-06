@@ -16,6 +16,8 @@ use crate::{
   source::SourceValue,
 };
 
+const MAX_CACHED_CHUNKS: usize = 128;
+
 #[derive(Default)]
 struct CachedData {
   hash: OnceLock<u64>,
@@ -86,8 +88,6 @@ impl CachedSource {
 
   fn get_or_init_chunks<'a>(&'a self) -> Option<Cow<'a, [&'a str]>> {
     // Keep long ropes transient rather than retaining their chunk references.
-    const MAX_CACHED_CHUNKS: usize = 128;
-
     let mut uncached = None;
     let cached = self.cache.chunks.get_or_init(|| {
       let mut chunks = Vec::new();
@@ -184,7 +184,13 @@ impl Source for CachedSource {
         on_chunk(chunk);
       }
     } else {
-      self.inner.rope(on_chunk);
+      // Callers may reenter while the inner source holds a traversal lock.
+      // Finish the traversal first, just as when the chunks are cached.
+      let mut chunks = Vec::with_capacity(MAX_CACHED_CHUNKS + 1);
+      self.inner.rope(&mut |chunk| chunks.push(chunk));
+      for chunk in chunks {
+        on_chunk(chunk);
+      }
     }
   }
 
