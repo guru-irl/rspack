@@ -10,14 +10,19 @@ EXPECTED_CONTROL=${EXPECTED_CONTROL:-0485a440a7efe512ae78ad1e4235bfb2ece37c9d39f
 mkdir -p "$W/tmp" "$W/results" "$W/fixture"
 export TMPDIR=$W/tmp
 M=$W/fixture
-cp "$S/generate.cjs" "$S/run.cjs" "$S/analyze.py" "$M/"
+cp "$S/generate.cjs" "$S/generate-mixed.cjs" "$S/run.cjs" "$S/analyze.py" "$M/"
 cd "$M"
 printf '{"private":true}\n' > package.json
 npm install --no-audit --no-fund --ignore-scripts "@rspack/core@2.3.0" > "$W/results/npm-install.log" 2>&1
 python3 analyze.py --self-test | tee "$W/results/analyzer-control.txt"
-node generate.cjs "$PROFILE" | tee "$W/results/fixture.txt"
+if [ "$PROFILE" = mixed ]; then
+  node generate-mixed.cjs template | tee "$W/results/fixture.txt"
+else
+  node generate.cjs "$PROFILE" | tee "$W/results/fixture.txt"
+fi
 mkdir -p work/same
 cp -R template/src work/same/src
+if [ -f template/package.json ]; then cp template/package.json work/same/; fi
 printf '%s  %s\n' "$EXPECTED_CONTROL" "$CONTROL" | sha256sum -c
 sha256sum "$CONTROL" "$CANDIDATE" | tee "$W/results/bindings.sha256"
 if cmp -s "$CONTROL" "$CANDIDATE"; then

@@ -1,7 +1,7 @@
-name: v2.3.0 memory confirmation
+name: v2.3.0 mixed workload smoke
 on:
   push:
-    branches: [bench/v230-mem4-f6-repeat]
+    branches: [bench/v230-mem4-m3-mixed-smoke]
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,15 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: arena-repeat
-            profile: arena
-            run: '42281303126'
-            artifact: v230-arena256-binding
-            evidence: v230-arena256-evidence
-            source: a757666ff20b5a17aed5fe514c15c2e4bf245935
-            identical: '0'
-          - arm: arena-aa
-            profile: arena
+          - arm: mixed-aa
+            profile: mixed
             run: '41730434649'
             artifact: v230-fix12r-binding
             evidence: v230-fix12r-evidence
@@ -72,13 +65,10 @@ jobs:
           expected=$(awk '$2 ~ /rspack.linux-x64-gnu.node$/ {print $1}' bench-data/candidate-evidence/pack.sha256)
           test -n "$expected"
           printf '%s  %s\n' "$expected" bench-data/candidate/rspack.linux-x64-gnu.node | sha256sum -c
-          if [ '${{ matrix.arm }}' = arena-repeat ]; then
-            grep -F '.min(256 * 1024)' bench-data/candidate-evidence/arena-change.txt
-          fi
       - name: Compare peak, steady RSS and build phases
         env:
           PROFILE: ${{ matrix.profile }}
-          PAIRS: 8
+          PAIRS: 5
           ALLOW_IDENTICAL: ${{ matrix.identical }}
         run: bash .github/scripts/pack-v230-mem4/measure.sh
       - uses: actions/upload-artifact@v4
