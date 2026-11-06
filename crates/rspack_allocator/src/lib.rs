@@ -38,5 +38,10 @@ pub mod memory_diagnostic;
 )))]
 pub mod memory_diagnostic {
   #[inline]
-  pub fn record_done(_compiler_id: u32, _graph_stats: impl FnOnce() -> String) {}
+  pub fn record_native_build(
+    _compiler_id: u32,
+    _is_rebuild: bool,
+    _build_data: impl FnOnce() -> (String, String, String),
+  ) {
+  }
 }

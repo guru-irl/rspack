@@ -2,10 +2,16 @@ use std::{
   fs::{File, OpenOptions},
   io::Write,
   path::PathBuf,
-  sync::{Mutex, OnceLock},
+  sync::{LazyLock, Mutex},
+  time::{SystemTime, UNIX_EPOCH},
 };
 
-static WRITER: OnceLock<Option<Mutex<Option<File>>>> = OnceLock::new();
+struct Writer {
+  file: File,
+  seq: u64,
+}
+
+static WRITER: LazyLock<Option<Mutex<Option<Writer>>>> = LazyLock::new(open_writer);
 
 fn warn(error: impl std::fmt::Display) {
   let _ = writeln!(
@@ -14,14 +20,14 @@ fn warn(error: impl std::fmt::Display) {
   );
 }
 
-fn open_writer() -> Option<Mutex<Option<File>>> {
+fn open_writer() -> Option<Mutex<Option<Writer>>> {
   let path = PathBuf::from(std::env::var_os("RSPACK_MEM_DIAG")?);
   if !path.is_absolute() {
     warn("RSPACK_MEM_DIAG must be an absolute path");
     return None;
   }
   match OpenOptions::new().create(true).append(true).open(path) {
-    Ok(file) => Some(Mutex::new(Some(file))),
+    Ok(file) => Some(Mutex::new(Some(Writer { file, seq: 0 }))),
     Err(error) => {
       warn(error);
       None
@@ -29,17 +35,29 @@ fn open_writer() -> Option<Mutex<Option<File>>> {
   }
 }
 
-/// Record process information when the diagnostic is enabled.
-pub fn record_done(compiler_id: u32, graph_stats: impl FnOnce() -> String) {
-  let Some(writer) = WRITER.get_or_init(open_writer) else {
+/// Record process information when a native build completes.
+pub fn record_native_build(
+  compiler_id: u32,
+  is_rebuild: bool,
+  build_data: impl FnOnce() -> (String, String, String),
+) {
+  let Some(writer) = LazyLock::force(&WRITER) else {
     return;
   };
+  let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).ok();
   let Ok(mut writer) = writer.lock() else {
     return;
   };
-  let Some(file) = writer.as_mut() else {
+  let Some(state) = writer.as_mut() else {
     return;
   };
+  state.seq = state.seq.saturating_add(1);
+  let seq = state.seq;
+  let ts_ms = timestamp.map_or_else(
+    || "null".to_owned(),
+    |duration| duration.as_millis().to_string(),
+  );
+  let kind = if is_rebuild { "rebuild" } else { "build" };
   let mut current_rss = 0;
   let mut peak_rss = 0;
   let mut current_commit = 0;
@@ -63,12 +81,16 @@ pub fn record_done(compiler_id: u32, graph_stats: impl FnOnce() -> String) {
   #[cfg(not(target_os = "linux"))]
   let os_rss: Option<usize> = None;
   let os_rss = os_rss.map_or_else(|| "null".to_owned(), |value| value.to_string());
-  let graph_stats = graph_stats();
+  let (compiler, compiler_path, graph_stats) = build_data();
   let line = format!(
-    "{{\"event\":\"done\",\"pid\":{},\"compiler_id\":{compiler_id},\"current_rss\":{current_rss},\"peak_rss\":{peak_rss},\"current_commit\":{current_commit},\"peak_commit\":{peak_commit},\"page_faults\":{page_faults},\"os_rss\":{os_rss},\"module_graph\":{graph_stats}}}\n",
+    "{{\"event\":\"native_build_complete\",\"seq\":{seq},\"ts_ms\":{ts_ms},\"compiler\":{compiler},\"compiler_path\":{compiler_path},\"kind\":\"{kind}\",\"pid\":{},\"compiler_id\":{compiler_id},\"current_rss\":{current_rss},\"peak_rss\":{peak_rss},\"current_commit\":{current_commit},\"peak_commit\":{peak_commit},\"page_faults\":{page_faults},\"os_rss\":{os_rss},\"module_graph\":{graph_stats}}}\n",
     std::process::id(),
   );
-  if let Err(error) = file.write_all(line.as_bytes()).and_then(|()| file.flush()) {
+  if let Err(error) = state
+    .file
+    .write_all(line.as_bytes())
+    .and_then(|()| state.file.flush())
+  {
     *writer = None;
     warn(error);
   }

@@ -8,12 +8,31 @@ const corePath = createRequire(import.meta.url).resolve("@rspack/core");
 const childScript = `
 const { rspack } = require(process.env.TEST_CORE_PATH);
 const fs = require("node:fs");
-const compiler = rspack({
+const config = {
   context: process.env.TEST_CONTEXT,
   entry: "./c",
   mode: "development",
+  name: process.env.TEST_COMPILER_NAME,
   output: { path: process.env.TEST_OUTPUT },
-});
+};
+const compiler = rspack(config);
+function finish() {
+  compiler.close(() => {
+    if (!process.env.TEST_SECOND_COMPILER) return;
+    const second = rspack({
+      ...config,
+      name: "ssr",
+      output: { path: process.env.TEST_OUTPUT, filename: "second.js" },
+    });
+    second.run((error, stats) => {
+      if (error || stats.hasErrors()) {
+        console.error(error || stats.toString("errors-only"));
+        process.exitCode = 1;
+      }
+      second.close(() => {});
+    });
+  });
+}
 let count = 0;
 const watching = compiler.watch({}, (error, stats) => {
   if (error || stats.hasErrors()) {
@@ -25,22 +44,25 @@ const watching = compiler.watch({}, (error, stats) => {
     if (process.env.TEST_REPAIR_DIAG) fs.rmdirSync(process.env.RSPACK_MEM_DIAG);
     return watching.invalidate();
   }
-  watching.close(() => compiler.close(() => {}));
+  watching.close(finish);
 });
 `;
 
-function runChild(context, dir, diag, repair = false) {
+function runChild(context, dir, diag, repair = false, second = false) {
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
       TEST_CORE_PATH: corePath,
       TEST_CONTEXT: context,
       TEST_OUTPUT: join(dir, "dist"),
+      TEST_COMPILER_NAME: 'client "main"',
     };
     if (diag === undefined) delete env.RSPACK_MEM_DIAG;
     else env.RSPACK_MEM_DIAG = diag;
     if (repair) env.TEST_REPAIR_DIAG = "1";
     else delete env.TEST_REPAIR_DIAG;
+    if (second) env.TEST_SECOND_COMPILER = "1";
+    else delete env.TEST_SECOND_COMPILER;
     const child = spawn(process.execPath, ["-e", childScript], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -63,12 +85,27 @@ export default {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "rspack-mem-diag-")));
     try {
       const log = join(dir, "diagnostic.jsonl");
-      const result = await runChild(context.getSource(), dir, log);
+      const result = await runChild(context.getSource(), dir, log, false, true);
       expect(result).toEqual({ code: 0, output: "" });
       const lines = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
-      expect(lines).toHaveLength(2);
+      expect(lines).toHaveLength(3);
+      expect(new Set(lines.map(line => line.pid)).size).toBe(1);
+      expect(lines.map(line => line.seq)).toEqual([1, 2, 3]);
+      expect(lines.map(line => line.kind)).toEqual(["build", "rebuild", "build"]);
+      expect(lines.map(line => line.compiler)).toEqual([
+        'client "main"', 'client "main"', "ssr",
+      ]);
+      expect(lines.map(line => line.compiler_path)).toEqual([
+        'client "main"', 'client "main"', "ssr",
+      ]);
       expect(lines[0].compiler_id).toBe(lines[1].compiler_id);
+      expect(lines[0].compiler_id).not.toBe(lines[2].compiler_id);
       for (const line of lines) {
+        expect(line.event).toBe("native_build_complete");
+        expect(line).not.toHaveProperty("child");
+        expect(Number.isInteger(line.ts_ms)).toBe(true);
+        expect(line.ts_ms).toBeGreaterThan(0);
+        expect(Math.abs(Date.now() - line.ts_ms)).toBeLessThan(120000);
         for (const field of ["current_rss", "peak_rss", "current_commit", "peak_commit", "page_faults"]) {
           expect(typeof line[field]).toBe("number");
           expect(line[field]).toBeGreaterThanOrEqual(0);
@@ -113,7 +150,7 @@ export default {
       }
       const disabled = await runChild(context.getSource(), dir, undefined);
       expect(disabled).toEqual({ code: 0, output: "" });
-      expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+      expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(3);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
