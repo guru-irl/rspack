@@ -56,6 +56,17 @@ impl CacheCodec {
     to_bytes(data, &self.context).map_err(rspack_error::Error::from_error)
   }
 
+  #[cfg(not(target_family = "wasm"))]
+  pub(crate) fn encode_aligned<T>(
+    &self,
+    data: &T,
+  ) -> Result<rspack_cacheable::rkyv::util::AlignedVec>
+  where
+    T: for<'a> Serialize<Serializer<'a>>,
+  {
+    rspack_cacheable::to_aligned_bytes(data, &self.context).map_err(rspack_error::Error::from_error)
+  }
+
   pub fn decode<T>(&self, bytes: &[u8]) -> Result<T>
   where
     T: Archive,
