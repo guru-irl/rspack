@@ -1,0 +1,62 @@
+name: v2.3.0 M3 installed tarball smoke
+on:
+  push:
+    branches: [bench/v230-mem4-m3-install]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  install:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      RELEASE_RUN: '42293433698'
+      EXPECT_NATIVE_SHA: 5d1de9a48d9b42ffaa1871d9e4e8481730978969d353e5405dee438b9a9343f6
+      EXPECT_TARBALL_SHA: 1af37df883e4089c569a9c1695be3430f24a4fe2e0a4a7906b2a81f82e3ba414
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-m3-binding
+          path: bench-data/candidate
+          run-id: ${{ env.RELEASE_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Verify the exact release files
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$EXPECT_NATIVE_SHA" bench-data/candidate/rspack.linux-x64-gnu.node | sha256sum -c
+          printf '%s  %s\n' "$EXPECT_TARBALL_SHA" bench-data/candidate/rspack-binding-linux-x64-gnu-2.3.0.tgz | sha256sum -c
+          mkdir -p bench-data/unpacked
+          tar -xzf bench-data/candidate/rspack-binding-linux-x64-gnu-2.3.0.tgz -C bench-data/unpacked
+          cmp bench-data/candidate/rspack.linux-x64-gnu.node bench-data/unpacked/package/rspack.linux-x64-gnu.node
+      - name: Install the tarball and compile
+        run: |
+          set -euo pipefail
+          mkdir -p bench-data/install
+          cp .github/scripts/pack-v230-mem4/install-smoke.cjs bench-data/install/smoke.cjs
+          cd bench-data/install
+          printf '{"private":true}\n' > package.json
+          printf 'export const answer = 42;\n' > entry.js
+          npm install --no-audit --no-fund --ignore-scripts @rspack/core@2.3.0 @rspack/binding@2.3.0 "$GITHUB_WORKSPACE/bench-data/candidate/rspack-binding-linux-x64-gnu-2.3.0.tgz"
+          env -u NAPI_RS_NATIVE_LIBRARY_PATH node smoke.cjs | tee result.json
+          if env -u NAPI_RS_NATIVE_LIBRARY_PATH EXPECT_NATIVE_SHA="$(printf '%064d' 0)" node smoke.cjs > bad-sha.log 2>&1; then
+            echo 'incorrect binding digest was accepted' >&2
+            exit 1
+          fi
+          grep -F 'binding SHA mismatch' bad-sha.log > /dev/null
+          echo 'installed-binding digest control passed'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v230-m3-install-smoke
+          path: |
+            bench-data/install/result.json
+            bench-data/install/bad-sha.log
+          if-no-files-found: warn
