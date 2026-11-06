@@ -1,0 +1,45 @@
+name: v2.3.0 emitted sources no-tap diagnostic
+on:
+  push:
+    branches: [bench/v230-mem4-m2-notap]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  measure:
+    name: Five same-binary pairs without assetEmitted tap
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      VERSION: 2.3.0
+      npm_config_registry: https://registry.npmjs.org
+      MEASURE_ASSET_EMITTED_TAP: "off"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: m2-pack
+          path: bench-data/pack
+          run-id: 42304356958
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify identical release packages and measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd bench-data/pack && sha256sum -c SHA256SUMS)
+          test "$(sha256sum bench-data/pack/rspack.linux-x64-gnu.node | cut -d' ' -f1)" = 1580eebdc904e1c20b592c3c6c2c67b20f25d12b16432abe60024f4974a7caa8
+          test "$(sha256sum bench-data/pack/rspack-core-2.3.0.tgz | cut -d' ' -f1)" = 164e8375d7c18b6bd5b361418aa240866e9b17d193ced5ca66969e7d5fe396f2
+          node .github/scripts/pack-v230/measure-mem4.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m2-no-tap-measure
+          path: bench-data/results/
+          if-no-files-found: error
+          compression-level: 1

@@ -31,6 +31,8 @@ function interval(deltas) {
   return [draws[Math.floor(0.025 * (draws.length - 1))], draws[Math.floor(0.975 * (draws.length - 1))]];
 }
 const sameManifest = (a, b) => Boolean(a && b && a === b);
+const validHookCalls = (calls, enabled) => Array.isArray(calls) && calls.length === 3 &&
+  calls.every((n) => Number.isInteger(n) && (enabled ? n > 0 : n === 0));
 function selfTest() {
   assert.equal(median([3, 1, 2]), 2);
   assert.deepEqual(interval([-2, -2, -2, -2, -2]), [-2, -2]);
@@ -39,6 +41,10 @@ function selfTest() {
   assert.ok(!sameManifest("hash  one\n", "changed  one\n"));
   assert.ok(!sameManifest("hash  one\n", "hash  two\n"));
   assert.ok(!sameManifest("hash  one\n", ""));
+  assert.ok(validHookCalls([1, 2, 3], true));
+  assert.ok(!validHookCalls([0, 0, 0], true));
+  assert.ok(validHookCalls([0, 0, 0], false));
+  assert.ok(!validHookCalls([0, 1, 0], false));
 }
 selfTest();
 if (process.argv.includes("--self-test")) {
@@ -81,6 +87,7 @@ const generator = command(process.execPath, ["gen-watch.cjs"], { env: { ...proce
 fs.writeFileSync(path.join(resultDir, "fixture.txt"), generator.stdout);
 const runs = Number(process.env.RUNS || 5);
 if (!Number.isInteger(runs) || runs < 5) throw new Error("at least five pairs are required");
+const tapEnabled = process.env.MEASURE_ASSET_EMITTED_TAP !== "off";
 const diagnosticEnv = { ...process.env, ROUTES: "3000", NAPI_RS_NATIVE_LIBRARY_PATH: native, EXPECT_SHA: identity, RSPACK_EMITTED_SOURCES: "size-only", ASSET_SIZE_DIAGNOSTIC: "1" };
 const diagnostic = spawnSync(process.execPath, ["watch-mem4.cjs", "diagnostic"], {
   cwd: measureDir, env: diagnosticEnv, encoding: "utf8", timeout: 900000, maxBuffer: 16 * 1024 * 1024,
@@ -118,7 +125,7 @@ for (let pair = 1; pair <= runs; pair++) {
     if (lines.length !== 1) throw new Error(`${label} has no unique measurement`);
     const sample = JSON.parse(lines[0].slice("MEASURE=".length));
     if (sample.binding !== identity || sample.rebuild_ms.length !== 2 || sample.edit_kib.length !== 2 ||
-        sample.hook_calls?.length !== 3 || sample.hook_calls.some((n) => !Number.isInteger(n) || n < 1)) {
+        !validHookCalls(sample.hook_calls, tapEnabled)) {
       throw new Error(`${label} has invalid identity, edit count, or assetEmitted coverage`);
     }
     for (const x of [sample.build_ms, sample.cold_kib, sample.peak_kib, ...sample.rebuild_ms, ...sample.edit_kib]) {
@@ -145,7 +152,7 @@ const summary = [
   `platform=${process.platform} arch=${process.arch} kernel=${os.release()} node=${process.version}`,
   `native_sha256=${identity} core_sha256=${sha(core)} pairs=${runs} routes=3000 edits=2`,
   `output_parity=identical files=${samples.off[0].files}`,
-  `asset_emitted_tap=both-arms synchronous-size-only no-retention`,
+  `asset_emitted_tap=${tapEnabled ? "both-arms synchronous-size-only no-retention" : "none"}`,
   `cold_asset_map_bytes=${assetBytes.map_bytes} map_count=${assetBytes.map_count} other_bytes=${assetBytes.other_bytes} other_count=${assetBytes.other_count}`,
   "metric off_median on_median paired_delta_median interval95_low interval95_high",
 ];

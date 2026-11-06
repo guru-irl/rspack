@@ -38,11 +38,13 @@ const compiler = rspack({
   stats: "errors-warnings",
 });
 let hookCalls = 0;
-compiler.hooks.assetEmitted.tap("measure-asset-size", (_filename, info) => {
-  const size = info.source.size();
-  if (!Number.isSafeInteger(size) || size < 0) throw new Error("invalid emitted source size");
-  hookCalls++;
-});
+if (process.env.MEASURE_ASSET_EMITTED_TAP !== "off") {
+  compiler.hooks.assetEmitted.tap("measure-asset-size", (_filename, info) => {
+    const size = info.source.size();
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error("invalid emitted source size");
+    hookCalls++;
+  });
+}
 if (process.env.ASSET_SIZE_DIAGNOSTIC === "1") {
   let reported = false;
   compiler.hooks.afterEmit.tap("asset-size-diagnostic", (compilation) => {
