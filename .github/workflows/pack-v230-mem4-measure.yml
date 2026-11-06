@@ -1,7 +1,7 @@
-name: v2.3.0 memory confirmation
+name: v2.3.0 M3 final comparison
 on:
   push:
-    branches: [bench/v230-mem4-f6-repeat]
+    branches: [bench/v230-mem4-m3-final]
   workflow_dispatch:
 permissions:
   contents: read
@@ -9,6 +9,13 @@ permissions:
 defaults:
   run:
     shell: bash
+env:
+  SOURCE: 3b7bbd808987179f7e95e791f45dc7cbdd0ff989
+  RELEASE_RUN: '42290127457'
+  CONTROL_RUN: '42290127457'
+  CONTROL_SOURCE: a757666ff20b5a17aed5fe514c15c2e4bf245935
+  CONTROL_BINDING: v230-m3-base-binding
+  CONTROL_EVIDENCE: v230-m3-base-evidence
 jobs:
   measure:
     name: Compare ${{ matrix.arm }}
@@ -18,20 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arm: arena-repeat
-            profile: arena
-            run: '42281303126'
-            artifact: v230-arena256-binding
-            evidence: v230-arena256-evidence
-            source: a757666ff20b5a17aed5fe514c15c2e4bf245935
-            identical: '0'
-          - arm: arena-aa
-            profile: arena
-            run: '41730434649'
-            artifact: v230-fix12r-binding
-            evidence: v230-fix12r-evidence
-            source: 179b41b93cd909fb434c722c9d37213388c5239e
-            identical: '1'
+          - arm: m3-mixed
+            profile: mixed
+          - arm: m3-rope
+            profile: rope
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,46 +37,57 @@ jobs:
         with:
           node-version: 22.18.0
       - name: Wait for the candidate release run
-        if: ${{ matrix.identical != '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: timeout 5400s gh run watch '${{ matrix.run }}' --repo '${{ github.repository }}' --exit-status
+        run: timeout 5400s gh run watch "$RELEASE_RUN" --repo '${{ github.repository }}' --exit-status
+      - name: Wait for the control release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: timeout 5400s gh run watch "$CONTROL_RUN" --repo '${{ github.repository }}'
       - uses: actions/download-artifact@v4
         with:
-          name: v230-fix12r-binding
+          name: ${{ env.CONTROL_BINDING }}
           path: bench-data/control
-          run-id: 41730434649
+          run-id: ${{ env.CONTROL_RUN }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ env.CONTROL_EVIDENCE }}
+          path: bench-data/control-evidence
+          run-id: ${{ env.CONTROL_RUN }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: v230-m3-binding
           path: bench-data/candidate
-          run-id: ${{ matrix.run }}
+          run-id: ${{ env.RELEASE_RUN }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.evidence }}
+          name: v230-m3-evidence
           path: bench-data/candidate-evidence
-          run-id: ${{ matrix.run }}
+          run-id: ${{ env.RELEASE_RUN }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
-      - name: Verify candidate provenance
+      - name: Verify candidate and control provenance
         run: |
           set -euo pipefail
-          test "$(tr -d '\n' < bench-data/candidate-evidence/source.sha)" = '${{ matrix.source }}'
+          test "$(tr -d '\n' < bench-data/control-evidence/source.sha)" = "$CONTROL_SOURCE"
+          control=$(awk '$2 ~ /rspack.linux-x64-gnu.node$/ {print $1}' bench-data/control-evidence/pack.sha256)
+          test -n "$control"
+          printf '%s  %s\n' "$control" bench-data/control/rspack.linux-x64-gnu.node | sha256sum -c
+          printf 'EXPECTED_CONTROL=%s\n' "$control" >> "$GITHUB_ENV"
+          test "$(tr -d '\n' < bench-data/candidate-evidence/source.sha)" = "$SOURCE"
           expected=$(awk '$2 ~ /rspack.linux-x64-gnu.node$/ {print $1}' bench-data/candidate-evidence/pack.sha256)
           test -n "$expected"
           printf '%s  %s\n' "$expected" bench-data/candidate/rspack.linux-x64-gnu.node | sha256sum -c
-          if [ '${{ matrix.arm }}' = arena-repeat ]; then
-            grep -F '.min(256 * 1024)' bench-data/candidate-evidence/arena-change.txt
-          fi
       - name: Compare peak, steady RSS and build phases
         env:
           PROFILE: ${{ matrix.profile }}
           PAIRS: 8
-          ALLOW_IDENTICAL: ${{ matrix.identical }}
         run: bash .github/scripts/pack-v230-mem4/measure.sh
       - uses: actions/upload-artifact@v4
         if: always()

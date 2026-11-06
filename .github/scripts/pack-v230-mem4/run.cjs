@@ -14,12 +14,18 @@ console.log(`loaded binding ${mapped[0]}`);
 
 const work = path.join(__dirname, "work", "same");
 const out = path.join(work, "dist");
+const mixed = process.env.PROFILE === "mixed";
 const config = {
   context: work,
   entry: "./src/index.js",
   mode: "development",
   devtool: "source-map",
-  cache: { type: "memory" },
+  cache: mixed ? false : { type: "memory" },
+  ...(mixed ? {
+    incremental: true,
+    optimization: { sideEffects: true },
+    module: { rules: [{ test: /\.css$/, type: "css/auto" }] },
+  } : {}),
   output: { path: out, filename: "bundle.js", clean: true },
   performance: false,
   infrastructureLogging: { level: "error" },
@@ -79,7 +85,12 @@ const watching = compiler.watch({ aggregateTimeout: 50 }, (err, stats) => {
       const edit = builds.length;
       setTimeout(() => {
         started = process.hrtime.bigint();
-        fs.appendFileSync(path.join(work, "src", "index.js"), `\nglobalThis.edit${edit} = ${edit};\n`);
+        if (mixed) {
+          const leaf = edit - 1;
+          fs.writeFileSync(path.join(work, "src", "modules", `m${leaf}.js`), `export const v${leaf} = ${leaf + 1000000};\n`);
+        } else {
+          fs.appendFileSync(path.join(work, "src", "index.js"), `\nglobalThis.edit${edit} = ${edit};\n`);
+        }
       }, 200);
     } else {
       watching.close(closeError => {
