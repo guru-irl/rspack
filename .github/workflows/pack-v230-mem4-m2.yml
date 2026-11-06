@@ -12,7 +12,7 @@ env:
   CARGO_INCREMENTAL: 0
   npm_config_registry: https://registry.npmjs.org
   VERSION: 2.3.0
-  SOURCE: e1e6c6aa64fa49a0570487c8e3395ca0a6ac4547
+  SOURCE: e32216a2d12aaef0432bc3d7fe70d5b2a793ce61
   BASE: a757666ff20b5a17aed5fe514c15c2e4bf245935
 jobs:
   official:
