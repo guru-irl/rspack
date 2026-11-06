@@ -30,6 +30,19 @@ const compiler = rspack({
             { name: "probe", stage: Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL },
             () => compilation.emitAsset("probe.txt", new sources.RawSource(text)),
           );
+          compilation.hooks.processAssets.tapAsync(
+            { name: "child", stage: Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL },
+            (_assets, callback) => {
+              const child = compiler.createChildCompiler(
+                compilation,
+                "child",
+                0,
+                { filename: "child.js" },
+                [new compiler.rspack.EntryPlugin(context, "./entry.js", { name: "child" })],
+              );
+              child.runAsChild((error) => callback(error));
+            },
+          );
         });
         compiler.hooks.assetEmitted.tap("probe", (filename, info) => {
           emittedHookCalls.set(filename, (emittedHookCalls.get(filename) || 0) + 1);
@@ -93,6 +106,7 @@ function check(stats) {
   const asset = compilation.getAsset("probe.txt").source;
   const diskBytes = outputFs.readFileSync(path.join(output, "probe.txt"));
   assert.equal(diskBytes.toString(), text);
+  assert.ok(outputFs.readFileSync(path.join(output, "child.js")).length > 0, "the parent must write the child asset");
   assert.equal(asset.size(), Buffer.byteLength(text));
   if (sizeOnly) {
     const sourcesToCheck = [

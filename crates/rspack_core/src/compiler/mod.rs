@@ -101,6 +101,8 @@ const EMIT_ASSETS_CONCURRENCY_LIMIT: usize = 15;
 pub struct Compiler {
   id: CompilerId,
   pub compiler_path: Arc<str>,
+  /// Child compilation assets are transferred to a parent before its real emit.
+  pub is_child: bool,
   pub options: Arc<CompilerOptions>,
   pub output_filesystem: Arc<dyn WritableFileSystem>,
   pub intermediate_filesystem: Arc<dyn IntermediateFileSystem>,
@@ -188,6 +190,7 @@ impl Compiler {
         compiler_context.clone(),
       ),
       compiler_path,
+      is_child: false,
       output_filesystem,
       intermediate_filesystem,
       plugin_driver,
@@ -446,7 +449,10 @@ impl Compiler {
       .call(&mut self.compilation)
       .await?;
 
-    let size_only = std::env::var("RSPACK_EMITTED_SOURCES").as_deref() == Ok("size-only");
+    // Child compilers hand their assets to the parent, which still needs their
+    // sources for its own emit, even when the child has an output filesystem.
+    let size_only =
+      !self.is_child && std::env::var("RSPACK_EMITTED_SOURCES").as_deref() == Ok("size-only");
     self.compilation.preserve_asset_emitted_source = size_only;
     let mut new_emitted_asset_versions = HashMap::default();
     let emit_assets_incremental = self

@@ -254,7 +254,7 @@ impl JsCompiler {
   #[allow(clippy::too_many_arguments)]
   #[napi(
     constructor,
-    ts_args_type = "compilerPath: string, options: RawOptions, builtinPlugins: BuiltinPlugin[], registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, intermediateFilesystem: ThreadsafeNodeFS | undefined | null, inputFilesystem: ThreadsafeNodeFS | undefined | null, resolverFactoryReference: JsResolverFactory, unsafeFastDrop: boolean, platform: RawCompilerPlatform, infrastructureLogCallback: (logs: JsLog[]) => void, cache: JsCache, jsHelpers: JsHelpers"
+    ts_args_type = "compilerPath: string, options: RawOptions, builtinPlugins: BuiltinPlugin[], registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, intermediateFilesystem: ThreadsafeNodeFS | undefined | null, inputFilesystem: ThreadsafeNodeFS | undefined | null, resolverFactoryReference: JsResolverFactory, unsafeFastDrop: boolean, platform: RawCompilerPlatform, infrastructureLogCallback: (logs: JsLog[]) => void, cache: JsCache, jsHelpers: JsHelpers, isChild?: boolean"
   )]
   pub fn new(
     env: Env,
@@ -272,6 +272,7 @@ impl JsCompiler {
     raw_infrastructure_log_callback: Unknown<'static>,
     cache: Reference<JsCache>,
     js_helpers: JsHelpers<'_>,
+    is_child: Option<bool>,
   ) -> Result<Self> {
     tracing::info!(name:"rspack_version", version = rspack_workspace::rspack_pkg_version!());
 
@@ -398,7 +399,7 @@ impl JsCompiler {
         infrastructure_log_sink.clone(),
       );
 
-      let rspack = rspack_core::Compiler::new(
+      let mut rspack = rspack_core::Compiler::new(
         compiler_path.into(),
         compiler_options,
         plugins,
@@ -413,6 +414,7 @@ impl JsCompiler {
         cache,
         infrastructure_log_sink,
       );
+      rspack.is_child = is_child.unwrap_or(false);
 
       Ok(Self {
         infrastructure_log_dispatcher,

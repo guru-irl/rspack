@@ -1004,6 +1004,7 @@ class Compiler {
         },
         Cache.__to_binding(this.cache),
         bindingHelpers,
+        this.isChild(),
       );
 
       callback(null, this.#instance);
