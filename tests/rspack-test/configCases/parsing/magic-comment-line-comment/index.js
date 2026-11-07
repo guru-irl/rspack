@@ -5,10 +5,15 @@ it("keeps chunk names when a line comment follows a magic comment", async () => 
 	const source = await import(/* webpackChunkName: "line-after" */ // ordinary comment
 		"./source"
 	);
+	const parenthesized = await import(/* webpackChunkName: "line-after-parenthesized" */ // ordinary comment
+		("./parenthesized")
+	);
 
 	expect(source.default).toBe("source");
+	expect(parenthesized.default).toBe("parenthesized");
 	expect(await load()).toBe("loader");
 	const files = fs.readdirSync(__dirname);
 	expect(files).toContain("line-after.js");
+	expect(files).toContain("line-after-parenthesized.js");
 	expect(files).toContain("line-after-loader.js");
 });

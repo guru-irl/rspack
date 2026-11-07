@@ -4,6 +4,7 @@ export default defineConfig({
   target: 'node',
   output: {
     chunkFilename: '[name].js',
+    clean: true,
   },
   optimization: {
     chunkIds: 'named',
