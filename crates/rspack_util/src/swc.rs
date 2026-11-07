@@ -181,6 +181,7 @@ fn adjacent_comments_before(
 /// the preceding token as trailing trivia. The legacy parser made it leading
 /// on the argument. Recover blocks attached to an opening parenthesis inside
 /// the call, then merge them with the argument's existing leading comments.
+/// Partial parentheses must not pull comments from the enclosing call.
 pub fn get_swc_next_leading_comments<'a>(
   ast: &'a Ast<'a>,
   comments: &'a RspackComments<'a>,
@@ -200,6 +201,9 @@ pub fn get_swc_next_leading_comments<'a>(
   // parenthesis. The call's own opening parenthesis is the outer boundary.
   let outer = adjacent_comments_before(ast, error_span, previous_token_end - 1);
   let source = ast.source();
+  if source.as_bytes().get(arg_start as usize) == Some(&b'(') && outer.is_none() {
+    return Cow::Borrowed(leading);
+  }
   let mut recovered = Vec::new();
   for (range, token_end) in std::iter::once((range, previous_token_end)).chain(outer) {
     recovered.extend(
