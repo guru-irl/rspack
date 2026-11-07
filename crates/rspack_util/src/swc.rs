@@ -1,8 +1,9 @@
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, ops::Range, sync::LazyLock};
 
 #[cfg(feature = "plugin")]
 pub mod runtime;
 
+use regex::Regex;
 use rspack_intern::Atom;
 use rustc_hash::{FxHashMap, FxHashSet};
 use swc_next_ecma_ast::{
@@ -179,9 +180,17 @@ fn adjacent_comments_before(
   Some((start..end, previous_token_end))
 }
 
+pub static WEBPACK_COMMENT_REGEXP: LazyLock<Regex> = LazyLock::new(|| {
+  Regex::new(
+    r#"(^|[^\w])(?P<key>(?:webpack|rspack)[A-Z][A-Za-z]+|"(?:webpack|rspack)[A-Z][A-Za-z]+"|'(?:webpack|rspack)[A-Z][A-Za-z]+')\s*:"#,
+  )
+  .expect("invalid regex")
+});
+
 /// Reads a comment run directly after the innermost wrapper `(` or the `(` just
 /// outside it; if the argument itself starts with `(`, only the run before the
-/// innermost wrapper is read.
+/// innermost wrapper is read. If a magic block comment follows the argument,
+/// the before-argument comments are not recovered.
 /// For example, comments in `import(/*a*/ //\n "x")` and
 /// `import(/*a*/ //\n (("x") + y))` are read, but the comment in
 /// `import((/*a*/ //\n ("x") + y))` is not.
@@ -190,11 +199,20 @@ pub fn get_swc_next_leading_comments<'a>(
   comments: &'a RspackComments<'a>,
   error_span: NextAstSpan,
   arg_start: u32,
+  arg_end: u32,
 ) -> Cow<'a, [RspackComment<'a>]> {
   let leading = comments
     .leading
     .get(&arg_start)
     .map_or(&[][..], Vec::as_slice);
+  // Preserve the existing after-argument handling instead of combining options.
+  if comments.trailing.get(&arg_end).is_some_and(|trailing| {
+    trailing.iter().any(|comment| {
+      comment.kind == NextCommentKind::Block && WEBPACK_COMMENT_REGEXP.is_match(comment.text)
+    })
+  }) {
+    return Cow::Borrowed(leading);
+  }
   let Some((range, previous_token_end)) = adjacent_comments_before(ast, error_span, arg_start)
   else {
     return Cow::Borrowed(leading);
@@ -206,9 +224,6 @@ pub fn get_swc_next_leading_comments<'a>(
   let outer_boundary = outer.as_ref().map(|(_, token_end)| *token_end);
   let source = ast.source();
   let partial_paren = source.as_bytes().get(arg_start as usize) == Some(&b'(');
-  if partial_paren && outer.is_none() {
-    return Cow::Borrowed(leading);
-  }
   // When the argument starts with `(`, comments trailing the
   // nearest `(` sit inside a wrapper and before a partial parenthesis.
   let inner = (!partial_paren).then_some((range, previous_token_end));
@@ -251,7 +266,7 @@ pub fn get_swc_next_comments<'a>(
 ) -> Vec<(bool, String)> {
   let mut result = vec![];
   let mut visited = FxHashSet::<NextAstSpan>::default();
-  let leading = get_swc_next_leading_comments(ast, comments, error_span, span.start);
+  let leading = get_swc_next_leading_comments(ast, comments, error_span, span.start, span.end);
 
   for comment in leading
     .iter()

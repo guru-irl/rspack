@@ -1,14 +1,13 @@
-use std::{borrow::Cow, fmt, sync::LazyLock};
+use std::{borrow::Cow, fmt};
 
-use regex::Regex;
 use rspack_core::{ContextMode, DependencyRange};
 use rspack_error::{Diagnostic, Error, Severity};
 use rspack_regex::RspackRegex;
 use rspack_util::{
   SpanExt,
   swc::{
-    AstSubRangeExt, PropertyKeyValue, RspackComment as Comment, classify_property_key,
-    get_swc_next_leading_comments,
+    AstSubRangeExt, PropertyKeyValue, RspackComment as Comment, WEBPACK_COMMENT_REGEXP,
+    classify_property_key, get_swc_next_leading_comments,
   },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -291,8 +290,13 @@ pub fn try_extract_magic_comment(
   let mut result = RspackCommentMap::new();
   let mut warning_diagnostics = Vec::new();
 
-  let leading =
-    get_swc_next_leading_comments(parser.ast.ast, parser.ast.comments, error_span, span.start);
+  let leading = get_swc_next_leading_comments(
+    parser.ast.ast,
+    parser.ast.comments,
+    error_span,
+    span.start,
+    span.end,
+  );
   if !leading.is_empty() {
     analyze_comments(
       parser.source,
@@ -397,13 +401,6 @@ fn parse_magic_comment_object<'a>(
   .ok()?;
   Some((ast, magic_comment_start))
 }
-
-static WEBPACK_COMMENT_REGEXP: LazyLock<Regex> = LazyLock::new(|| {
-  Regex::new(
-    r#"(^|[^\w])(?P<key>(?:webpack|rspack)[A-Z][A-Za-z]+|"(?:webpack|rspack)[A-Z][A-Za-z]+"|'(?:webpack|rspack)[A-Z][A-Za-z]+')\s*:"#,
-  )
-  .expect("invalid regex")
-});
 
 fn find_magic_comment_start(comment_text: &str) -> Option<usize> {
   WEBPACK_COMMENT_REGEXP
