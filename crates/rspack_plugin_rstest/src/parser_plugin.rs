@@ -318,7 +318,7 @@ impl RstestParserPlugin {
             Some(attrs),
             ImportPhase::Evaluation,
             parser.in_try,
-            get_swc_next_comments(parser.ast.comments, imported_span.start, imported_span.end),
+            get_swc_next_comments(ast, parser.ast.comments, call_expr.span(ast), imported_span),
           ));
 
           let loc = parser.to_dependency_location(range);
@@ -648,7 +648,7 @@ impl RstestParserPlugin {
               Some(attrs),
               ImportPhase::Evaluation,
               parser.in_try,
-              get_swc_next_comments(parser.ast.comments, imported_span.start, imported_span.end),
+              get_swc_next_comments(ast, parser.ast.comments, call_expr.span(ast), imported_span),
             );
             let dep = BoxDependency::new(RstestImportDependency::new(import_dep, value.clone()));
 
