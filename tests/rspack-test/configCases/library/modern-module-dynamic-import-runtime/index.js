@@ -10,6 +10,7 @@ it("modern-module-dynamic-import-runtime", () => {
 	expect(initialChunk).toContain('import { angular } from "angular-alias";');
 	expect(initialChunk).toContain('const reactNs = await import("react-alias")');
 	expect(initialChunk).toContain('const vueNs = await import("vue-alias")');
+	expect(initialChunk).toContain('const lineCommentNs = await import(/* webpackChunkName: "rslib-line" */ "vue-alias")');
 	expect(initialChunk).toContain('const jqueryNs = await import("jquery-alias", { with: {"type":"url"} })');
 	expect(initialChunk).toContain(`const reactNs2 = await import(/* 123 */ // 456
 /*webpackChunkName: 'useless'*/ "react-alias")`)

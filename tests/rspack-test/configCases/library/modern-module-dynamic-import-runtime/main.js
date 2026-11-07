@@ -9,6 +9,8 @@ export const main = async () => {
 		/*webpackChunkName: 'useless'*/
 		 'react') // 'import' externalized + comment
   const vueNs = await import('vue') // 'import' externalized
+  const lineCommentNs = await import(/* webpackChunkName: "rslib-line" */ // line comment
+    'vue')
   const jqueryNs = await import('jquery', { with: { type: 'url' } }) // import attributes should be preserved
-	console.log(angular, react, reactNs, vueNs, dyn, jqueryNs, reactNs2)
+	console.log(angular, react, reactNs, vueNs, dyn, jqueryNs, reactNs2, lineCommentNs)
 }
