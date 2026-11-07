@@ -21,3 +21,8 @@ it ('`typeof module` should be intercepted by Rslib Plugin', () => {
 	expect(content).toContain(`import node_module from "node:module";`)
 	expect(content).toContain(`console.log(typeof node_module)`)
 })
+
+it("preserves dynamic import comments followed by a line comment", () => {
+	const content = fs.readFileSync(path.resolve(__dirname, "bundle1.mjs"), "utf-8");
+	expect(content).toContain('import(/* webpackChunkName: "rslib-line" */ "node:module")');
+});
