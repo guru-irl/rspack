@@ -182,6 +182,7 @@ fn adjacent_comments_before(
 /// on the argument. Recover blocks attached to an opening parenthesis inside
 /// the call, then merge them with the argument's existing leading comments.
 /// Partial parentheses must not pull comments from the enclosing call.
+/// When recovering nested comments, omit leading comments outside the nearest enclosing parenthesis.
 pub fn get_swc_next_leading_comments<'a>(
   ast: &'a Ast<'a>,
   comments: &'a RspackComments<'a>,
@@ -200,6 +201,7 @@ pub fn get_swc_next_leading_comments<'a>(
   // A parenthesized argument can have comments on either side of its opening
   // parenthesis. The call's own opening parenthesis is the outer boundary.
   let outer = adjacent_comments_before(ast, error_span, previous_token_end - 1);
+  let outer_boundary = outer.as_ref().map(|(_, token_end)| *token_end);
   let source = ast.source();
   if source.as_bytes().get(arg_start as usize) == Some(&b'(') && outer.is_none() {
     return Cow::Borrowed(leading);
@@ -224,7 +226,12 @@ pub fn get_swc_next_leading_comments<'a>(
   if recovered.is_empty() {
     return Cow::Borrowed(leading);
   }
-  recovered.extend_from_slice(leading);
+  recovered.extend(
+    leading
+      .iter()
+      .filter(|comment| outer_boundary.is_none_or(|boundary| comment.span.start >= boundary))
+      .copied(),
+  );
   recovered.sort_unstable_by_key(|comment| (comment.span.start, comment.span.end));
   recovered.dedup_by_key(|comment| comment.span);
   Cow::Owned(recovered)
