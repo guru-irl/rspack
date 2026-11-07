@@ -1,6 +1,15 @@
 const fs = require("fs");
 const { load } = require("./loader.tsx");
 
+it("keeps main's chunk output when magic comments occur on both sides", async () => {
+	const name = "a.js";
+	const value = await import(/* webpackChunkName: "line-both" */ // ordinary comment
+		`./ctx/${name}` /* webpackInclude: /a\.js$/ */ // ordinary comment
+	);
+	expect(value.default).toBe("a");
+	expect(fs.readdirSync(__dirname).some(file => file.startsWith("line-both"))).toBe(false);
+});
+
 it("bundles a partially parenthesized require argument", () => {
 	const value = require(/* webpackIgnore: true */ // ordinary comment
 		("./require-parity") + ".js"
