@@ -551,9 +551,10 @@ impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ImportParserPlugin {
           parser.in_try,
           {
             get_swc_next_comments(
+              ast,
               parser.ast.comments,
-              dyn_imported_span.start,
-              dyn_imported_span.end,
+              import_call_span,
+              dyn_imported_span,
             )
           },
         );

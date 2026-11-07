@@ -6,13 +6,16 @@ use rspack_error::{Diagnostic, Error, Severity};
 use rspack_regex::RspackRegex;
 use rspack_util::{
   SpanExt,
-  swc::{AstSubRangeExt, PropertyKeyValue, RspackComment as Comment, classify_property_key},
+  swc::{
+    AstSubRangeExt, PropertyKeyValue, RspackComment as Comment, classify_property_key,
+    get_swc_next_leading_comments,
+  },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use swc_next_allocator::Allocator;
 use swc_next_ecma_ast::{
-  ArgumentData, Ast, CommentKind, CommentPosition, Expr, ExprData, GetSpan, ObjectPropertyKindData,
-  PropertyKey, Span, UnaryOperator,
+  ArgumentData, Ast, CommentKind, Expr, ExprData, GetSpan, ObjectPropertyKindData, PropertyKey,
+  Span, UnaryOperator,
 };
 use swc_next_ecma_parser::{FragmentContext, NoTokenParserConfig, Options, Parser};
 
@@ -288,95 +291,12 @@ pub fn try_extract_magic_comment(
   let mut result = RspackCommentMap::new();
   let mut warning_diagnostics = Vec::new();
 
-  // A line comment can attach the preceding block comments to the previous
-  // token rather than to the argument. Only inspect the adjacent trivia inside
-  // this call; other comments must keep their existing attachment behavior.
-  let ast = parser.ast.ast;
-  let source = ast.source();
-  let comments = ast.comments();
-  let mut end = comments.partition_point(|comment| comment.span.end <= span.start);
-  let mut cursor = span.start as usize;
-  let mut preceding_comments: Vec<Comment<'_>> = Vec::new();
-  for parenthesized in [false, true] {
-    let mut start = end;
-    while let Some(index) = start.checked_sub(1) {
-      let comment = &comments[index];
-      if comment.span.start < error_span.start || comment.span.end > error_span.end {
-        break;
-      }
-      let Some(between) = source.get(comment.span.end as usize..cursor) else {
-        break;
-      };
-      if !between
-        .chars()
-        .all(|c| c.is_whitespace() || c == '\u{feff}')
-      {
-        break;
-      }
-      cursor = comment.span.start as usize;
-      start = index;
-    }
-    let previous_token_end = source
-      .get(error_span.start as usize..cursor)
-      .map(|prefix| {
-        error_span.start
-          + prefix
-            .trim_end_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-            .len() as u32
-      })
-      .filter(|&end| end > error_span.start);
-    let previous_is_open_paren =
-      previous_token_end.and_then(|end| source.as_bytes().get(end as usize - 1)) == Some(&b'(');
-
-    // A parenthesized argument can have comments on either side of its opening
-    // parenthesis. Do not cross the call's own opening parenthesis.
-    if parenthesized && !previous_is_open_paren {
-      break;
-    }
-    preceding_comments.extend(
-      comments[start..end]
-        .iter()
-        .filter(|comment| {
-          comment.position == CommentPosition::Trailing
-            && comment.kind == CommentKind::Block
-            && Some(comment.attached_to) == previous_token_end
-        })
-        .map(|comment| Comment {
-          span: comment.span,
-          kind: comment.kind,
-          text: ast.get_utf8(comment.value(source.as_bytes())),
-        }),
-    );
-    if parenthesized {
-      break;
-    }
-    let Some(open_paren_end) = previous_token_end.filter(|_| previous_is_open_paren) else {
-      break;
-    };
-    cursor = open_paren_end as usize - 1;
-    end = start;
-  }
-
-  let leading = parser.ast.comments.leading.get(&span.start);
-  if preceding_comments.is_empty() {
-    if let Some(comments) = leading {
-      analyze_comments(
-        parser.source,
-        comments,
-        error_span,
-        &mut warning_diagnostics,
-        &mut result,
-      );
-    }
-  } else {
-    if let Some(comments) = leading {
-      preceding_comments.extend_from_slice(comments);
-    }
-    preceding_comments.sort_unstable_by_key(|comment| (comment.span.start, comment.span.end));
-    preceding_comments.dedup_by_key(|comment| comment.span);
+  let leading =
+    get_swc_next_leading_comments(parser.ast.ast, parser.ast.comments, error_span, span.start);
+  if !leading.is_empty() {
     analyze_comments(
       parser.source,
-      &preceding_comments,
+      &leading,
       error_span,
       &mut warning_diagnostics,
       &mut result,

@@ -1,3 +1,5 @@
+use std::{borrow::Cow, ops::Range};
+
 #[cfg(feature = "plugin")]
 pub mod runtime;
 
@@ -133,20 +135,110 @@ impl<'a> RspackComments<'a> {
   }
 }
 
-pub fn get_swc_next_comments(
-  comments: &RspackComments<'_>,
-  lo: u32,
-  hi: u32,
+fn adjacent_comments_before(
+  ast: &Ast<'_>,
+  error_span: NextAstSpan,
+  pos: u32,
+) -> Option<(Range<usize>, u32)> {
+  let source = ast.source();
+  let comments = ast.comments();
+  let end = comments.partition_point(|comment| comment.span.end <= pos);
+  let mut start = end;
+  let mut cursor = pos as usize;
+
+  while let Some(index) = start.checked_sub(1) {
+    let comment = &comments[index];
+    if comment.span.start < error_span.start || comment.span.end > error_span.end {
+      break;
+    }
+    let Some(between) = source.get(comment.span.end as usize..cursor) else {
+      break;
+    };
+    if !between
+      .chars()
+      .all(|c| c.is_whitespace() || c == '\u{feff}')
+    {
+      break;
+    }
+    cursor = comment.span.start as usize;
+    start = index;
+  }
+
+  let prefix = source.get(error_span.start as usize..cursor)?;
+  let previous_token_end = error_span.start
+    + prefix
+      .trim_end_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+      .len() as u32;
+  if previous_token_end <= error_span.start
+    || source.as_bytes().get(previous_token_end as usize - 1) != Some(&b'(')
+  {
+    return None;
+  }
+  Some((start..end, previous_token_end))
+}
+
+/// SWC Next attaches a block comment followed by a same-line `//` comment to
+/// the preceding token as trailing trivia. The legacy parser made it leading
+/// on the argument. Recover blocks attached to an opening parenthesis inside
+/// the call, then merge them with the argument's existing leading comments.
+pub fn get_swc_next_leading_comments<'a>(
+  ast: &'a Ast<'a>,
+  comments: &'a RspackComments<'a>,
+  error_span: NextAstSpan,
+  arg_start: u32,
+) -> Cow<'a, [RspackComment<'a>]> {
+  let leading = comments
+    .leading
+    .get(&arg_start)
+    .map_or(&[][..], Vec::as_slice);
+  let Some((range, previous_token_end)) = adjacent_comments_before(ast, error_span, arg_start)
+  else {
+    return Cow::Borrowed(leading);
+  };
+
+  // A parenthesized argument can have comments on either side of its opening
+  // parenthesis. The call's own opening parenthesis is the outer boundary.
+  let outer = adjacent_comments_before(ast, error_span, previous_token_end - 1);
+  let source = ast.source();
+  let mut recovered = Vec::new();
+  for (range, token_end) in std::iter::once((range, previous_token_end)).chain(outer) {
+    recovered.extend(
+      ast.comments()[range]
+        .iter()
+        .filter(|comment| {
+          comment.position == CommentPosition::Trailing
+            && comment.kind == NextCommentKind::Block
+            && comment.attached_to == token_end
+        })
+        .map(|comment| RspackComment {
+          span: comment.span,
+          kind: comment.kind,
+          text: ast.get_utf8(comment.value(source.as_bytes())),
+        }),
+    );
+  }
+  if recovered.is_empty() {
+    return Cow::Borrowed(leading);
+  }
+  recovered.extend_from_slice(leading);
+  recovered.sort_unstable_by_key(|comment| (comment.span.start, comment.span.end));
+  recovered.dedup_by_key(|comment| comment.span);
+  Cow::Owned(recovered)
+}
+
+pub fn get_swc_next_comments<'a>(
+  ast: &'a Ast<'a>,
+  comments: &'a RspackComments<'a>,
+  error_span: NextAstSpan,
+  span: NextAstSpan,
 ) -> Vec<(bool, String)> {
   let mut result = vec![];
   let mut visited = FxHashSet::<NextAstSpan>::default();
+  let leading = get_swc_next_leading_comments(ast, comments, error_span, span.start);
 
-  for comment in comments
-    .leading
-    .get(&lo)
-    .into_iter()
-    .chain(comments.trailing.get(&hi))
-    .flatten()
+  for comment in leading
+    .iter()
+    .chain(comments.trailing.get(&span.end).into_iter().flatten())
   {
     if visited.insert(comment.span) {
       result.push((
