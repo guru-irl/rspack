@@ -10,6 +10,11 @@ export default defineConfig({
     chunkIds: 'named',
   },
   module: {
+    parser: {
+      javascript: {
+        commonjsMagicComments: true,
+      },
+    },
     rules: [
       {
         test: /\.tsx$/,

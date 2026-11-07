@@ -1,6 +1,13 @@
 const fs = require("fs");
 const { load } = require("./loader.tsx");
 
+it("bundles a partially parenthesized require argument", () => {
+	const source = require(/* webpackIgnore: true */ // ordinary comment
+		("./source") + ".js"
+	);
+	expect(source.default).toBe("source");
+});
+
 it("keeps chunk names when a line comment follows a magic comment", async () => {
 	const source = await import(/* webpackChunkName: "line-after" */ // ordinary comment
 		"./source"
