@@ -135,6 +135,8 @@ impl<'a> RspackComments<'a> {
   }
 }
 
+/// Returns the range of comments adjacent to `pos` and the end of the preceding
+/// `(`, if one is present within `error_span`.
 fn adjacent_comments_before(
   ast: &Ast<'_>,
   error_span: NextAstSpan,
@@ -177,12 +179,12 @@ fn adjacent_comments_before(
   Some((start..end, previous_token_end))
 }
 
-/// SWC Next attaches a block comment followed by a same-line `//` comment to
-/// the preceding token as trailing trivia. The legacy parser made it leading
-/// on the argument. Recover blocks attached to an opening parenthesis inside
-/// the call, then merge them with the argument's existing leading comments.
-/// Partial parentheses must not pull comments from the enclosing call.
-/// When recovering nested comments, omit leading comments outside the nearest enclosing parenthesis.
+/// Reads a comment run directly after the innermost wrapper `(` or the `(` just
+/// outside it; if the argument itself starts with `(`, only the run before the
+/// innermost wrapper is read.
+/// For example, comments in `import(/*a*/ //\n "x")` and
+/// `import(/*a*/ //\n (("x") + y))` are read, but the comment in
+/// `import((/*a*/ //\n ("x") + y))` is not.
 pub fn get_swc_next_leading_comments<'a>(
   ast: &'a Ast<'a>,
   comments: &'a RspackComments<'a>,
@@ -203,11 +205,15 @@ pub fn get_swc_next_leading_comments<'a>(
   let outer = adjacent_comments_before(ast, error_span, previous_token_end - 1);
   let outer_boundary = outer.as_ref().map(|(_, token_end)| *token_end);
   let source = ast.source();
-  if source.as_bytes().get(arg_start as usize) == Some(&b'(') && outer.is_none() {
+  let partial_paren = source.as_bytes().get(arg_start as usize) == Some(&b'(');
+  if partial_paren && outer.is_none() {
     return Cow::Borrowed(leading);
   }
+  // When the argument starts with `(`, comments trailing the
+  // nearest `(` sit inside a wrapper and before a partial parenthesis.
+  let inner = (!partial_paren).then_some((range, previous_token_end));
   let mut recovered = Vec::new();
-  for (range, token_end) in std::iter::once((range, previous_token_end)).chain(outer) {
+  for (range, token_end) in inner.into_iter().chain(outer) {
     recovered.extend(
       ast.comments()[range]
         .iter()
