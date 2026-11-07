@@ -6,6 +6,9 @@ it("bundles a partially parenthesized require argument", () => {
 		("./require-parity") + ".js"
 	);
 	expect(value).toBe("bundled");
+	const wrapped = require((/* webpackIgnore: true */ // ordinary comment
+		("./require-parity") + ".js"));
+	expect(wrapped).toBe("bundled");
 });
 
 it("keeps chunk names when a line comment follows a magic comment", async () => {
