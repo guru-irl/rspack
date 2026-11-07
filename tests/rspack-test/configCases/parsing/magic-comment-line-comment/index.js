@@ -2,10 +2,10 @@ const fs = require("fs");
 const { load } = require("./loader.tsx");
 
 it("bundles a partially parenthesized require argument", () => {
-	const source = require(/* webpackIgnore: true */ // ordinary comment
-		("./source") + ".js"
+	const value = require(/* webpackIgnore: true */ // ordinary comment
+		("./require-parity") + ".js"
 	);
-	expect(source.default).toBe("source");
+	expect(value).toBe("bundled");
 });
 
 it("keeps chunk names when a line comment follows a magic comment", async () => {
