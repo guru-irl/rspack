@@ -286,10 +286,9 @@ pub(crate) struct PathManager {
   /// See: https://gist.github.com/stormslowly/ed758500de6f23211fd63b39eba5ed07
   file_times: InternedPathDashMap<FileTime>,
   /// The mtime the build already knows for each registered file or missing
-  /// path — through a delivered event, or because it was on disk when it was
-  /// registered. `None` records a reported removal, distinct from a path not
-  /// observed yet. Only this deduplicates a later event carrying the same mtime;
-  /// `file_times` is time info only and anything may write it.
+  /// path, through an event or registration. `None` records a reported removal
+  /// of a file, missing path, or context, distinct from a path not observed yet.
+  /// Only this deduplicates later events; `file_times` is time info only.
   baselines: InternedPathDashMap<Option<SystemTime>>,
   /// watchpack's per-`DirectoryWatcher` `lastWatchEvent`: when an event last
   /// reached each registered or discovered context (its own or a
@@ -411,10 +410,16 @@ impl PathManager {
 
   /// Record a removal the caller is about to deliver. The scanner relies on
   /// this marker to mean the build was told about the absence.
-  pub fn set_reported_file_removal(&self, path: &InternedPath) {
+  pub fn set_reported_removal(&self, path: &InternedPath) {
     self.baselines.insert(path.clone(), None);
-    if (!self.files.all.contains(path) && !self.missing.all.contains(path))
-      || std::fs::symlink_metadata(path).is_ok()
+    let is_directory = self.directories.all.contains(path);
+    let present = if is_directory {
+      path.exists()
+    } else {
+      std::fs::symlink_metadata(path).is_ok()
+    };
+    if (!self.files.all.contains(path) && !self.missing.all.contains(path) && !is_directory)
+      || present
     {
       self.baselines.remove_if(path, |_, time| time.is_none());
     }
@@ -697,6 +702,7 @@ impl PathManager {
     if !recovered.is_empty() {
       for context in &recovered {
         self.absent_directories.remove(context);
+        self.baselines.remove_if(context, |_, time| time.is_none());
       }
       self.scan_below(recovered, true, None).await;
     }
@@ -900,6 +906,7 @@ impl PathManager {
     for dir in self.directories.added.iter() {
       if dir.exists() {
         self.absent_directories.remove(&*dir);
+        self.baselines.remove_if(&*dir, |_, time| time.is_none());
       } else {
         self.absent_directories.insert(dir.clone());
       }
@@ -914,13 +921,13 @@ impl PathManager {
     // record: the context reports it.
     let removed_files: Vec<InternedPath> = self.files.removed.iter().map(|p| p.clone()).collect();
     for path in &removed_files {
-      let still_missing = self.missing.all.contains(path);
-      if !still_missing {
+      let still_registered = self.missing.all.contains(path) || self.directories.all.contains(path);
+      if !still_registered {
         self.baselines.remove(path);
       }
       if !self.is_below_context(path) {
         self.file_times.remove(path);
-        if !still_missing {
+        if !still_registered {
           self.unindex_record(path);
         }
       }
@@ -928,7 +935,7 @@ impl PathManager {
     let removed_missing: Vec<InternedPath> =
       self.missing.removed.iter().map(|p| p.clone()).collect();
     for path in &removed_missing {
-      if self.files.all.contains(path) {
+      if self.files.all.contains(path) || self.directories.all.contains(path) {
         continue;
       }
       self.baselines.remove(path);
@@ -940,6 +947,9 @@ impl PathManager {
     let removed_dirs: Vec<InternedPath> =
       self.directories.removed.iter().map(|p| p.clone()).collect();
     for dir in &removed_dirs {
+      if !self.files.all.contains(dir) && !self.missing.all.contains(dir) {
+        self.baselines.remove(dir);
+      }
       // Still below a registered context and on disk: it stays reported, as a
       // directory found there, and keeps its event clock. Absent, it is
       // forgotten, so it is scanned as a new directory when it comes back.
