@@ -81,6 +81,7 @@ export declare class AsyncDependenciesBlock {
 }
 
 export declare class Chunk {
+  _collectionStamp(kind: 0 | 1 | 2, scope: JsCompilation): number | undefined
   get name(): string | undefined
   get id(): string | number | undefined
   get ids(): Array<string | number>
@@ -119,6 +120,7 @@ export declare class ChunkGraph {
 }
 
 export declare class ChunkGroup {
+  _collectionStamp(kind: 0 | 1 | 2, scope: JsCompilation): number | undefined
   get chunks(): Chunk[]
   get index(): number | undefined
   get name(): string | undefined
