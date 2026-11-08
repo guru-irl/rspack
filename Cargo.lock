@@ -4391,6 +4391,7 @@ dependencies = [
  "inventory",
  "itertools 0.14.0",
  "json",
+ "lzzzz",
  "memchr",
  "mime_guess",
  "napi",
