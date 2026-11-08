@@ -1,5 +1,10 @@
+use rspack_collections::IdentifierSet;
+use rustc_hash::FxHashSet;
+
 use crate::{
-  BuildChunkGraphArtifact, Compilation, artifacts::ArtifactExt, incremental::IncrementalPasses,
+  BuildChunkGraphArtifact, ChunkGroup, ChunkUkey, Compilation,
+  artifacts::ArtifactExt,
+  incremental::{ChunkGroupChanges, IncrementalPasses, Mutation},
   recover_artifact,
 };
 
@@ -180,5 +185,147 @@ impl IncrementalArtifacts {
         &mut compilation.build_chunk_graph_artifact,
       );
     }
+
+    if passes.contains(IncrementalPasses::CHUNK_IDS) {
+      self.record_chunk_group_changes(compilation);
+    }
+  }
+
+  fn record_chunk_group_changes(&self, compilation: &Compilation) {
+    if ![
+      IncrementalPasses::MODULES_HASHES,
+      IncrementalPasses::CHUNKS_RUNTIME_REQUIREMENTS,
+      IncrementalPasses::CHUNKS_HASHES,
+    ]
+    .into_iter()
+    .any(|pass| compilation.incremental.mutations_readable(pass))
+    {
+      return;
+    }
+    let Some(previous) = &self.previous_compilation else {
+      return;
+    };
+
+    let mut modules = IdentifierSet::default();
+    let mut chunks = FxHashSet::default();
+    let current_graph = &compilation.build_chunk_graph_artifact;
+    let previous_graph = &previous.build_chunk_graph_artifact;
+    let changed_groups = current_graph.chunk_group_by_ukey.values().filter(|group| {
+      // Snapshot reuse preserves group keys. A rebuilt graph has fresh keys,
+      // so every group is changed even if its emitted chunk IDs match.
+      let Some(previous_group) = previous_graph.chunk_group_by_ukey.get(&group.ukey) else {
+        return true;
+      };
+      group.chunks.len() != previous_group.chunks.len()
+        || group
+          .chunks
+          .iter()
+          .zip(&previous_group.chunks)
+          .any(|(current, previous)| {
+            match (
+              current_graph
+                .chunk_by_ukey
+                .get(current)
+                .and_then(|chunk| chunk.id()),
+              previous_graph
+                .chunk_by_ukey
+                .get(previous)
+                .and_then(|chunk| chunk.id()),
+            ) {
+              (Some(current), Some(previous)) => current != previous,
+              // A failed chunk-ID hook can leave the previous chunk map empty.
+              _ => true,
+            }
+          })
+    });
+    collect_chunk_group_consumers(
+      current_graph,
+      changed_groups,
+      compilation,
+      &mut modules,
+      &mut chunks,
+    );
+    // Matched groups retain their origins and links from the snapshot. Only
+    // removed groups need the old graph to identify their surviving consumers.
+    let removed_groups = previous_graph
+      .chunk_group_by_ukey
+      .values()
+      .filter(|group| current_graph.chunk_group_by_ukey.get(&group.ukey).is_none());
+    collect_chunk_group_consumers(
+      previous_graph,
+      removed_groups,
+      compilation,
+      &mut modules,
+      &mut chunks,
+    );
+    if (!modules.is_empty() || !chunks.is_empty())
+      && let Some(mut mutations) = compilation.incremental.mutations_write()
+    {
+      mutations.add(Mutation::ChunkGroupChunksChanged {
+        changes: Box::new(ChunkGroupChanges { modules, chunks }),
+      });
+    }
+  }
+}
+
+fn collect_chunk_group_consumers<'a>(
+  graph: &BuildChunkGraphArtifact,
+  groups: impl Iterator<Item = &'a ChunkGroup>,
+  compilation: &Compilation,
+  modules: &mut IdentifierSet,
+  chunks: &mut FxHashSet<ChunkUkey>,
+) {
+  let mut ancestors = Vec::new();
+  let mut initial_descendants = Vec::new();
+  let module_graph = compilation.get_module_graph();
+  let current_chunks = &compilation.build_chunk_graph_artifact.chunk_by_ukey;
+  for group in groups {
+    modules.extend(
+      group
+        .origins()
+        .iter()
+        .filter_map(|origin| origin.module)
+        .filter(|module| module_graph.module_by_identifier(module).is_some()),
+    );
+    ancestors.push(group.ukey);
+    if group.is_initial() {
+      initial_descendants.push(group.ukey);
+    }
+  }
+
+  // Parent chunks can cache prefetch and preload work for changed children.
+  let mut visited = FxHashSet::default();
+  while let Some(key) = ancestors.pop() {
+    if !visited.insert(key) {
+      continue;
+    }
+    let Some(group) = graph.chunk_group_by_ukey.get(&key) else {
+      continue;
+    };
+    chunks.extend(
+      group
+        .chunks
+        .iter()
+        .filter(|chunk| current_chunks.contains(chunk)),
+    );
+    ancestors.extend(group.parents.iter().copied());
+  }
+
+  // Entry startup also consumes the chunk lists of initial parent groups.
+  let mut visited = FxHashSet::default();
+  while let Some(key) = initial_descendants.pop() {
+    let Some(group) = graph.chunk_group_by_ukey.get(&key) else {
+      continue;
+    };
+    if !group.is_initial() || !visited.insert(key) {
+      continue;
+    }
+    chunks.extend(
+      group
+        .chunks
+        .iter()
+        .filter(|chunk| current_chunks.contains(chunk)),
+    );
+    initial_descendants.extend(group.children.iter().copied());
   }
 }
