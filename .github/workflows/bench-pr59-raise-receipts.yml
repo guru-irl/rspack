@@ -1,0 +1,23 @@
+name: PR59 raise inspect execution receipts
+on:
+  push:
+    branches: [bench/pr59-raise-receipts]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-Linux-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: receipts
+      - name: Inspect streamed starts and results and the plain compiler log
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'const fs=require("node:fs"); for (const f of ["compiler-native-1.events.txt","native-api-1.events.txt","watch-native-1.events.txt"]) { const s=fs.readFileSync("receipts/gates/"+f,"utf8").split("\n"); console.log("FILE",f); const rows=s.filter(l=>l.includes(" | TEST_START | ")||l.includes(" | TEST_END | ")); console.log(rows.slice(0,8).join("\n")); console.log(rows.filter(l=>l.includes("native-watcher-rename-aggregation")||l.includes("native-watcher-context-watch-errors")).slice(0,16).join("\n")); } const log=fs.readFileSync("receipts/gates/compiler-native-1.log.plain","utf8"); console.log("PLAIN_LOG",log.slice(-14000));'
