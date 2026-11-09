@@ -1,0 +1,78 @@
+name: PR59 raise verified real case executions
+on:
+  push:
+    branches: [bench/pr59-raise-case-gates]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  cases:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c, tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d }
+          - { platform: macOS, runner: macos-latest, arm: head, sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c, tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d }
+          - { platform: Windows, runner: windows-latest, arm: head, sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c, tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d }
+          - { platform: Linux, runner: ubuntu-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.sha }}
+          path: head
+      - name: Verify source and set scratch
+        run: |
+          set -euo pipefail
+          test "$(git -C head rev-parse HEAD)" = ${{ matrix.sha }}
+          test "$(git -C head rev-parse HEAD^{tree})" = ${{ matrix.tree }}
+          mkdir -p .bench-alias/tmp .bench-alias/results
+          P="$PWD/.bench-alias/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+          git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: head/crates/node_binding
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-${{ matrix.platform }}-${{ matrix.arm }}
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-alias/producer
+      - name: Verify binding against producer receipt
+        run: |
+          set -euo pipefail
+          node -e 'const fs=require("node:fs"),c=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.readdirSync("head/crates/node_binding").filter(f=>f.endsWith(".node")); assert.equal(p.length,1); const file=fs.realpathSync.native("head/crates/node_binding/"+p[0]),h=c.createHash("sha256").update(fs.readFileSync(file)).digest("hex"),receipt=JSON.parse(fs.readFileSync(".bench-alias/producer/binding.json","utf8")); assert.equal(h,receipt.sha256); const source=fs.readFileSync(".bench-alias/producer/source.txt","utf8"); assert(source.startsWith("${{ matrix.sha }} ${{ matrix.tree }} ")); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${file}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:file,sha256:h,source:source.trim(),producerRun:42598933727}));' | tee .bench-alias/results/binding.json
+      - name: Install dependencies
+        working-directory: head
+        run: pnpm install --frozen-lockfile
+      - name: Build JavaScript
+        working-directory: head
+        run: pnpm run build:js
+      - name: Run real compiler, API and watch executions
+        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates ${{ matrix.platform == 'Linux' && 'linux' || 'compiler' }}
+      - name: Source remains unchanged
+        if: always()
+        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-raise-counted-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-alias/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -46,9 +46,9 @@ try {
       const lines = eventText.split('\n');
       const allStarts = lines.filter(line => line.includes(' | TEST_START | '));
       const ends = lines.filter(line => line.includes(' | TEST_END | '));
-      const passed = ends.filter(line => /\| passed \|/.test(line));
-      const skipped = ends.filter(line => /\| (?:skipped|todo|pending) \|/.test(line));
-      const failures = ends.filter(line => /\| failed \|/.test(line));
+      const passed = ends.filter(line => /\| pass \|/.test(line));
+      const skipped = ends.filter(line => /\| (?:skip|todo|pending) \|/.test(line));
+      const failures = ends.filter(line => /\| fail \|/.test(line));
       const skippedNames = new Set(skipped.map(line => line.split(' | TEST_END | ')[0]));
       const starts = allStarts.filter(line => !skippedNames.has(line.split(' | TEST_START | ')[0]));
       const caseCounts = {};
