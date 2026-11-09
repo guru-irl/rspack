@@ -1,0 +1,91 @@
+name: PR59 raise merge Linux limit core proof
+on:
+  push:
+    branches: [bench/pr59-raise-limits]
+    paths: ['.github/workflows/bench-pr59-raise-limits.yml', 'bench/c4b/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: pr59-raise-limits-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  limits:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: shared, cap: 30, root: real }
+          - { kind: shared, cap: 30, root: link }
+          - { kind: shared, cap: 300, root: real }
+          - { kind: combined, cap: 30, root: real }
+          - { kind: combined, cap: 30, root: link }
+          - { kind: combined, cap: 300, root: real }
+          - { kind: sequential, cap: 300, root: real }
+          - { kind: retained, cap: 30, root: real }
+          - { kind: retained, cap: 300, root: real }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          path: t-fix
+      - name: Verify source identity
+        run: |
+          set -euo pipefail
+          test "$(git -C t-fix rev-parse HEAD)" = 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          test "$(git -C t-fix rev-parse HEAD^{tree})" = 823fc9f0488ccb5c4cb82c234220169eb68ea84d
+          mkdir -p .c4b/results
+          git -C t-fix show -s --format='%H %T %s' | tee .c4b/results/source.txt
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-Linux-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: t-fix/crates/node_binding
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-Linux-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .c4b/producer
+      - name: Verify binding against producer receipt
+        run: |
+          set -euo pipefail
+          node -e 'const fs=require("node:fs"),c=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.readdirSync("t-fix/crates/node_binding").filter(f=>f.endsWith(".node")); assert.equal(p.length,1); const h=c.createHash("sha256").update(fs.readFileSync("t-fix/crates/node_binding/"+p[0])).digest("hex"), receipt=JSON.parse(fs.readFileSync(".c4b/producer/binding.json","utf8")); assert.equal(h,receipt.sha256); const source=fs.readFileSync(".c4b/producer/source.txt","utf8"); assert(source.startsWith("80522e0611ed6f4b6260af91a3df8b99f7badf2c 823fc9f0488ccb5c4cb82c234220169eb68ea84d ")); fs.appendFileSync(process.env.GITHUB_ENV,`CANDIDATE_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({sha256:h,source:source.trim(),producerRun:42598933727}));' | tee .c4b/results/producer-identity.json
+      - name: Install dependencies and build JavaScript
+        working-directory: t-fix
+        run: pnpm install --frozen-lockfile && pnpm run build:js
+      - name: Allow private user namespaces on this throwaway runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Run limit core gate and verify actual receipts
+        run: |
+          set -euo pipefail
+          node bench/c4b/raise-gate.cjs ${{ matrix.kind }} ${{ matrix.cap }} ${{ matrix.root }} 2>&1 | tee .c4b/results/run.log
+      - name: Source remains unchanged
+        if: always()
+        run: git -C t-fix diff --exit-code && git -C t-fix diff --exit-code --cached
+      - name: Verify no leftover harness processes
+        if: always()
+        run: |
+          set -euo pipefail
+          ps -eo pid,etimes,args | grep -E 'node .*bench/c4b' | grep -v grep > .c4b/results/leftover.txt || true
+          cat .c4b/results/leftover.txt
+          test ! -s .c4b/results/leftover.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-raise-${{ matrix.kind }}-${{ matrix.cap }}-${{ matrix.root }}
+          path: .c4b/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
