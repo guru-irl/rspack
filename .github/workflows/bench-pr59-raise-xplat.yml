@@ -1,0 +1,174 @@
+name: PR59 raise merge cross-platform proof
+on:
+  push:
+    branches: [bench/pr59-raise-xplat]
+    paths: ['.github/workflows/bench-pr59-raise-xplat.yml', 'bench/alias-xplat/**']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: pr59-raise-xplat-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+      - name: Check source identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          test "$(git rev-parse HEAD^{tree})" = 823fc9f0488ccb5c4cb82c234220169eb68ea84d
+          mkdir -p .bench-results
+          git show -s --format='%H %T %s' | tee .bench-results/source.txt
+      - name: Install edition 2024 toolchain
+        run: rustup toolchain install nightly-2026-04-16 --profile minimal --component rustfmt --component clippy
+      - name: Format check
+        run: set -o pipefail; cargo fmt --all --check 2>&1 | tee .bench-results/fmt.log
+      - name: Clippy
+        if: always()
+        run: set -o pipefail; cargo clippy -p rspack_watcher -p rspack_watcher_testing --all-targets -- -D warnings 2>&1 | tee .bench-results/clippy.log
+      - name: Cargo tests including rename_aggregation and rename_events
+        if: always()
+        run: set -o pipefail; cargo test -p rspack_watcher -p rspack_watcher_testing 2>&1 | tee .bench-results/cargo-test.log
+      - name: Source remains unchanged
+        if: always()
+        run: git diff --exit-code && git diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-raise-rust
+          path: .bench-results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macOS, runner: macos-latest, arm: head, sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c, tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d }
+          - { platform: Windows, runner: windows-latest, arm: head, sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c, tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d }
+          - { platform: Linux, runner: ubuntu-latest, arm: head, sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c, tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d }
+          - { platform: macOS, runner: macos-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: Windows, runner: windows-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: Linux, runner: ubuntu-latest, arm: base, sha: 360667e8f049fdea70d03e357e0018aa62553d23, tree: 3bafe42e2eae81274f30802126a499ecbb60da4a }
+          - { platform: macOS, runner: macos-latest, arm: main, sha: 1fb825ce951589c7cb39b51a0bb4c209960e97f6, tree: bb2bc70cb6385ad4133bcdff9cb3dcadf693e5d5 }
+          - { platform: Windows, runner: windows-latest, arm: main, sha: 1fb825ce951589c7cb39b51a0bb4c209960e97f6, tree: bb2bc70cb6385ad4133bcdff9cb3dcadf693e5d5 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set scratch paths
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/.bench-alias/tmp" "$PWD/.bench-alias/results"
+          P="$PWD/.bench-alias/tmp"
+          if [[ "$RUNNER_OS" == Windows ]]; then P="$(cygpath -w "$P")"; fi
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$P" "$P" "$P" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.sha }}
+          path: head
+      - name: Verify source identity
+        run: |
+          set -euo pipefail
+          test "$(git -C head rev-parse HEAD)" = ${{ matrix.sha }}
+          test "$(git -C head rev-parse HEAD^{tree})" = ${{ matrix.tree }}
+          git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Repair Rust proxies on macOS
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 5 -fsSL https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install Rust
+        run: rustup toolchain install nightly-2026-04-16 --profile minimal
+      - name: Install dependencies
+        working-directory: head
+        run: pnpm install --frozen-lockfile
+      - name: Build development binding
+        working-directory: head
+        run: pnpm run build:binding:dev
+      - name: Build JavaScript
+        working-directory: head
+        run: pnpm run build:js
+      - name: Pin the binding
+        run: |
+          set -euo pipefail
+          PIN="$(find "$PWD/head/crates/node_binding" -name '*.node' -type f)"
+          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"); const p=fs.realpathSync.native(process.argv[1]),h=crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:p,sha256:h}));' "$PIN" | tee .bench-alias/results/binding.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr59-raise-binding-${{ matrix.platform }}-${{ matrix.arm }}
+          path: head/crates/node_binding/*.node
+          if-no-files-found: error
+      - name: Compare alias steps with Watchpack and run five controls
+        if: matrix.arm == 'head'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            D=".bench-alias/results/alias-$attempt"
+            mkdir -p "$D"
+            if node bench/alias-xplat/reference.cjs head head "$D/head.jsonl" &&
+               node bench/alias-xplat/reference.cjs head wp "$D/wp.jsonl" &&
+               node bench/alias-xplat/audit-reference.cjs "$D" --controls --require-parity=head | tee "$D/audit.log"; then
+              break
+            fi
+            test "$attempt" -lt 2 || exit 1
+          done
+      - name: Run c3 native and Watchpack controls
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            D=".bench-alias/results/c3-$attempt"
+            mkdir -p "$D"
+            if node bench/alias-xplat/c3-steps.cjs head ${{ matrix.arm }} "$D/native.jsonl" > "$D/native.log" 2>&1 &&
+               node bench/alias-xplat/c3-steps.cjs head wp "$D/wp.jsonl" > "$D/wp.log" 2>&1 &&
+               REQUIRE_REVIEWED_ROWS=${{ matrix.arm == 'head' && '1' || '0' }} node bench/alias-xplat/c3-compare.cjs "$D/native.jsonl" "$D/wp.jsonl" | tee "$D/compare.log"; then
+              break
+            fi
+            test "$attempt" -lt 2 || exit 1
+          done
+      - name: Run all native watcher compiler cases with worker binding proof
+        if: always() && (matrix.arm == 'head' || (matrix.platform == 'Linux' && matrix.arm == 'base'))
+        run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates ${{ matrix.platform == 'Linux' && 'linux' || 'compiler' }}
+      - name: Paired rename alias parity with followSymlinks true and false
+        if: always() && matrix.arm == 'head' && matrix.platform == 'Linux'
+        run: |
+          set -euo pipefail
+          node bench/alias-xplat/paired-rename.cjs head .bench-alias/results/paired-rename.jsonl
+          node bench/alias-xplat/paired-save.cjs head .bench-alias/results/paired-save.jsonl
+      - name: Check source stayed unchanged
+        if: always()
+        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-raise-${{ matrix.platform }}-${{ matrix.arm }}
+          path: .bench-alias/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
