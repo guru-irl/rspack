@@ -1,0 +1,110 @@
+name: PR59 Linux reference refresh
+on:
+  push:
+    branches: [bench/pr59-raise-linux-reference]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reference:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: main
+            repository: web-infra-dev/rspack
+            sha: 1fb825ce951589c7cb39b51a0bb4c209960e97f6
+            tree: bb2bc70cb6385ad4133bcdff9cb3dcadf693e5d5
+          - arm: head
+            repository: guru-irl/rspack
+            sha: 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+            tree: 823fc9f0488ccb5c4cb82c234220169eb68ea84d
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+      CARGO_PROFILE_DEV_DEBUG: 0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.sha }}
+          path: source
+      - name: Record source identity and UTC start
+        run: |
+          set -euo pipefail
+          date -u
+          test "$(git -C source rev-parse HEAD)" = "${{ matrix.sha }}"
+          test "$(git -C source rev-parse 'HEAD^{tree}')" = "${{ matrix.tree }}"
+          git -C source show -s --format='%H %T %s' HEAD
+          mkdir -p "$RUNNER_TEMP/pr59-reference" "$PWD/.bench-pr59/results"
+          echo "TMPDIR=$RUNNER_TEMP/pr59-reference" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+      - name: Install source dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Download exact main CI binding
+        if: matrix.arm == 'main'
+        uses: actions/download-artifact@v4
+        with:
+          repository: web-infra-dev/rspack
+          name: bindings-x86_64-unknown-linux-gnu
+          run-id: 42588306562
+          github-token: ${{ github.token }}
+          path: .bench-pr59/main-binding
+      - name: Install candidate Rust toolchain
+        if: matrix.arm == 'head'
+        run: rustup toolchain install nightly-2026-04-16 --profile minimal
+      - name: Build candidate CI binding
+        if: matrix.arm == 'head'
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo codegen
+          RUST_TARGET=x86_64-unknown-linux-gnu pnpm run build:binding:ci
+      - name: Build source JavaScript
+        working-directory: source
+        run: pnpm run build:js
+      - name: Run three independent trials per arm
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.arm }}' == main ]]; then
+            mapfile -t bindings < <(find "$PWD/.bench-pr59/main-binding" -type f -name '*.node')
+          else
+            mapfile -t bindings < <(find "$PWD/source/crates/node_binding" -maxdepth 1 -type f -name '*.node')
+          fi
+          test "${#bindings[@]}" -eq 1
+          export NAPI_RS_NATIVE_LIBRARY_PATH="${bindings[0]}"
+          export EXPECTED_BINDING_SHA256="$(sha256sum "$NAPI_RS_NATIVE_LIBRARY_PATH" | cut -d' ' -f1)"
+          export EXPECTED_SOURCE_SHA='${{ matrix.sha }}'
+          export EXPECTED_SOURCE_TREE='${{ matrix.tree }}'
+          for trial in 1 2 3; do
+            node bench/pr59-linux-reference/reference.cjs source '${{ matrix.arm }}' ".bench-pr59/results/${{ matrix.arm }}-${trial}.jsonl"
+            if [[ '${{ matrix.arm }}' == head ]]; then
+              node bench/pr59-linux-reference/reference.cjs source wp ".bench-pr59/results/wp-${trial}.jsonl"
+            fi
+          done
+      - name: Validate trials and compare with old Linux table
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.arm }}' == main ]]; then
+            node bench/pr59-linux-reference/summary.cjs .bench-pr59/results main
+          else
+            node bench/pr59-linux-reference/summary.cjs .bench-pr59/results head wp
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-linux-reference-${{ matrix.arm }}
+          path: .bench-pr59/results/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
