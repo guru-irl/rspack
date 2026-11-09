@@ -1,0 +1,167 @@
+name: PR59 macOS rename aggregation flake experiment
+on:
+  push:
+    branches: [bench/pr59-raise-macos-rename]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paired:
+    runs-on: macos-latest
+    timeout-minutes: 80
+    outputs:
+      bothzero: ${{ steps.sample.outputs.bothzero }}
+    env:
+      TMPDIR: ${{ github.workspace }}/.bench-macos/tmp
+      TMP: ${{ github.workspace }}/.bench-macos/tmp
+      TEMP: ${{ github.workspace }}/.bench-macos/tmp
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          path: source
+      - name: Verify the shared test source
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          test "$(git -C source rev-parse HEAD^{tree})" = 823fc9f0488ccb5c4cb82c234220169eb68ea84d
+          mkdir -p "$TMPDIR" .bench-macos/results
+          git -C source show -s --format='%H %T %s' | tee .bench-macos/results/test-source.txt
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check the counting and statistics controls
+        run: node bench/alias-xplat/macos-rename-measure.cjs --self-test
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-macOS-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/bindings/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-macOS-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/producer/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-macOS-main
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/bindings/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-macOS-main
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/producer/main
+      - name: Verify both bindings against the producer receipts
+        run: node bench/alias-xplat/macos-rename-measure.cjs --verify-producers
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Build JavaScript
+        working-directory: source
+        run: pnpm run build:js
+      - name: Run 30 alternating candidate and main trials
+        id: sample
+        run: node bench/alias-xplat/macos-rename-measure.cjs paired
+      - name: Check the shared test source stayed unchanged
+        if: always()
+        run: git -C source diff --exit-code && git -C source diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-macos-rename-paired
+          path: .bench-macos/results/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+  extra-candidate:
+    needs: paired
+    if: needs.paired.outputs.bothzero == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 55
+    env:
+      TMPDIR: ${{ github.workspace }}/.bench-macos/tmp
+      TMP: ${{ github.workspace }}/.bench-macos/tmp
+      TEMP: ${{ github.workspace }}/.bench-macos/tmp
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          path: source
+      - name: Verify the shared test source
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          test "$(git -C source rev-parse HEAD^{tree})" = 823fc9f0488ccb5c4cb82c234220169eb68ea84d
+          mkdir -p "$TMPDIR" .bench-macos/results
+          git -C source show -s --format='%H %T %s' | tee .bench-macos/results/test-source.txt
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check the counting and statistics controls
+        run: node bench/alias-xplat/macos-rename-measure.cjs --self-test
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-macOS-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/bindings/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-macOS-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/producer/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-macOS-main
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/bindings/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-macOS-main
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .bench-macos/producer/main
+      - name: Verify both bindings against the producer receipts
+        run: node bench/alias-xplat/macos-rename-measure.cjs --verify-producers
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Build JavaScript
+        working-directory: source
+        run: pnpm run build:js
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-macos-rename-paired
+          path: .bench-macos/paired-receipt
+      - name: Run 30 additional candidate trials on a second runner
+        run: node bench/alias-xplat/macos-rename-measure.cjs extra
+      - name: Check the shared test source stayed unchanged
+        if: always()
+        run: git -C source diff --exit-code && git -C source diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-macos-rename-second-candidate
+          path: .bench-macos/results/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
