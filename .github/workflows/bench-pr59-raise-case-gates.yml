@@ -59,10 +59,10 @@ jobs:
           node -e 'const fs=require("node:fs"),c=require("node:crypto"),assert=require("node:assert/strict"); const p=fs.readdirSync("head/crates/node_binding").filter(f=>f.endsWith(".node")); assert.equal(p.length,1); const file=fs.realpathSync.native("head/crates/node_binding/"+p[0]),h=c.createHash("sha256").update(fs.readFileSync(file)).digest("hex"),receipt=JSON.parse(fs.readFileSync(".bench-alias/producer/binding.json","utf8")); assert.equal(h,receipt.sha256); const source=fs.readFileSync(".bench-alias/producer/source.txt","utf8"); assert(source.startsWith("${{ matrix.sha }} ${{ matrix.tree }} ")); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${file}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:file,sha256:h,source:source.trim(),producerRun:42598933727}));' | tee .bench-alias/results/binding.json
       - name: Install dependencies
         working-directory: head
-        run: pnpm install --frozen-lockfile
+        run: unset NAPI_RS_NATIVE_LIBRARY_PATH EXPECTED_BINDING_SHA256; pnpm install --frozen-lockfile
       - name: Build JavaScript
         working-directory: head
-        run: pnpm run build:js
+        run: unset NAPI_RS_NATIVE_LIBRARY_PATH EXPECTED_BINDING_SHA256; pnpm run build:js
       - name: Run real compiler, API and watch executions
         run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates ${{ matrix.platform == 'Linux' && 'linux' || 'compiler' }}
       - name: Source remains unchanged
