@@ -1,0 +1,46 @@
+name: PR59 raise cross-platform Rust rename proof
+on:
+  push:
+    branches: [bench/pr59-raise-rename-rust]
+permissions:
+  contents: read
+jobs:
+  rename:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+      - name: Verify source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 80522e0611ed6f4b6260af91a3df8b99f7badf2c
+          test "$(git rev-parse HEAD^{tree})" = 823fc9f0488ccb5c4cb82c234220169eb68ea84d
+          mkdir -p .bench-rename/results
+          git show -s --format='%H %T %s' | tee .bench-rename/results/source.txt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pr59-rename-${{ runner.os }}-80522e0611
+      - name: Execute both existing rename suites
+        run: |
+          set -euo pipefail
+          cargo test -p rspack_watcher_testing --test rename_aggregation --test rename_events 2>&1 | tee .bench-rename/results/rename-rust.log
+      - name: Check source unchanged
+        if: always()
+        run: git diff --exit-code && git diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-raise-rename-rust-${{ runner.os }}
+          path: .bench-rename/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
