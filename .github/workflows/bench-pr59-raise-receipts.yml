@@ -1,4 +1,4 @@
-name: PR59 raise inspect execution receipts
+name: PR59 raise inspect macOS retry receipts
 on:
   push:
     branches: [bench/pr59-raise-receipts]
@@ -12,12 +12,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: pr59-raise-Linux-head
-          run-id: 42598933727
+          name: pr59-raise-counted-macOS-head
+          run-id: 42602054940
           github-token: ${{ github.token }}
           path: receipts
-      - name: Inspect streamed starts and results and the plain compiler log
+      - name: Print exact first-attempt failures and second-attempt receipt
         shell: bash
         run: |
           set -euo pipefail
-          node -e 'const fs=require("node:fs"); for (const f of ["compiler-native-1.events.txt","native-api-1.events.txt","watch-native-1.events.txt"]) { const s=fs.readFileSync("receipts/gates/"+f,"utf8").split("\n"); console.log("FILE",f); const rows=s.filter(l=>l.includes(" | TEST_START | ")||l.includes(" | TEST_END | ")); console.log(rows.slice(0,8).join("\n")); console.log(rows.filter(l=>l.includes("native-watcher-rename-aggregation")||l.includes("native-watcher-context-watch-errors")).slice(0,16).join("\n")); } const log=fs.readFileSync("receipts/gates/compiler-native-1.log.plain","utf8"); console.log("PLAIN_LOG",log.slice(-14000));'
+          node -e 'const fs=require("node:fs"),assert=require("node:assert/strict"); const rows=fs.readFileSync("receipts/gates/compiler-native-1.events.txt","utf8").split("\n"),failed=rows.filter(l=>l.includes(" | TEST_END | ")&&l.includes(" | fail | ")); assert.equal(failed.length,2); console.log("FIRST_ATTEMPT_FAILURES\n"+failed.join("\n")); const log=fs.readFileSync("receipts/gates/compiler-native-1.log.plain","utf8"); console.log(log.split("\n").filter(l=>/FAIL |Error: Case|AssertionError/.test(l)).join("\n")); const receipts=fs.readFileSync("receipts/gates/gates.jsonl","utf8").trim().split("\n").map(JSON.parse); assert.equal(receipts[1].passed,49); assert(receipts[1].ok); console.log("RETRY_RECEIPT",JSON.stringify(receipts[1]));'
