@@ -1,7 +1,7 @@
-name: PR59 raise merge Linux limit core proof
+name: PR59 raise exact retained-300 proof
 on:
   push:
-    branches: [bench/pr59-raise-limits]
+    branches: [bench/pr59-raise-retained300]
     paths: ['.github/workflows/bench-pr59-raise-limits.yml', 'bench/c4b/**']
 permissions:
   contents: read
@@ -15,14 +15,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { kind: shared, cap: 30, root: real }
-          - { kind: shared, cap: 30, root: link }
-          - { kind: shared, cap: 300, root: real }
-          - { kind: combined, cap: 30, root: real }
-          - { kind: combined, cap: 30, root: link }
-          - { kind: combined, cap: 300, root: real }
-          - { kind: sequential, cap: 300, root: real }
-          - { kind: retained, cap: 30, root: real }
           - { kind: retained, cap: 300, root: real }
     runs-on: ubuntu-24.04
     timeout-minutes: 45

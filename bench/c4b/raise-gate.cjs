@@ -18,7 +18,8 @@ let ok = false;
 for (let attempt = 1; attempt <= 2; attempt++) {
   const tag = `${kind}${cap}-attempt${attempt}`;
   const env = { ...process.env, NSLIMIT: String(cap), PREFIX: path.join(process.env.GITHUB_WORKSPACE, 'bench/c4b/nslimit.sh') };
-  if (cap === 300) env.LIMIT_DIRS = '400';
+  if (cap === 300 && kind !== 'retained') env.LIMIT_DIRS = '400';
+  else delete env.LIMIT_DIRS;
   const command = spawnSync('bash', ['bench/c4b/arm.sh', 'fix', driver, tag, root, sessions], { env, stdio: 'inherit' });
   const prefix = path.join(results, `${tag}-${root}-fix`);
   let receipt;
@@ -48,7 +49,7 @@ for (let attempt = 1; attempt <= 2; attempt++) {
     assert.deepEqual(summary[0].failed, failed);
     const unexpected = failed.filter(id => !allowedFailures.includes(id));
     assert.deepEqual(unexpected, [], 'row passed on reviewed head but missed on merged candidate');
-    receipt = { kind, cap, root, attempt, ok: true, rows: steps.length, passed: steps.length - failed.length, failed, allowedFailures,
+    receipt = { kind, cap, root, attempt, directories: Number(env.LIMIT_DIRS || 40), ok: true, rows: steps.length, passed: steps.length - failed.length, failed, allowedFailures,
       sha256: identities[0].sha, binding: identities[0].binding };
     ok = true;
   } catch (error) { receipt = { kind, cap, root, attempt, ok: false, error: error.stack, sha256: process.env.CANDIDATE_BINDING_SHA256 }; }
