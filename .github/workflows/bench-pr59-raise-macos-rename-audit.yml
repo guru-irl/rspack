@@ -1,0 +1,58 @@
+name: PR59 macOS rename raw receipt audit
+on:
+  push:
+    branches: [bench/pr59-raise-macos-rename]
+    paths:
+      - '.github/workflows/bench-pr59-raise-macos-rename-audit.yml'
+      - 'bench/alias-xplat/macos-rename-audit.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: macos-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-macos-rename-paired
+          run-id: 42605253107
+          github-token: ${{ github.token }}
+          path: .audit/paired
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-macOS-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .audit/bindings/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-macOS-head
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .audit/producer/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-binding-macOS-main
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .audit/bindings/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr59-raise-macOS-main
+          run-id: 42598933727
+          github-token: ${{ github.token }}
+          path: .audit/producer/main
+      - name: Independently recount events and verify identities
+        run: python3 bench/alias-xplat/macos-rename-audit.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-macos-rename-independent-audit
+          path: .audit/independent-summary.json
+          if-no-files-found: warn
+          retention-days: 14

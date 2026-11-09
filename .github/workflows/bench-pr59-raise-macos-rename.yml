@@ -2,6 +2,10 @@ name: PR59 macOS rename aggregation flake experiment
 on:
   push:
     branches: [bench/pr59-raise-macos-rename]
+    paths:
+      - 'bench/alias-xplat/macos-rename-measure.cjs'
+      - 'bench/alias-xplat/binding-guard.cjs'
+      - 'bench/alias-xplat/verify-binding.mjs'
 permissions:
   contents: read
   actions: read
