@@ -25,7 +25,7 @@ async function scenario(native, followSymlinks, operation) {
     'index.js': 'const c = require.context("./ctx", true, /\\.js$/); module.exports = c.keys().sort().map(k => [k, c(k)]);',
     'ctx/real/sub/a.js': 'module.exports = "a-old";',
     'ctx/real/sub/b.js': 'module.exports = "b-old";'
-  })) { fs.mkdirSync(path.dirname(full(file)), { recursive: true }); fs.writeFileSync(full(file), content); const past = new Date(Date.now() - 60000); fs.utimesSync(full(file), past, past); }
+  })) { fs.mkdirSync(path.dirname(full(file)), { recursive: true }); fs.writeFileSync(full(file), content); const past = new Date(1700000000000 + (file.endsWith('/b.js') ? 10000 : 0)); fs.utimesSync(full(file), past, past); }
   fs.symlinkSync('real', full('ctx/link'));
   const compiler = rspack({ context: root, mode: 'development', devtool: false, target: 'node', entry: './index.js', resolve: { symlinks: false }, output: { path: full('dist'), filename: 'bundle.js', library: { type: 'commonjs2' } }, experiments: { nativeWatcher: native } });
   let builds = 0, last, error, events = [];
