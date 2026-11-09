@@ -1,0 +1,65 @@
+name: PR59 raise unsplit atomic save probe
+on:
+  push:
+    branches: [bench/pr59-raise-unsplit-probe2]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: aaf9527dd6dfeefe9b5a4c731002d7ca0959b112
+          path: head
+      - name: Verify source identity and create scratch
+        run: |
+          set -euo pipefail
+          test "$(git -C head rev-parse HEAD)" = aaf9527dd6dfeefe9b5a4c731002d7ca0959b112
+          test "$(git -C head rev-parse HEAD^{tree})" = c5b4981203138be02bfa0c6629671301ebc9c475
+          mkdir -p .bench-alias/tmp .bench-alias/results
+          echo "TMPDIR=$PWD/.bench-alias/tmp" >> "$GITHUB_ENV"
+          git -C head show -s --format='%H %T %s' | tee .bench-alias/results/source.txt
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Rust
+        run: rustup toolchain install nightly-2026-04-16 --profile minimal
+      - name: Install dependencies
+        working-directory: head
+        run: pnpm install --frozen-lockfile
+      - name: Build development binding
+        working-directory: head
+        run: pnpm run build:binding:dev
+      - name: Build JavaScript
+        working-directory: head
+        run: pnpm run build:js
+      - name: Pin binding
+        run: |
+          set -euo pipefail
+          PIN="$(find "$PWD/head/crates/node_binding" -name '*.node' -type f)"
+          node -e 'const fs=require("node:fs"),c=require("node:crypto"); const p=fs.realpathSync.native(process.argv[1]),h=c.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); fs.appendFileSync(process.env.GITHUB_ENV,`NAPI_RS_NATIVE_LIBRARY_PATH=${p}\nEXPECTED_BINDING_SHA256=${h}\n`); console.log(JSON.stringify({binding:p,sha256:h}));' "$PIN" | tee .bench-alias/results/binding.json
+      - name: Compare paired rename against Watchpack
+        run: node bench/alias-xplat/paired-rename.cjs head .bench-alias/results/paired-rename.jsonl
+      - name: Source remains unchanged
+        if: always()
+        run: git -C head diff --exit-code && git -C head diff --exit-code --cached
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr59-raise-unsplit-probe2
+          path: .bench-alias/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
