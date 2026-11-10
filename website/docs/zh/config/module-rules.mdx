@@ -19,7 +19,7 @@ import Attribution from '@components/Attribution';
 
 通过组合不同的匹配条件和处理逻辑，`module.rules` 可以精细地控制各类模块的构建行为。
 
-例如，使用 [内置 swc-loader](/guide/features/builtin-swc-loader) 处理以 `.ts` 结尾的文件：
+例如，使用 [内置 swc-loader](/guide/builtin-loaders/swc-loader) 处理以 `.ts` 结尾的文件：
 
 ```js title="rspack.config.mjs"
 export default {
@@ -499,7 +499,7 @@ import url from './data' with { type: 'url' };
 import('./data', { with: { type: 'url' } });
 ```
 
-需要注意的是，为了让 Rspack 能够正常匹配 `with` 语法，当你在使用 [builtin:swc-loader](/guide/features/builtin-swc-loader) 时，需要手动开启 `keepImportAttributes` 配置以保留 `import attributes`：
+需要注意的是，为了让 Rspack 能够正常匹配 `with` 语法，当你在使用 [builtin:swc-loader](/guide/builtin-loaders/swc-loader) 时，需要手动开启 `keepImportAttributes` 配置以保留 `import attributes`：
 
 ```diff title="rspack.config.mjs"
 export default {
@@ -680,6 +680,40 @@ export default {
 - **Pitching 阶段:** loader 导出的 `pitch` 方法在 `post, inline, normal, pre` 顺序下被调用。详见 [Pitching Loader](/api/loader-api/writing-loaders#pitching-loader)。
 - **Normal 阶段:** loader 导出的默认方法在 `pre, normal, inline, post` 顺序下被执行。模块的源码转换发生在该阶段。
 
+## rules[].as
+
+<ApiMeta stability={Stability.Experimental} addedVersion="2.3.2" />
+
+- **类型：** `string`
+
+使用路径模板创建独立的规则匹配资源。目前只支持 `[resource-path]` 占位符，它会展开为当前匹配路径，包含扩展名，但不包含查询参数和片段。其他内容（包括 `*`）均作为字面量使用。
+
+规则按顺序执行。命中的规则包含 `as` 时，会用模板生成新的匹配路径，并加上原有查询参数和片段组成完整的匹配资源，然后继续匹配嵌套规则和后续规则，不会重新匹配之前的规则。后续 `as` 中的 `[resource-path]` 会使用前一次 `as` 生成的路径。
+
+文件读取和 loader 仍使用原始资源。如果请求包含 [inline match resource](/api/loader-api/inline-match-resource)，`as` 会以该匹配路径为起点。
+
+例如，`example.source.js` 会以 `example.source.js.txt` 匹配后续的 `.txt` 规则，再以 `example.source.js.txt.processed` 匹配 `.processed` 规则：
+
+```js title="rspack.config.mjs"
+export default {
+  module: {
+    rules: [
+      {
+        test: /\.source\.js$/,
+        type: 'asset/source',
+        as: '[resource-path].txt',
+      },
+      {
+        test: /\.txt$/,
+        use: './text-loader.js',
+        as: '[resource-path].processed',
+      },
+      { test: /\.processed$/, use: './processed-loader.js' },
+    ],
+  },
+};
+```
+
 ## rules[].type
 
 - **类型：** `string`
@@ -734,7 +768,7 @@ export default {
 - `'javascript/esm'`：JavaScript 模块，当作严格 ES modules 处理。
 - `'javascript/dynamic'`：JavaScript 模块，当作 Script 处理。
 - `'json'`：JSON data 模块，参考 [JSON](/guide/languages/json)。
-- `'css' | 'css/auto' | 'css/global' | 'css/module'`：CSS 模块，参考 [内置 CSS 支持](/guide/languages/css#内置-css-支持)。
+- `'css' | 'css/auto' | 'css/global' | 'css/module'`：CSS 模块，参考 [内置 CSS 支持](/guide/languages/css#built-in-css-support)。
 - `'asset' | 'asset/source' | 'asset/resource' | 'asset/inline' | 'asset/bytes'`：资源模块，参考 [资源模块](/guide/features/asset-module)。
 
 ## rules[].layer
@@ -779,9 +813,7 @@ type RuleSetLoaderWithOptions = {
   options?: string | Record<string, any>;
   parallel?: boolean | { maxWorkers?: number };
   cache?: boolean;
-  filter?: {
-    code: RuleSetLoaderCodeFilter;
-  };
+  codeFilter?: RuleSetLoaderCodeFilter;
 };
 ```
 

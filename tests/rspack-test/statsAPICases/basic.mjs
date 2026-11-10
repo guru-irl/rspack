@@ -69,7 +69,7 @@ export default {
 			        main.js,
 			      ],
 			      filteredModules: undefined,
-			      hash: c3211d879e4d910b,
+			      hash: 84617a4097364ca5,
 			      id: 889,
 			      idHints: Array [],
 			      initial: true,
@@ -198,7 +198,7 @@ export default {
 			  errorsCount: 0,
 			  filteredAssets: undefined,
 			  filteredModules: undefined,
-			  hash: 43b9fec5832e7ba4,
+			  hash: db6a8f7177d9aaa9,
 			  modules: Array [
 			    Object {
 			      assets: Array [],
@@ -315,7 +315,7 @@ export default {
 			  entry ./fixtures/a
 			  cjs self exports reference self [195] ./fixtures/a.js
 			  
-			Rspack compiled successfully (43b9fec5832e7ba4)
+			Rspack compiled successfully (db6a8f7177d9aaa9)
 		`);
 	}
 };

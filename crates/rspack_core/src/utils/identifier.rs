@@ -32,7 +32,12 @@ pub fn contextify(context: impl AsRef<Utf8Path>, request: &str) -> String {
 }
 
 /// Converts a source path to a context-relative `webpack://` URL, preserving existing URLs.
+///
+/// `file://` URLs are converted too, so build-local paths don't leak into module hashes.
 pub fn contextify_source_url(context: &str, source: &str) -> String {
+  if let Some(path) = source.strip_prefix("file://").and_then(file_url_path) {
+    return to_context_relative_url(context, &path);
+  }
   if source.starts_with("webpack://")
     || source.starts_with("rspack://")
     || source.starts_with("data:")
@@ -41,10 +46,40 @@ pub fn contextify_source_url(context: &str, source: &str) -> String {
   {
     return source.to_string();
   }
-  let mut result = String::with_capacity("webpack://".len() + context.len() + source.len());
+  to_context_relative_url(context, source)
+}
+
+fn to_context_relative_url(context: &str, path: &str) -> String {
+  let mut result = String::with_capacity("webpack://".len() + context.len() + path.len());
   result.push_str("webpack://");
-  result.push_str(&make_paths_relative(context, source));
+  result.push_str(&make_paths_relative(context, path));
   result
+}
+
+/// Returns the decoded path of a `file://` URL with an empty host (`file:///abs/path`).
+/// URLs naming a host are left alone.
+fn file_url_path(url_path: &str) -> Option<String> {
+  if !url_path.starts_with('/') {
+    return None;
+  }
+  let path = urlencoding::decode(url_path).ok()?;
+  Some(strip_slash_before_drive(&path).to_string())
+}
+
+/// URLs write Windows paths as `/C:/path`; drop the leading slash so they read as absolute.
+fn strip_slash_before_drive(path: &str) -> &str {
+  match path.strip_prefix('/') {
+    Some(rest) if is_windows_drive_path(rest) => rest,
+    _ => path,
+  }
+}
+
+fn is_windows_drive_path(path: &str) -> bool {
+  let bytes = path.as_bytes();
+  bytes.len() >= 3
+    && bytes[0].is_ascii_alphabetic()
+    && bytes[1] == b':'
+    && matches!(bytes[2], b'/' | b'\\')
 }
 
 /// Matches absolute sources that override `sourceRoot` in `rspack_sources::helpers::get_source`.
@@ -61,7 +96,7 @@ fn is_absolute_source(source: &str) -> bool {
 }
 
 /// Removes context-dependent paths from a loader-provided source map.
-pub fn contextify_source_map(context: &str, source_map: &mut SourceMap<'static>) {
+pub fn contextify_source_map(context: &str, source_map: &mut SourceMap) {
   let source_root = source_map
     .source_root()
     .filter(|source_root| !source_root.is_empty())
@@ -83,7 +118,7 @@ pub fn contextify_source_map(context: &str, source_map: &mut SourceMap<'static>)
       contextify_source_url(context, &source)
     })
     .collect();
-  source_map.set_file(Some(Cow::Borrowed("x")));
+  source_map.set_file(Some("x".into()));
   source_map.set_source_root(None);
   source_map.set_sources(sources);
 }

@@ -1,7 +1,7 @@
 use rspack_core::{
   AsyncDependenciesBlock, BoxDependency, ChunkGroupOptions, ContextDependency,
-  ContextNameSpaceObject, ContextOptions, DependencyCategory, DependencyRange, DependencyType,
-  DynamicImportFetchPriority, DynamicImportMode, GroupOptions, ImportAttributes,
+  ContextNameSpaceObject, ContextOptions, Dependency, DependencyCategory, DependencyRange,
+  DependencyType, DynamicImportFetchPriority, DynamicImportMode, GroupOptions, ImportAttributes,
   ReferencedSpecifier, get_context,
 };
 use rspack_error::{Error, Severity};
@@ -11,13 +11,17 @@ use rspack_util::{
 };
 use rustc_hash::FxHashMap;
 use swc_next_ecma_ast::{
-  BindingPattern, BindingPatternData, CallExpression, Expr, ExprData, GetSpan, ImportExpression,
-  ObjectPattern, Span, VariableDeclaration, VariableDeclarator, VariableKind,
+  Ast, BindingPattern, BindingPatternData, CallExpression, Expr, ExprData, Function, GetSpan,
+  IdentifierReference, ImportExpression, ObjectPattern, Span, VariableDeclaration,
+  VariableDeclarator, VariableKind, Visit, VisitWith,
 };
 
-use super::{JavascriptParserPlugin, import_phase::get_import_phase};
+use super::{
+  JavascriptParserPlugin, import_phase::get_import_phase,
+  inner_graph::state::InnerGraphUsageOperation,
+};
 use crate::{
-  Atom,
+  Atom, InnerGraphParserPlugin,
   dependency::{
     ImportContextDependency, ImportDependency, ImportEagerDependency, ImportWeakDependency,
   },
@@ -516,8 +520,13 @@ impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ImportParserPlugin {
         if let Some(exports) = exports {
           dep.set_referenced_specifiers(exports, !is_statical && has_exports_magic_comment);
         }
+        let dep_id = *dep.id();
         let dep_idx = parser.next_dependency_idx();
         parser.add_dependency(BoxDependency::new(dep));
+        InnerGraphParserPlugin::on_usage(
+          parser,
+          InnerGraphUsageOperation::ImportDependency(dep_id),
+        );
         ImportDependencyLocator {
           block_idx: None,
           dep_idx,
@@ -559,6 +568,7 @@ impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ImportParserPlugin {
         if let Some(export) = exports {
           dep.set_referenced_specifiers(export, !is_statical && has_exports_magic_comment);
         }
+        let dep_id = dep.id;
         let range = DependencyRange::from(import_call_span);
         let loc = parser.to_dependency_location(range);
         let mut block = AsyncDependenciesBlock::new(
@@ -576,6 +586,10 @@ impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ImportParserPlugin {
         )));
         let block_idx = parser.next_block_idx();
         parser.add_block(Box::new(block));
+        InnerGraphParserPlugin::on_usage(
+          parser,
+          InnerGraphUsageOperation::ImportDependency(dep_id),
+        );
         ImportDependencyLocator {
           block_idx: Some(block_idx),
           dep_idx: 0,
@@ -744,7 +758,15 @@ fn get_fulfilled_callback_namespace_obj(
   let fulfilled_callback = ast.first(import_then.arguments(ast))?.as_expr(ast)?;
   let params = match ast.expr_data(fulfilled_callback) {
     ExprData::ArrowFunctionExpression(function) => function.params(ast),
-    ExprData::Function(function) => function.params(ast),
+    ExprData::Function(function) => {
+      // A non-arrow callback can also reach the namespace object through
+      // `arguments` (e.g. `arguments[0].foo`), which the parameter-based
+      // tracking below cannot see, so keep every export in that case.
+      if function_uses_arguments(ast, function) {
+        return None;
+      }
+      function.params(ast)
+    }
     _ => return None,
   };
   // The namespace object heuristic only applies to an ordinary (non-rest)
@@ -759,6 +781,34 @@ fn get_fulfilled_callback_namespace_obj(
     return Some(ns_obj);
   }
   None
+}
+
+/// Returns whether `function` references its own `arguments` object.
+/// Nested non-arrow functions are skipped because they bind their own
+/// `arguments`; arrow functions are visited because they inherit it.
+fn function_uses_arguments(ast: &Ast<'_>, function: Function) -> bool {
+  struct ArgumentsVisitor<'a, 'b> {
+    ast: &'b Ast<'a>,
+    found: bool,
+  }
+
+  impl<'a> Visit<'a> for ArgumentsVisitor<'a, '_> {
+    fn ast(&self) -> &Ast<'a> {
+      self.ast
+    }
+
+    fn visit_function(&mut self, _function: Function) {}
+
+    fn visit_identifier_reference(&mut self, identifier: IdentifierReference) {
+      if self.ast.get_utf8(identifier.name(self.ast)) == "arguments" {
+        self.found = true;
+      }
+    }
+  }
+
+  let mut visitor = ArgumentsVisitor { ast, found: false };
+  function.visit_children_with(&mut visitor);
+  visitor.found
 }
 
 fn walk_import_then_fulfilled_callback(

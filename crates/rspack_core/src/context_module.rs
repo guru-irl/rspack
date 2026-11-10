@@ -368,7 +368,7 @@ impl ContextModule {
       .sorted_unstable_by_key(|(module_id, _)| module_id.clone());
     for (module_id, dep) in sorted_modules {
       let exports_type = get_exports_type_with_strict(
-        compilation.get_module_graph(),
+        module_graph,
         &compilation.module_graph_cache_artifact,
         &compilation.exports_info_artifact,
         dep,
@@ -819,25 +819,22 @@ impl ContextModule {
 
     let mut items = block_and_first_dependency_list
       .filter_map(|(b, dependency)| {
-        let chunks: Vec<_> = compilation
-          .build_chunk_graph_artifact
+        let graph = &compilation.build_chunk_graph_artifact;
+        let group = graph
           .chunk_graph
-          .get_block_chunk_group(
-            &b.identifier(),
-            &compilation.build_chunk_graph_artifact.chunk_group_by_ukey,
-          )
-          .expect("should have block chunk group")
-          .chunks
-          .iter()
-          .map(|c| {
-            compilation
-              .build_chunk_graph_artifact
-              .chunk_by_ukey
-              .expect_get(c)
-              .id()
-              .expect("should have chunk id in code generation")
-          })
-          .collect();
+          .get_block_chunk_group(&b.identifier(), &graph.chunk_group_by_ukey)
+          .expect("should have block chunk group");
+        let chunks: Vec<_> = if compilation.hot
+          && let Some(chunk) = group.get_hmr_loading_chunk(compilation)
+        {
+          vec![chunk.expect_id()]
+        } else {
+          group
+            .chunks
+            .iter()
+            .map(|c| graph.chunk_by_ukey.expect_get(c).expect_id())
+            .collect()
+        };
         if !chunks.is_empty() {
           has_no_chunk = false;
         }
@@ -1362,11 +1359,7 @@ impl Module for ContextModule {
       .into()
   }
 
-  fn size(
-    &self,
-    _source_type: Option<&crate::SourceType>,
-    _compilation: Option<&Compilation>,
-  ) -> f64 {
+  fn size(&self, _source_type: Option<&crate::SourceType>) -> f64 {
     160.0
   }
 
@@ -1410,14 +1403,7 @@ impl Module for ContextModule {
       id += " referencedExports: ";
       id += &specifiers
         .iter()
-        .map(|specifier| {
-          let s = specifier.names.iter().join(".");
-          if specifier.namespace_object_as_context && specifier.is_call {
-            format!("*.{s}()")
-          } else {
-            s
-          }
-        })
+        .map(ReferencedSpecifier::to_identifier_string)
         .join(", ");
     }
     if let Some(import) = &self.options.context_options.glob_import {
@@ -1666,13 +1652,7 @@ fn create_identifier(options: &ContextModuleOptions, resource: Option<&str>) -> 
     id += "|referencedExports: ";
     id += &specifiers
       .iter()
-      .map(|specifier| {
-        if specifier.namespace_object_as_context && specifier.is_call {
-          format!("*.{}()", specifier.names.iter().join("."))
-        } else {
-          specifier.names.iter().join(".")
-        }
-      })
+      .map(ReferencedSpecifier::to_identifier_string)
       .join(", ");
   }
   if let Some(import) = &options.context_options.glob_import {

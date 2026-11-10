@@ -10,8 +10,8 @@ use tracing::instrument;
 
 use crate::{
   ArtifactExt, ChunkByUkey, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Compilation,
-  Logger,
-  build_chunk_graph::code_splitter::CodeSplitter,
+  Logger, ModuleIdentifier,
+  build_chunk_graph::code_splitter::{CodeSplitter, ModuleReuseInfo},
   fast_set,
   incremental::{IncrementalPasses, Mutation},
 };
@@ -44,16 +44,22 @@ impl BuildChunkGraphArtifact {
 
   // Module incoming edges are covered by the importing modules' outgoing changes.
   // Entry roots and options need a separate comparison.
-  fn can_skip_rebuilding(&self, this_compilation: &Compilation) -> bool {
-    self.can_skip_rebuilding_legacy(this_compilation)
+  fn get_reuse_info(
+    &self,
+    this_compilation: &Compilation,
+  ) -> Option<Vec<(ModuleIdentifier, ModuleReuseInfo)>> {
+    self.get_reuse_info_legacy(this_compilation)
   }
 
-  fn can_skip_rebuilding_legacy(&self, this_compilation: &Compilation) -> bool {
+  fn get_reuse_info_legacy(
+    &self,
+    this_compilation: &Compilation,
+  ) -> Option<Vec<(ModuleIdentifier, ModuleReuseInfo)>> {
     let logger = this_compilation.get_logger("rspack.Compilation.codeSplittingCache");
 
     if self.has_diagnostics {
       logger.log("previous code splitting emitted diagnostics, rebuilding chunk graph");
-      return false;
+      return None;
     }
 
     if !this_compilation.entries.keys().eq(
@@ -63,7 +69,7 @@ impl BuildChunkGraphArtifact {
         .keys(),
     ) {
       logger.log("entrypoints change detected, rebuilding chunk graph");
-      return false;
+      return None;
     }
 
     let module_graph = this_compilation.get_module_graph();
@@ -75,7 +81,7 @@ impl BuildChunkGraphArtifact {
       .eq(self.code_splitter.global_entry_modules.iter())
     {
       logger.log("global entry roots change detected, rebuilding chunk graph");
-      return false;
+      return None;
     }
 
     for (name, entry) in &this_compilation.entries {
@@ -112,7 +118,7 @@ impl BuildChunkGraphArtifact {
         logger.log(format!(
           "entry inputs change detected: {name}, rebuilding chunk graph"
         ));
-        return false;
+        return None;
       }
     }
 
@@ -130,7 +136,7 @@ impl BuildChunkGraphArtifact {
         .eq(self.code_splitter.global_include_modules.iter())
     {
       logger.log("global includes change detected, rebuilding chunk graph");
-      return false;
+      return None;
     }
 
     let Some(mutations) = this_compilation
@@ -139,7 +145,7 @@ impl BuildChunkGraphArtifact {
     else {
       logger.log("incremental for build module graph disabled, rebuilding chunk graph");
       // if disable incremental for build module graph phase, we can't skip rebuilding
-      return false;
+      return None;
     };
 
     // if we have module removal, we can't skip rebuilding
@@ -148,10 +154,10 @@ impl BuildChunkGraphArtifact {
       .any(|mutation| matches!(mutation, Mutation::ModuleRemove { .. }))
     {
       logger.log("module removal detected, rebuilding chunk graph");
-      return false;
+      return None;
     }
 
-    let affected_modules = mutations.get_affected_modules_with_module_graph(module_graph);
+    let mut affected_modules = mutations.get_affected_modules_with_module_graph(module_graph);
     let previous_modules_map = &this_compilation
       .build_chunk_graph_artifact
       .code_splitter
@@ -159,7 +165,7 @@ impl BuildChunkGraphArtifact {
 
     if previous_modules_map.is_empty() {
       logger.log("no cache detected, rebuilding chunk graph");
-      return false;
+      return None;
     }
 
     let reuse_unreached = can_reuse_unreached_modules(this_compilation);
@@ -175,18 +181,25 @@ impl BuildChunkGraphArtifact {
       IdentifierSet::default()
     };
 
+    // A dependency condition may change when exports usage changes even if its
+    // owning module was not rebuilt. Revalidate every conditional module that
+    // contributed to the cached chunk graph in addition to mutated modules.
+    affected_modules.extend(self.code_splitter.cached_conditional_modules());
+
+    let mut reuse_info = Vec::with_capacity(affected_modules.len());
     for module in affected_modules {
-      if !self.code_splitter.can_reuse_affected_module(
+      let Some(info) = self.code_splitter.get_module_reuse_info(
         module,
         this_compilation,
         reuse_unreached && !rebuilt.contains(&module),
-      ) {
+      ) else {
         logger.log(format!("module topology change detected: {module}"));
-        return false;
-      }
+        return None;
+      };
+      reuse_info.push((module, info));
     }
 
-    true
+    Some(reuse_info)
   }
 
   /// Reset cached chunks back to the initial render state.
@@ -236,12 +249,21 @@ where
   let incremental_code_splitting = compilation
     .incremental
     .passes_enabled(IncrementalPasses::BUILD_CHUNK_GRAPH);
-  let no_change = incremental_code_splitting
-    && compilation
+  let reuse_info = if incremental_code_splitting {
+    compilation
       .build_chunk_graph_artifact
-      .can_skip_rebuilding(compilation);
+      .get_reuse_info(compilation)
+  } else {
+    None
+  };
 
-  if no_change {
+  if let Some(reuse_info) = reuse_info {
+    // A rebuilt module can gain a condition while its connection stays active.
+    // Keep tracking it so later export usage changes invalidate the reused graph.
+    compilation
+      .build_chunk_graph_artifact
+      .code_splitter
+      .update_conditional_modules(reuse_info);
     let module_idx = &compilation.build_chunk_graph_artifact.module_idx;
     let module_graph = compilation
       .build_module_graph_artifact
