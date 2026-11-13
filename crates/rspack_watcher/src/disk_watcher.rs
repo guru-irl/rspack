@@ -182,17 +182,18 @@ impl DiskWatcher {
   ) -> rspack_error::Result<()> {
     let new_patterns: HashSet<_> = patterns.collect();
     #[cfg(target_os = "linux")]
-    let new_patterns: HashSet<_> = new_patterns
-      .iter()
-      .filter(|p| {
-        p.mode == Recursive
-          || !new_patterns.contains(&WatchPattern {
-            path: p.path.clone(),
-            mode: Recursive,
-          })
-      })
-      .cloned()
-      .collect();
+    let new_patterns = {
+      let recursive: HashSet<_> = new_patterns
+        .iter()
+        .filter(|p| p.mode == Recursive)
+        .map(|p| p.path.clone())
+        .collect();
+      let mut new_patterns = new_patterns;
+      if !recursive.is_empty() {
+        new_patterns.retain(|p| p.mode == Recursive || !recursive.contains(&p.path));
+      }
+      new_patterns
+    };
     #[cfg(target_os = "linux")]
     let previous = std::mem::replace(&mut self.analyzer_patterns, new_patterns.clone());
     #[cfg(target_os = "linux")]
@@ -334,27 +335,10 @@ impl DiskWatcher {
   }
 
   #[cfg(target_os = "linux")]
-  fn required_coverage(&self, path: &InternedPath) -> bool {
-    self.watch_patterns.iter().any(|p| {
-      !self.dirty.contains(p)
-        && (p.path == *path || (p.mode == Recursive && path.starts_with(&p.path)))
-    })
-  }
-
-  #[cfg(target_os = "linux")]
   fn reconcile_contexts(&mut self) {
     let paths: Vec<_> = self.context_paths.iter().cloned().collect();
     for path in paths {
-      if self.required_coverage(&path) {
-        let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
-        if contexts.installed.remove(&path)
-          && let Some(watcher) = &mut contexts.inner
-        {
-          let _ = watcher.unwatch(&path);
-        }
-      } else {
-        self.watch_context_directory(&path);
-      }
+      self.watch_context_directory(&path);
     }
   }
 
@@ -364,9 +348,8 @@ impl DiskWatcher {
       return;
     }
     self.context_paths.insert(path.clone());
-    if self.required_coverage(path) {
-      return;
-    }
+    // A required pattern is not proof that notify kept the inherited descriptor.
+    // Give every owned context directory a confirmed lease on the isolated stream.
     let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
     // Recheck under the slot lock so a concurrent release cannot miss an addition.
     if CONTEXTS_DISABLED.load(Ordering::Acquire) || contexts.installed.contains(path) {
