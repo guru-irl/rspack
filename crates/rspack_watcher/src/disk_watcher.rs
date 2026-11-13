@@ -1,4 +1,6 @@
 #[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
 use std::sync::{
   Mutex, Weak,
   atomic::{AtomicBool, Ordering},
@@ -12,6 +14,8 @@ use notify::{
   event::{ModifyKind, RenameMode},
 };
 use rspack_paths::InternedPath;
+#[cfg(target_os = "linux")]
+use rspack_util::fx_hash::FxHashMap as HashMap;
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
@@ -69,7 +73,7 @@ pub(crate) fn reclaim_and_retry_all(requester: &trigger::Trigger) {
 #[derive(Default)]
 struct ContextWatches {
   inner: Option<RecommendedWatcher>,
-  installed: HashSet<InternedPath>,
+  installed: HashMap<InternedPath, (u64, u64)>,
   trigger: Weak<trigger::Trigger>,
 }
 
@@ -78,7 +82,7 @@ impl ContextWatches {
   fn release(&mut self) {
     let paths = std::mem::take(&mut self.installed);
     if let Some(watcher) = &mut self.inner {
-      for path in paths {
+      for (path, _) in paths {
         let _ = watcher.unwatch(&path);
       }
     }
@@ -229,6 +233,13 @@ impl DiskWatcher {
       )
       .collect();
     for path in &stale_paths {
+      #[cfg(target_os = "linux")]
+      self.dirty.extend(
+        new_patterns
+          .iter()
+          .filter(|p| p.mode == Recursive && path.starts_with(p.path.as_ref() as &std::path::Path))
+          .cloned(),
+      );
       if let Some(watcher) = &mut self.inner
         && let Err(e) = watcher.unwatch(path)
         && !matches!(e.kind, notify::ErrorKind::WatchNotFound)
@@ -352,7 +363,12 @@ impl DiskWatcher {
     // Give every owned context directory a confirmed lease on the isolated stream.
     let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
     // Recheck under the slot lock so a concurrent release cannot miss an addition.
-    if CONTEXTS_DISABLED.load(Ordering::Acquire) || contexts.installed.contains(path) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+      return;
+    };
+    if CONTEXTS_DISABLED.load(Ordering::Acquire)
+      || contexts.installed.get(path) == Some(&(metadata.dev(), metadata.ino()))
+    {
       return;
     }
     if contexts.inner.is_none() {
@@ -371,7 +387,9 @@ impl DiskWatcher {
       .watch(path, NonRecursive)
     {
       Ok(()) => {
-        contexts.installed.insert(path.clone());
+        contexts
+          .installed
+          .insert(path.clone(), (metadata.dev(), metadata.ino()));
       }
       Err(error) if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) => {
         CONTEXTS_DISABLED.store(true, Ordering::Release);
@@ -386,11 +404,33 @@ impl DiskWatcher {
   #[cfg(target_os = "linux")]
   pub(crate) fn remove_context_directory(&mut self, path: &InternedPath, _removed: bool) {
     self.context_paths.remove(path);
-    let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
-    if contexts.installed.remove(path)
-      && let Some(watcher) = &mut contexts.inner
+    let retained = {
+      let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
+      let Some(identity) = contexts.installed.remove(path) else {
+        return;
+      };
+      // notify aliases share one descriptor; removing one spelling removes it for all.
+      let retained: Vec<_> = contexts
+        .installed
+        .iter()
+        .filter(|(_, id)| **id == identity)
+        .map(|(path, _)| path.clone())
+        .collect();
+      for path in &retained {
+        contexts.installed.remove(path);
+      }
+      if let Some(watcher) = &mut contexts.inner {
+        let _ = watcher.unwatch(path);
+      }
+      retained
+    };
+    for path in &retained {
+      self.watch_context_directory(path);
+    }
+    if !retained.is_empty()
+      && let Some(trigger) = self.trigger.upgrade()
     {
-      let _ = watcher.unwatch(path);
+      trigger.reconcile();
     }
   }
 
