@@ -26,7 +26,7 @@ use rspack_core::{
   DependencyId, DependencyLocation, DependencyRange, FactoryMeta, ImportMeta,
   ImportMetaKnownProperties, JavascriptParserCommonjsExportsOption, JavascriptParserOptions,
   ModuleIdentifier, ModuleLayer, ModuleType, ParseMeta, ResolvedModuleOptions, ResourceData,
-  ResourceIdentifier, SideEffectsBailoutItemWithSpan,
+  ResourceIdentifier, SideEffectsBailoutItemWithSpan, ValueCacheVersions,
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_util::fx_hash::FxIndexSet;
@@ -490,6 +490,7 @@ pub struct JavascriptParser<'parser> {
   pub factory_meta: Option<&'parser FactoryMeta>,
   pub build_meta: &'parser mut BuildMeta,
   pub build_info: &'parser mut BuildInfo,
+  pub value_cache_versions: &'parser ValueCacheVersions,
   pub resource_data: &'parser ResourceData,
   pub(crate) compiler_options: &'parser CompilerOptions,
   pub(crate) javascript_options: &'parser JavascriptParserOptions,
@@ -672,6 +673,7 @@ impl<'parser> JavascriptParser<'parser> {
     source: &'parser str,
     ast: &'parser ParsedJavaScriptAst<'parser>,
     compiler_options: &'parser CompilerOptions,
+    value_cache_versions: &'parser ValueCacheVersions,
     javascript_options: &'parser JavascriptParserOptions,
     plugin_drive: &'parser JavaScriptParserPluginDrive,
     module_identifier: &'parser ModuleIdentifier,
@@ -726,6 +728,7 @@ impl<'parser> JavascriptParser<'parser> {
       factory_meta,
       build_meta,
       build_info,
+      value_cache_versions,
       compiler_options,
       module_type,
       module_layer,
@@ -760,6 +763,7 @@ impl<'parser> JavascriptParser<'parser> {
       InnerGraphParserPlugin::finalize_dependency_usage(
         &mut self.inner_graph,
         &mut self.dependencies,
+        &mut self.blocks,
       );
       // Keep flat indices stable for dependency analysis, then assemble the tree
       // from children to parents while preserving each block's insertion order.
@@ -1821,11 +1825,6 @@ impl<'parser> JavascriptParser<'parser> {
       ExprData::IdentifierReference(ident) => {
         let span = ident.span(ast);
         let name = ast.get_utf8(ident.name(ast));
-        if name == "undefined" {
-          let mut eval = BasicEvaluatedExpression::with_range(span.real_lo(), span.real_hi());
-          eval.set_undefined();
-          return Some(eval);
-        }
         let drive = self.plugin_drive();
         let resolution = self
           .definitions_db
@@ -1839,6 +1838,8 @@ impl<'parser> JavascriptParser<'parser> {
           .resolve_identifier(self.ast, ident, resolution)
         {
           call_hooks_name::call_hooks_info(state, self, evaluate)
+        } else if name == "undefined" {
+          Some(eval::evaluate_to_undefined(span.real_lo(), span.real_hi()))
         } else {
           evaluate(self, name)
         };
