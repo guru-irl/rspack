@@ -1,0 +1,102 @@
+name: Nested context rework complete xplat main floor
+on:
+  push:
+    branches: [bench/16539-rework-xplat-c7-20261113]
+    paths: ['.github/workflows/bench-16539-rework-xplat-c7.yml', 'bench/**']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  floor:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: Linux, runner: ubuntu-latest }
+          - { platform: macOS, runner: macos-latest }
+          - { platform: Windows, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 0e23cb1000ad65cf01f4e71867bd10deb57a1030
+          path: t-fix
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-c7-binding-${{ matrix.platform }}-head
+          run-id: 43411803086
+          github-token: ${{ github.token }}
+          path: t-fix/crates/node_binding
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-c7-${{ matrix.platform }}-head
+          run-id: 43411803086
+          github-token: ${{ github.token }}
+          path: .c4b/producer-fix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: bc5d3f90c577c7f7535524abe9b9235d62df00bd
+          path: t-main
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-binding-${{ matrix.platform }}-main
+          run-id: 43382967596
+          github-token: ${{ github.token }}
+          path: t-main/crates/node_binding
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-${{ matrix.platform }}-main
+          run-id: 43382967596
+          github-token: ${{ github.token }}
+          path: .c4b/producer-main
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check source and binding producer identities
+        run: |
+          node bench/rework-16539/verify-producers.cjs
+          mkdir -p .xplat/results/producers
+          cp .c4b/results/producer-*.json .xplat/results/producers/
+      - name: Build JavaScript artifacts for both arms
+        run: |
+          set -euo pipefail
+          (cd t-main && pnpm install --frozen-lockfile && pnpm run build:js)
+          (cd t-fix && pnpm install --frozen-lockfile && pnpm run build:js)
+      - name: All historical probes, main floor and compiler gate
+        run: node bench/rework-16539/full-hosted-gate.cjs .xplat/results
+      - name: Focused compiler RSS, alternating 5 rounds
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p .xplat/results/memory .xplat/tmp
+          export TMPDIR="$PWD/.xplat/tmp" TMP="$PWD/.xplat/tmp" TEMP="$PWD/.xplat/tmp"
+          for round in 1 2 3 4 5; do
+            for arm in main fix; do
+              export NAPI_RS_NATIVE_LIBRARY_PATH="$(node -e 'const fs=require("node:fs"),path=require("node:path");const d=path.join(process.argv[1],"crates/node_binding");const f=fs.readdirSync(d).filter(f=>f.endsWith(".node"));if(f.length!==1)throw Error("binding count");console.log(fs.realpathSync.native(path.join(d,f[0])));' "t-$arm")"
+              if [ "$arm" = main ]; then export EXPECTED_BINDING_SHA256="$MAIN_BINDING_SHA256"; else export EXPECTED_BINDING_SHA256="$CANDIDATE_BINDING_SHA256"; fi
+              node --expose-gc bench/rework-16539/focus-rss.cjs "t-$arm" "$arm-$round" ".xplat/results/memory/$arm-$round.json" > ".xplat/results/memory/$arm-$round.log" 2>&1
+            done
+          done
+      - name: Source and leftover-process receipts
+        if: always()
+        run: |
+          git -C t-main diff --exit-code
+          git -C t-fix diff --exit-code
+          if [ "${{ runner.os }}" = Linux ]; then
+            ps -eo pid,etimes,args | grep -E 'node .*bench/(alias-xplat|rework-16539)' | grep -v grep > .xplat/results/leftover.txt || true
+            test ! -s .xplat/results/leftover.txt
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rework-c7-full-${{ matrix.platform }}
+          path: .xplat/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
