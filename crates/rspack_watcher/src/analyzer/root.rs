@@ -19,7 +19,7 @@ pub struct WatcherRootAnalyzer {
 impl Analyzer for WatcherRootAnalyzer {
   fn analyze<'a>(&self, path_accessor: PathAccessor<'a>) -> Vec<WatchPattern> {
     let (_, added_files, removed_files) = path_accessor.files();
-    let (_, added_directories, removed_directories) = path_accessor.directories();
+    let (contexts, added_directories, removed_directories) = path_accessor.directories();
     let (_, added_missing, removed_missing) = path_accessor.missing();
 
     // files / directories / missing share one `path_tree`. On recovery a path
@@ -35,7 +35,7 @@ impl Analyzer for WatcherRootAnalyzer {
     let removed = difference(&removes, &adds);
     self.path_tree.update_paths(&added, &removed);
 
-    let common_root = self.path_tree.find_common_root();
+    let common_root = self.path_tree.find_common_root(contexts);
 
     match common_root {
       Some(root) => vec![WatchPattern {
@@ -79,12 +79,16 @@ struct PathTree {
 }
 
 impl PathTree {
-  pub fn find_common_root(&self) -> Option<InternedPath> {
+  pub fn find_common_root(&self, contexts: &InternedPathDashSet) -> Option<InternedPath> {
     let root = self.find_root()?;
-    Some(self.find_common_root_recursive(root))
+    Some(self.find_common_root_recursive(root, contexts))
   }
 
-  fn find_common_root_recursive(&self, path: InternedPath) -> InternedPath {
+  fn find_common_root_recursive(
+    &self,
+    path: InternedPath,
+    contexts: &InternedPathDashSet,
+  ) -> InternedPath {
     let node = self
       .inner
       .get(&path)
@@ -92,12 +96,16 @@ impl PathTree {
     // We need make sure the path is exists
     assert!(path.exists(), "Path should exist");
 
+    // A context includes siblings that are not themselves registered paths.
+    if contexts.contains(&path) {
+      return path;
+    }
     if let Some(child) = node
       .only_child()
       // Check if the child exists in the tree
       .and_then(|child| if child.is_dir() { Some(child) } else { None })
     {
-      self.find_common_root_recursive(child)
+      self.find_common_root_recursive(child, contexts)
     } else {
       path // Return the current path if it has no single child
     }

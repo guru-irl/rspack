@@ -30,17 +30,18 @@ export default {
 			"plugin/nested/seed.txt": "before",
 			"plugin/kept/deep/file.txt": "kept"
 		})) write(path.join(source, file), content, true);
-		context.setValue("source", source);
+		const realSource = fs.realpathSync(source);
+		context.setValue("source", realSource);
 		context.setValue("outer", true);
 		return {
-			context: source, mode: "development", devtool: false, target: "node",
+			context: realSource, mode: "development", devtool: false, target: "node",
 			entry: "./index.js",
-			output: { path: path.join(source, "dist"), filename: "bundle.js", library: { type: "commonjs2" } },
+			output: { path: path.join(realSource, "dist"), filename: "bundle.js", library: { type: "commonjs2" } },
 			experiments: { nativeWatcher: true },
 			plugins: [compiler => compiler.hooks.thisCompilation.tap(NAME, compilation => {
-				if (context.getValue("outer")) compilation.contextDependencies.add(path.join(source, "plugin"));
-				compilation.contextDependencies.add(path.join(source, "plugin/kept"));
-				compilation.fileDependencies.add(path.join(source, "plugin/kept/deep/file.txt"));
+				if (context.getValue("outer")) compilation.contextDependencies.add(path.join(realSource, "plugin"));
+				compilation.contextDependencies.add(path.join(realSource, "plugin/kept"));
+				compilation.fileDependencies.add(path.join(realSource, "plugin/kept/deep/file.txt"));
 			})]
 		};
 	},
@@ -71,8 +72,12 @@ export default {
 		const source = context.getValue("source");
 		try {
 			await first;
-			await step(() => write(path.join(source, "ctx/existing/new.js"), "module.exports = 1;"));
-			await step(() => write(path.join(source, "ctx/a/b/c/race.js"), "module.exports = 2;"));
+			const existing = await step(() => write(path.join(source, "ctx/existing/new.js"), "module.exports = 1;"));
+			expect(exportsOf(existing.compilation.assets["bundle.js"].source())).toEqual([["./existing/new.js", 1]]);
+			const created = await step(() => write(path.join(source, "ctx/a/b/c/race.js"), "module.exports = 2;"));
+			expect(exportsOf(created.compilation.assets["bundle.js"].source())).toEqual([
+				["./a/b/c/race.js", 2], ["./existing/new.js", 1]
+			]);
 			await step(() => write(path.join(source, "plugin/nested/new.txt"), "new"));
 			await step(() => write(path.join(source, "plugin/nested/seed.txt"), "after"));
 			context.setValue("outer", false);
@@ -88,7 +93,7 @@ export default {
 			await new Promise((resolve, reject) => watching.close(error => error ? reject(error) : resolve()));
 		}
 	},
-	async check({ context, files }) {
+	async check({ files }) {
 		const bundle = Object.entries(files).find(([file]) => path.basename(file) === "bundle.js")[1];
 		expect(exportsOf(bundle)).toEqual([
 			["./a/b/c/race.js", 2], ["./existing/new.js", 1]

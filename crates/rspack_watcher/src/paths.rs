@@ -418,10 +418,13 @@ impl PathManager {
   }
 
   fn watch_context_directory(&self, path: &InternedPath) -> rspack_error::Result<bool> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = path;
+    #[cfg(target_os = "linux")]
     if let Some(watcher) = self.context_watcher.get().and_then(Weak::upgrade) {
       let mut watcher = watcher.lock().expect("disk watcher lock poisoned");
       // A scan can outlive the context that started it.
-      if (self.directories.all.contains(path) || self.is_below_context(path)) && path.is_dir() {
+      if self.owns_context(path) && path.is_dir() {
         match watcher.watch_context_directory(path) {
           Ok(added) => return Ok(added),
           Err(error) if path.is_dir() => return Err(error),
@@ -433,6 +436,9 @@ impl PathManager {
   }
 
   fn remove_context_watch(&self, path: &InternedPath, removed: bool) {
+    #[cfg(not(target_os = "linux"))]
+    let _ = (path, removed);
+    #[cfg(target_os = "linux")]
     if let Some(watcher) = self.context_watcher.get().and_then(Weak::upgrade) {
       watcher
         .lock()
@@ -474,10 +480,11 @@ impl PathManager {
   /// Drop the records of every path inside the directory `dir` (watchpack's
   /// `onDirectoryRemoved` marks them all missing), walking only its subtree.
   pub fn remove_file_times_under(&self, dir: &InternedPath) {
-    let _index = self.lock_index();
+    let index = self.lock_index();
+    let mut released = Vec::new();
     let mut pending = vec![dir.clone()];
     while let Some(path) = pending.pop() {
-      self.remove_context_watch(&path, true);
+      released.push(path.clone());
       if let Some((_, children)) = self.recorded_children.remove(&path) {
         pending.extend(children);
       }
@@ -494,6 +501,10 @@ impl PathManager {
       if context.starts_with(dir.as_ref() as &Path) {
         self.absent_directories.insert(context.clone());
       }
+    }
+    drop(index);
+    for path in released {
+      self.remove_context_watch(&path, true);
     }
   }
 
@@ -640,6 +651,9 @@ impl PathManager {
       .map(|root| (root, Vec::new(), recovered))
       .collect();
     while let Some((dir, mut ancestry, observed)) = pending.pop() {
+      if !self.owns_context(&dir) {
+        continue;
+      }
       if self.follow_symlinks {
         let Ok(real) = std::fs::canonicalize(&dir) else {
           continue;
@@ -662,6 +676,9 @@ impl PathManager {
         let path = InternedPath::from(entry.path());
         if self.is_ignored_path(path.as_ref()).await {
           continue;
+        }
+        if !self.owns_context(&dir) {
+          break;
         }
         let Ok(metadata) = Self::scan_metadata(ancestry.last(), &path) else {
           continue;
@@ -714,7 +731,7 @@ impl PathManager {
   /// after, so it either sees the context gone here or is swept by the
   /// unregistering `update()`.
   fn forget_if_orphaned(&self, path: &InternedPath) -> bool {
-    if self.is_below_context(path) {
+    if self.owns_context(path) {
       return false;
     }
     self.remove_context_watch(path, false);
@@ -774,11 +791,8 @@ impl PathManager {
       return true;
     }
     if metadata.is_dir() {
-      // Like watchpack's `setDirectory`, only a directory not known before is
-      // scanned, unless a failed watch was dropped and can now be restored.
-      if self.record(path, || self.context_directories.insert(path.clone()))
-        || !matches!(self.watch_context_directory(path), Ok(false))
-      {
+      // Like watchpack's `setDirectory`, only a newly discovered directory is scanned.
+      if self.record(path, || self.context_directories.insert(path.clone())) {
         self.scan_below(vec![path.clone()], false, None).await;
       }
       return true;
@@ -841,6 +855,10 @@ impl PathManager {
     self.directories.all.contains(path)
       || self.context_directories.contains(path)
       || self.registered_ancestors.contains_key(path)
+  }
+
+  fn owns_context(&self, path: &InternedPath) -> bool {
+    self.directories.all.contains(path) || self.is_below_context(path)
   }
 
   fn is_below_context(&self, path: &InternedPath) -> bool {
@@ -1031,7 +1049,8 @@ impl PathManager {
   /// A context was unregistered: forget what its scan found below it, except
   /// what another still-registered context also covers.
   fn forget_context_entries_under(&self, dir: &InternedPath) {
-    let _index = self.lock_index();
+    let index = self.lock_index();
+    let mut released = Vec::new();
     let mut subtree = Vec::new();
     let mut pending = vec![dir.clone()];
     while let Some(path) = pending.pop() {
@@ -1052,10 +1071,14 @@ impl PathManager {
         self.unlink_unrecorded(path);
       }
       if self.context_directories.remove(path).is_some() {
-        self.remove_context_watch(path, false);
+        released.push(path.clone());
         self.last_watch_events.remove(path);
         self.unlink_unrecorded(path);
       }
+    }
+    drop(index);
+    for path in released {
+      self.remove_context_watch(&path, false);
     }
   }
 
