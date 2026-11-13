@@ -1,0 +1,118 @@
+name: Nested context rework main-floor quota proof
+on:
+  push:
+    branches: [bench/16539-rework-limits-c6-20261113]
+    paths: ['.github/workflows/bench-16539-rework-limits-c6.yml', 'bench/c4b/**', 'bench/rework-16539/**']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  limits:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - { group: shared, cap: 30, root: real }
+          - { group: shared, cap: 30, root: link }
+          - { group: shared, cap: 300, root: real }
+          - { group: combined, cap: 30, root: real }
+          - { group: combined, cap: 30, root: link }
+          - { group: combined, cap: 300, root: real }
+          - { group: sequential, cap: 300, root: real }
+          - { group: retained, cap: 30, root: real }
+          - { group: retained, cap: 300, root: real }
+          - { group: async, cap: 30, root: real }
+          - { group: async, cap: 30, root: link }
+          - { group: async, cap: 300, root: real }
+          - { group: async, cap: 0, root: real }
+          - { group: busy, cap: 2000, root: real }
+          - { group: holders, cap: 60, root: real }
+          - { group: closing, cap: 30, root: real }
+          - { group: instances, cap: 1, root: real }
+          - { group: instances, cap: 8, root: real }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 85a9d771e22b5b9edd6239e4a73ccc540f5db2b1
+          path: t-fix
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-c6-binding-Linux-head
+          run-id: 43390735676
+          github-token: ${{ github.token }}
+          path: t-fix/crates/node_binding
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-c6-Linux-head
+          run-id: 43390735676
+          github-token: ${{ github.token }}
+          path: .c4b/producer-fix
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: bc5d3f90c577c7f7535524abe9b9235d62df00bd
+          path: t-main
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-binding-Linux-main
+          run-id: 43382967596
+          github-token: ${{ github.token }}
+          path: t-main/crates/node_binding
+      - uses: actions/download-artifact@v4
+        with:
+          name: rework-16539-Linux-main
+          run-id: 43382967596
+          github-token: ${{ github.token }}
+          path: .c4b/producer-main
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify source and binding producer receipts
+        run: node bench/rework-16539/verify-producers.cjs
+      - name: Install and build both JavaScript arms
+        run: |
+          set -euo pipefail
+          (cd t-main && pnpm install --frozen-lockfile && pnpm run build:js)
+          (cd t-fix && pnpm install --frozen-lockfile && pnpm run build:js)
+      - name: Allow private user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Prove receipt negative controls
+        run: node bench/rework-16539/negative-controls.cjs .c4b/results/controls
+      - name: Paired quota sessions with complete manifests
+        if: matrix.group != 'instances'
+        run: |
+          set -euo pipefail
+          node bench/rework-16539/limit-pairs.cjs ${{ matrix.group }} ${{ matrix.cap }} ${{ matrix.root }} 2>&1 | tee .c4b/results/run.log
+      - name: Primary and optional instance-pressure controls
+        if: matrix.group == 'instances'
+        run: |
+          set -euo pipefail
+          mkdir -p .c4b/results .c4b/tmp
+          export TMPDIR="$PWD/.c4b/tmp" INSLIMIT=${{ matrix.cap }}
+          for arm in main fix; do
+            export NAPI_RS_NATIVE_LIBRARY_PATH="$(realpath t-$arm/crates/node_binding/*.node)"
+            if [ "$arm" = main ]; then export EXPECTED_BINDING_SHA256="$MAIN_BINDING_SHA256"; else export EXPECTED_BINDING_SHA256="$CANDIDATE_BINDING_SHA256"; fi
+            unshare -U -r sh -c 'echo "$INSLIMIT" > /proc/sys/user/max_inotify_instances; echo "instance_limit=$INSLIMIT" >&2; exec "$@"' sh node bench/rework-16539/instance-pressure.cjs "t-$arm" "$arm" "$INSLIMIT" ".c4b/results/instances-$arm.json" > ".c4b/results/instances-$arm.log" 2>&1
+          done
+      - name: Source and process cleanup receipts
+        if: always()
+        run: |
+          git -C t-main diff --exit-code
+          git -C t-fix diff --exit-code
+          ps -eo pid,etimes,args | grep -E 'node .*bench/(c4b|rework-16539)' | grep -v grep > .c4b/results/leftover.txt || true
+          test ! -s .c4b/results/leftover.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rework-c6-${{ matrix.group }}-${{ matrix.cap }}-${{ matrix.root }}
+          path: .c4b/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
