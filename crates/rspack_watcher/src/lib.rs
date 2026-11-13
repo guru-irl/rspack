@@ -134,6 +134,8 @@ const WATCHER_UNAVAILABLE: &str =
   "The watcher has been stopped and cannot accept new watch requests";
 
 enum WatcherOp {
+  #[cfg(target_os = "linux")]
+  Repair,
   Watch {
     files: (Vec<InternedPath>, Vec<InternedPath>),
     directories: (Vec<InternedPath>, Vec<InternedPath>),
@@ -204,10 +206,18 @@ impl FsWatcher {
       trigger: Arc::clone(&trigger),
     };
 
+    let op_tx = spawn_owner_thread(inner);
+    #[cfg(target_os = "linux")]
+    trigger
+      .lock()
+      .expect("should lock trigger")
+      .as_ref()
+      .expect("new trigger")
+      .set_repair_sender(op_tx.downgrade());
     Self {
       paused,
       trigger,
-      op_tx: spawn_owner_thread(inner),
+      op_tx,
       path_manager,
       aggregated,
       #[cfg(feature = "testing")]
@@ -335,6 +345,12 @@ fn spawn_owner_thread(mut inner: FsWatcherInner) -> mpsc::UnboundedSender<Watche
     let mut closed = false;
     while let Some(op) = rx.recv().await {
       match op {
+        #[cfg(target_os = "linux")]
+        WatcherOp::Repair => {
+          if !closed {
+            inner.repair();
+          }
+        }
         WatcherOp::Watch {
           event_aggregate_handler,
           done,
@@ -391,6 +407,29 @@ fn spawn_owner_thread(mut inner: FsWatcherInner) -> mpsc::UnboundedSender<Watche
 }
 
 impl FsWatcherInner {
+  #[cfg(target_os = "linux")]
+  fn repair(&mut self) {
+    let Some(trigger) = self.trigger.lock().expect("should lock trigger").clone() else {
+      return;
+    };
+    let recursive = trigger.take_repair();
+    if recursive {
+      disk_watcher::reclaim_and_retry_all(&trigger);
+    }
+    match self
+      .disk_watcher
+      .lock()
+      .expect("disk watcher lock poisoned")
+      .repair(recursive)
+    {
+      Ok(true) => trigger.reconcile(),
+      Ok(false) => {}
+      Err(error) => {
+        eprintln!("Error in file watcher: {error:?}");
+      }
+    }
+  }
+
   async fn watch(
     &mut self,
     files: (Vec<InternedPath>, Vec<InternedPath>),
@@ -474,9 +513,30 @@ impl FsWatcherInner {
         (result, disk.take_reclaim_request())
       };
       if reclaim {
-        disk_watcher::reclaim_and_retry_all();
+        let trigger = self
+          .trigger
+          .lock()
+          .expect("should lock trigger")
+          .clone()
+          .expect("watch trigger");
+        disk_watcher::reclaim_and_retry_all(&trigger);
+        match self
+          .disk_watcher
+          .lock()
+          .expect("disk watcher lock poisoned")
+          .repair(false)
+        {
+          Ok(repaired) => {
+            if repaired {
+              trigger.reconcile();
+            }
+            Ok(())
+          }
+          Err(error) => Err(error),
+        }
+      } else {
+        result
       }
-      result
     };
     #[cfg(not(target_os = "linux"))]
     let watch_result = self

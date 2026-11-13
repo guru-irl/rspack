@@ -19,45 +19,49 @@ use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
 #[cfg(target_os = "linux")]
 static CONTEXTS_DISABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "linux")]
-static LIVE: Mutex<Vec<Weak<Mutex<DiskWatcher>>>> = Mutex::new(Vec::new());
+static LIVE: Mutex<Vec<Weak<Mutex<ContextWatches>>>> = Mutex::new(Vec::new());
 #[cfg(target_os = "linux")]
 pub(crate) fn register(watcher: &Arc<Mutex<DiskWatcher>>) {
+  let watcher = Arc::downgrade(&watcher.lock().expect("disk watcher lock poisoned").contexts);
   let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
   prune_live_watchers(&mut live);
-  live.push(Arc::downgrade(watcher));
+  live.push(watcher);
 }
 #[cfg(target_os = "linux")]
 pub(crate) fn unregister(watcher: &Arc<Mutex<DiskWatcher>>) {
-  let watcher = Arc::downgrade(watcher);
+  let watcher = Arc::downgrade(&watcher.lock().expect("disk watcher lock poisoned").contexts);
   let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
   live.retain(|entry| !entry.ptr_eq(&watcher));
   prune_live_watchers(&mut live);
 }
 #[cfg(target_os = "linux")]
-fn prune_live_watchers(live: &mut Vec<Weak<Mutex<DiskWatcher>>>) {
+fn prune_live_watchers(live: &mut Vec<Weak<Mutex<ContextWatches>>>) {
   live.retain(|watcher| watcher.strong_count() > 0);
   if live.is_empty() {
     CONTEXTS_DISABLED.store(false, Ordering::Release);
   }
 }
 #[cfg(target_os = "linux")]
-pub(crate) fn reclaim_and_retry_all() {
+pub(crate) fn reclaim_and_retry_all(requester: &trigger::Trigger) {
   let watchers: Vec<_> = {
     let mut live = LIVE.lock().expect("live disk watchers lock poisoned");
     prune_live_watchers(&mut live);
+    CONTEXTS_DISABLED.store(true, Ordering::Release);
     live.iter().filter_map(Weak::upgrade).collect()
   };
-  for watcher in &watchers {
-    watcher
-      .lock()
-      .expect("disk watcher lock poisoned")
-      .release_context_only();
+  let mut peers = Vec::new();
+  // Finish every acknowledged release before sending any peer a repair.
+  for watcher in watchers {
+    let mut contexts = watcher.lock().expect("context watcher lock poisoned");
+    contexts.release();
+    if let Some(peer) = contexts.trigger.upgrade()
+      && !std::ptr::eq(peer.as_ref(), requester)
+    {
+      peers.push(peer);
+    }
   }
-  for watcher in &watchers {
-    watcher
-      .lock()
-      .expect("disk watcher lock poisoned")
-      .retry_missing_analyzer_patterns();
+  for peer in peers {
+    peer.request_repair(false);
   }
 }
 
@@ -66,6 +70,20 @@ pub(crate) fn reclaim_and_retry_all() {
 struct ContextWatches {
   inner: Option<RecommendedWatcher>,
   installed: HashSet<InternedPath>,
+  trigger: Weak<trigger::Trigger>,
+}
+
+#[cfg(target_os = "linux")]
+impl ContextWatches {
+  fn release(&mut self) {
+    let paths = std::mem::take(&mut self.installed);
+    if let Some(watcher) = &mut self.inner {
+      for path in paths {
+        let _ = watcher.unwatch(&path);
+      }
+    }
+    self.inner.take();
+  }
 }
 
 /// Keeps analyzer requirements on the primary stream. Linux context descendants
@@ -75,6 +93,8 @@ pub struct DiskWatcher {
   watch_patterns: HashSet<WatchPattern>,
   #[cfg(target_os = "linux")]
   analyzer_patterns: HashSet<WatchPattern>,
+  #[cfg(target_os = "linux")]
+  dirty: HashSet<WatchPattern>,
   #[cfg(target_os = "linux")]
   context_paths: HashSet<InternedPath>,
   #[cfg(target_os = "linux")]
@@ -97,6 +117,10 @@ fn native_watcher(
       Err(e) => {
         tracing::error!(target: "rspack_watcher::fs_event", "file watcher error: {e:?}");
         eprintln!("Error in file watcher: {e:?}");
+        #[cfg(target_os = "linux")]
+        if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) {
+          trigger.request_repair(true);
+        }
       }
     },
     config,
@@ -115,17 +139,34 @@ impl DiskWatcher {
         .with_poll_interval(Duration::from_millis(u64::from(poll))),
       None => notify::Config::default().with_follow_symlinks(follow_symlinks),
     };
-    let inner =
-      native_watcher(Arc::clone(&trigger), config).expect("Failed to create disk watcher");
+    #[allow(unused_mut)]
+    let mut inner = native_watcher(Arc::clone(&trigger), config);
+    #[cfg(target_os = "linux")]
+    if inner.is_err() {
+      reclaim_and_retry_all(&trigger);
+      for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(20));
+        inner = native_watcher(Arc::clone(&trigger), config);
+        if inner.is_ok() {
+          break;
+        }
+      }
+    }
+    let inner = inner.expect("Failed to create disk watcher");
     Self {
       inner: Some(inner),
       watch_patterns: HashSet::default(),
       #[cfg(target_os = "linux")]
       analyzer_patterns: HashSet::default(),
       #[cfg(target_os = "linux")]
+      dirty: HashSet::default(),
+      #[cfg(target_os = "linux")]
       context_paths: HashSet::default(),
       #[cfg(target_os = "linux")]
-      contexts: Arc::new(Mutex::new(ContextWatches::default())),
+      contexts: Arc::new(Mutex::new(ContextWatches {
+        trigger: Arc::downgrade(&trigger),
+        ..Default::default()
+      })),
       #[cfg(target_os = "linux")]
       config,
       #[cfg(target_os = "linux")]
@@ -141,14 +182,38 @@ impl DiskWatcher {
   ) -> rspack_error::Result<()> {
     let new_patterns: HashSet<_> = patterns.collect();
     #[cfg(target_os = "linux")]
-    {
-      self.analyzer_patterns = new_patterns.clone();
-    }
+    let previous = std::mem::replace(&mut self.analyzer_patterns, new_patterns.clone());
+    #[cfg(target_os = "linux")]
+    self.dirty.retain(|p| new_patterns.contains(p));
+    #[cfg(target_os = "linux")]
+    let required_paths: HashSet<_> = new_patterns.iter().map(|p| p.path.clone()).collect();
     let stale_paths: HashSet<InternedPath> = self
       .watch_patterns
       .iter()
-      .filter(|p| !new_patterns.contains(p))
+      .filter(|p| {
+        if new_patterns.contains(p) {
+          return false;
+        }
+        #[cfg(target_os = "linux")]
+        if new_patterns.contains(&WatchPattern {
+          path: p.path.clone(),
+          mode: Recursive,
+        }) {
+          return false;
+        }
+        true
+      })
       .map(|p| p.path.clone())
+      .collect();
+    #[cfg(target_os = "linux")]
+    let stale_paths: HashSet<_> = stale_paths
+      .into_iter()
+      .chain(
+        previous
+          .iter()
+          .filter(|p| !required_paths.contains(&p.path))
+          .map(|p| p.path.clone()),
+      )
       .collect();
     for path in &stale_paths {
       if let Some(watcher) = &mut self.inner
@@ -162,18 +227,23 @@ impl DiskWatcher {
       .watch_patterns
       .retain(|p| !stale_paths.contains(&p.path));
     for pattern in new_patterns {
-      if self.watch_patterns.contains(&pattern) {
+      #[cfg(target_os = "linux")]
+      let installed = self.watch_patterns.contains(&pattern) && !self.dirty.contains(&pattern);
+      #[cfg(not(target_os = "linux"))]
+      let installed = self.watch_patterns.contains(&pattern);
+      if installed {
         continue;
       }
       if let Err(error) = self.watch_pattern(&pattern) {
         #[cfg(target_os = "linux")]
         if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
-          CONTEXTS_DISABLED.store(true, Ordering::Release);
           self.reclaim_requested = true;
-          continue;
         }
         return Err(rspack_error::error!(error.to_string()));
       }
+      #[cfg(target_os = "linux")]
+      self.dirty.remove(&pattern);
+      self.watch_patterns.retain(|p| p.path != pattern.path);
       self.watch_patterns.insert(pattern);
     }
     #[cfg(target_os = "linux")]
@@ -182,10 +252,22 @@ impl DiskWatcher {
   }
 
   fn watch_pattern(&mut self, pattern: &WatchPattern) -> notify::Result<()> {
-    self
+    let result = self
       .inner
       .as_mut()
-      .map_or(Ok(()), |watcher| watcher.watch(&pattern.path, pattern.mode))
+      .map_or(Ok(()), |watcher| watcher.watch(&pattern.path, pattern.mode));
+    #[cfg(target_os = "linux")]
+    if result.is_err()
+      && pattern.mode == Recursive
+      && self.watch_patterns.contains(&WatchPattern {
+        path: pattern.path.clone(),
+        mode: NonRecursive,
+      })
+      && let Some(watcher) = &mut self.inner
+    {
+      let _ = watcher.watch(&pattern.path, NonRecursive);
+    }
+    result
   }
 
   #[cfg(target_os = "linux")]
@@ -195,44 +277,56 @@ impl DiskWatcher {
 
   #[cfg(target_os = "linux")]
   fn release_context_only(&mut self) {
-    let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
-    let paths = std::mem::take(&mut contexts.installed);
-    if let Some(watcher) = &mut contexts.inner {
-      for path in paths {
-        let _ = watcher.unwatch(&path);
-      }
-    }
-    contexts.inner.take();
+    self
+      .contexts
+      .lock()
+      .expect("context watcher lock poisoned")
+      .release();
   }
 
   #[cfg(target_os = "linux")]
-  fn retry_missing_analyzer_patterns(&mut self) {
+  pub(crate) fn repair(&mut self, recursive: bool) -> rspack_error::Result<bool> {
     if self.inner.is_none() {
-      return;
+      return Ok(false);
     }
     let patterns: Vec<_> = self
       .analyzer_patterns
-      .difference(&self.watch_patterns)
+      .iter()
+      .filter(|p| {
+        (recursive && p.mode == Recursive)
+          || self.dirty.contains(p)
+          || !self.watch_patterns.contains(p)
+      })
       .cloned()
       .collect();
+    let repaired = !patterns.is_empty();
+    let mut failure = None;
     for pattern in patterns {
       match self.watch_pattern(&pattern) {
         Ok(()) => {
+          self.dirty.remove(&pattern);
+          self.watch_patterns.retain(|p| p.path != pattern.path);
           self.watch_patterns.insert(pattern);
         }
         Err(error) => {
-          eprintln!("Error in file watcher: {error:?}");
+          self.dirty.insert(pattern);
+          failure.get_or_insert(error);
         }
       }
     }
+    if let Some(error) = failure {
+      return Err(rspack_error::error!(error.to_string()));
+    }
+    self.reconcile_contexts();
+    Ok(repaired)
   }
 
   #[cfg(target_os = "linux")]
   fn required_coverage(&self, path: &InternedPath) -> bool {
-    self
-      .watch_patterns
-      .iter()
-      .any(|p| p.path == *path || (p.mode == Recursive && path.starts_with(&p.path)))
+    self.watch_patterns.iter().any(|p| {
+      !self.dirty.contains(p)
+        && (p.path == *path || (p.mode == Recursive && path.starts_with(&p.path)))
+    })
   }
 
   #[cfg(target_os = "linux")]
@@ -247,46 +341,51 @@ impl DiskWatcher {
           let _ = watcher.unwatch(&path);
         }
       } else {
-        let _ = self.watch_context_directory(&path);
+        self.watch_context_directory(&path);
       }
     }
   }
 
   #[cfg(target_os = "linux")]
-  pub(crate) fn watch_context_directory(
-    &mut self,
-    path: &InternedPath,
-  ) -> rspack_error::Result<bool> {
+  pub(crate) fn watch_context_directory(&mut self, path: &InternedPath) {
     if self.inner.is_none() {
-      return Ok(false);
+      return;
     }
-    let added = self.context_paths.insert(path.clone());
-    if self.required_coverage(path) || CONTEXTS_DISABLED.load(Ordering::Acquire) {
-      return Ok(added);
+    self.context_paths.insert(path.clone());
+    if self.required_coverage(path) {
+      return;
     }
     let mut contexts = self.contexts.lock().expect("context watcher lock poisoned");
-    if contexts.installed.contains(path) {
-      return Ok(added);
+    // Recheck under the slot lock so a concurrent release cannot miss an addition.
+    if CONTEXTS_DISABLED.load(Ordering::Acquire) || contexts.installed.contains(path) {
+      return;
     }
     if contexts.inner.is_none() {
       let Some(trigger) = self.trigger.upgrade() else {
-        return Ok(added);
+        return;
       };
       let Ok(watcher) = native_watcher(trigger, self.config) else {
-        return Ok(added);
+        return;
       };
       contexts.inner = Some(watcher);
     }
-    contexts
+    match contexts
       .inner
       .as_mut()
       .expect("optional watcher")
       .watch(path, NonRecursive)
-      .map_err(|error| {
-        rspack_error::error!("failed to watch context directory {path:?}: {error}")
-      })?;
-    contexts.installed.insert(path.clone());
-    Ok(added)
+    {
+      Ok(()) => {
+        contexts.installed.insert(path.clone());
+      }
+      Err(error) if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) => {
+        CONTEXTS_DISABLED.store(true, Ordering::Release);
+        if let Some(trigger) = self.trigger.upgrade() {
+          trigger.request_repair(true);
+        }
+      }
+      Err(_) => {}
+    }
   }
 
   #[cfg(target_os = "linux")]
@@ -302,7 +401,14 @@ impl DiskWatcher {
 
   pub fn close(&mut self) {
     #[cfg(target_os = "linux")]
-    self.release_context_only();
+    {
+      self.release_context_only();
+      self
+        .contexts
+        .lock()
+        .expect("context watcher lock poisoned")
+        .trigger = Weak::new();
+    }
     self.inner.take();
   }
 }

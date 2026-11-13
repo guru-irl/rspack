@@ -1,4 +1,9 @@
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::{
+  OnceLock,
+  atomic::{AtomicU8, Ordering},
+};
 
 use rspack_paths::{InternedPath, InternedPathDashSet};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -115,8 +120,18 @@ struct EventProcessor {
 /// It only buffers: the OS watcher callback hands an event over and returns
 /// immediately, and a dedicated thread drains the buffer one event at a time.
 pub struct Trigger {
-  pending: UnboundedSender<(InternedPath, FsEventKind, Origin)>,
+  pending: UnboundedSender<Input>,
+  #[cfg(target_os = "linux")]
+  repair_sender: OnceLock<tokio::sync::mpsc::WeakUnboundedSender<crate::WatcherOp>>,
+  #[cfg(target_os = "linux")]
+  repair_pending: AtomicU8,
   pub(crate) analyzer: Arc<RecommendedAnalyzer>,
+}
+
+enum Input {
+  Event(InternedPath, FsEventKind, Origin),
+  #[cfg(target_os = "linux")]
+  Reconcile,
 }
 
 /// Where an event comes from.
@@ -136,7 +151,7 @@ enum Origin {
 impl Trigger {
   /// Create a new `Trigger` with the given path register and event sender.
   pub fn new(path_manager: Arc<PathManager>, tx: UnboundedSender<ResolvedEvents>) -> Self {
-    let (pending, mut incoming) = unbounded_channel::<(InternedPath, FsEventKind, Origin)>();
+    let (pending, mut incoming) = unbounded_channel::<Input>();
     let analyzer = Arc::default();
     let processor = EventProcessor {
       path_manager,
@@ -158,20 +173,64 @@ impl Trigger {
           .expect("create watcher event filter runtime");
 
         runtime.block_on(async move {
-          while let Some((path, kind, origin)) = incoming.recv().await {
-            processor.process(&path, kind, origin).await;
+          while let Some(input) = incoming.recv().await {
+            match input {
+              Input::Event(path, kind, origin) => processor.process(&path, kind, origin).await,
+              #[cfg(target_os = "linux")]
+              Input::Reconcile => processor.reconcile().await,
+            }
           }
         });
       })
       .expect("spawn watcher event filter thread");
 
-    Self { pending, analyzer }
+    Self {
+      pending,
+      analyzer,
+      #[cfg(target_os = "linux")]
+      repair_sender: OnceLock::new(),
+      #[cfg(target_os = "linux")]
+      repair_pending: AtomicU8::new(0),
+    }
+  }
+
+  #[cfg(target_os = "linux")]
+  pub(crate) fn set_repair_sender(
+    &self,
+    sender: tokio::sync::mpsc::WeakUnboundedSender<crate::WatcherOp>,
+  ) {
+    self.repair_sender.get_or_init(|| sender);
+  }
+
+  #[cfg(target_os = "linux")]
+  pub(crate) fn request_repair(&self, release: bool) {
+    // 2 takes priority over 1. Reset before repair so arrivals during it queue another turn.
+    if self
+      .repair_pending
+      .fetch_max(if release { 2 } else { 1 }, Ordering::AcqRel)
+      == 0
+      && let Some(sender) = self.repair_sender.get().and_then(|sender| sender.upgrade())
+    {
+      let _ = sender.send(crate::WatcherOp::Repair);
+    }
+  }
+
+  #[cfg(target_os = "linux")]
+  pub(crate) fn take_repair(&self) -> bool {
+    self.repair_pending.swap(0, Ordering::AcqRel) == 2
+  }
+
+  #[cfg(target_os = "linux")]
+  pub(crate) fn reconcile(&self) {
+    let _ = self.pending.send(Input::Reconcile);
   }
 
   /// Queues an explicit event from `FsWatcher::trigger_event` without blocking.
   pub fn on_event(&self, path: &InternedPath, kind: FsEventKind) {
     self.analyzer.invalidate_path(path);
-    let _ = self.pending.send((path.clone(), kind, Origin::Injected));
+    let _ = self
+      .pending
+      .send(Input::Event(path.clone(), kind, Origin::Injected));
   }
 
   /// Preserves whether an OS event created or renamed a path into place,
@@ -179,16 +238,18 @@ impl Trigger {
   pub(crate) fn on_disk_event(&self, path: &InternedPath, kind: FsEventKind, appeared: bool) {
     let _ = self
       .pending
-      .send((path.clone(), kind, Origin::Disk { appeared }));
+      .send(Input::Event(path.clone(), kind, Origin::Disk { appeared }));
   }
 
   /// A context's initial scan found `path` changed since the start time, while
   /// the watch was not active yet: like watchpack's initial scan, it is
   /// reported as found, never taken for an attribute-only event.
   pub(crate) fn on_scanned_change(&self, path: &InternedPath) {
-    let _ = self
-      .pending
-      .send((path.clone(), FsEventKind::Change, Origin::Scan));
+    let _ = self.pending.send(Input::Event(
+      path.clone(),
+      FsEventKind::Change,
+      Origin::Scan,
+    ));
   }
 
   /// A sender for the scanner's backfilled events. They queue with the live
@@ -202,7 +263,7 @@ impl Trigger {
       .spawn(move || {
         while let Some(batch) = batches.blocking_recv() {
           for event in batch {
-            let _ = pending.send((event.path, event.kind, Origin::Scan));
+            let _ = pending.send(Input::Event(event.path, event.kind, Origin::Scan));
           }
         }
       })
@@ -212,6 +273,25 @@ impl Trigger {
 }
 
 impl EventProcessor {
+  #[cfg(target_os = "linux")]
+  async fn reconcile(&self) {
+    let accessor = self.path_manager.access();
+    let paths: rspack_paths::InternedPathSet = accessor
+      .files()
+      .0
+      .iter()
+      .chain(accessor.missing().0.iter())
+      .map(|p| p.clone())
+      .collect();
+    for path in paths {
+      if (accessor.files().0.contains(&path) || accessor.missing().0.contains(&path))
+        && self.path_manager.needs_reconcile(&path)
+      {
+        self.process(&path, FsEventKind::Change, Origin::Scan).await;
+      }
+    }
+  }
+
   /// Called when a file system event occurs.
   /// Finds all dependencies related to the given path and triggers events for each.
   /// # Example
