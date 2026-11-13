@@ -142,7 +142,7 @@ jobs:
       - name: Focused setup and memory receipt
         run: |
           set -euo pipefail
-          node --expose-gc bench/rework-16539/setup-cost.cjs head ${{ matrix.arm }} native 1 .bench-alias/results/cost.json
+          node --expose-gc bench/rework-16539/focus-rss.cjs head ${{ matrix.arm }} .bench-alias/results/cost.json
       - name: Run all native watcher compiler cases with worker binding proof
         if: always()
         run: node bench/alias-xplat/case-gates.cjs head .bench-alias/results/gates ${{ matrix.platform == 'Linux' && 'linux' || 'compiler' }}
