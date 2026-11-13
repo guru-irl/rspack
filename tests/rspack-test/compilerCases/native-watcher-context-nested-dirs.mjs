@@ -33,13 +33,21 @@ export default {
 		const realSource = fs.realpathSync(source);
 		context.setValue("source", realSource);
 		context.setValue("outer", true);
+		context.setValue("nested", false);
 		return {
 			context: realSource, mode: "development", devtool: false, target: "node",
 			entry: "./index.js",
 			output: { path: path.join(realSource, "dist"), filename: "bundle.js", library: { type: "commonjs2" } },
 			experiments: { nativeWatcher: true },
 			plugins: [compiler => compiler.hooks.thisCompilation.tap(NAME, compilation => {
-				if (context.getValue("outer")) compilation.contextDependencies.add(path.join(realSource, "plugin"));
+				if (context.getValue("outer")) {
+					compilation.contextDependencies.add(path.join(realSource, "plugin"));
+					compilation.missingDependencies.add(path.join(realSource, "plugin/missing/deep/file.txt"));
+				}
+				if (context.getValue("nested")) {
+					compilation.contextDependencies.add(path.join(realSource, "plugin/nested"));
+					compilation.fileDependencies.add(path.join(realSource, "plugin/nested/seed.txt"));
+				}
 				compilation.contextDependencies.add(path.join(realSource, "plugin/kept"));
 				compilation.fileDependencies.add(path.join(realSource, "plugin/kept/deep/file.txt"));
 			})]
@@ -80,6 +88,11 @@ export default {
 			]);
 			await step(() => write(path.join(source, "plugin/nested/new.txt"), "new"));
 			await step(() => write(path.join(source, "plugin/nested/seed.txt"), "after"));
+			context.setValue("nested", true);
+			await step(() => watching.invalidate());
+			await step(() => write(path.join(source, "plugin/nested/later/deep/file.txt"), "later"));
+			await step(() => write(path.join(source, "plugin/nested/later/deep/file.txt"), "later edit"));
+			context.setValue("nested", false);
 			context.setValue("outer", false);
 			await step(() => watching.invalidate());
 			await wait(300);
