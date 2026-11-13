@@ -182,6 +182,18 @@ impl DiskWatcher {
   ) -> rspack_error::Result<()> {
     let new_patterns: HashSet<_> = patterns.collect();
     #[cfg(target_os = "linux")]
+    let new_patterns: HashSet<_> = new_patterns
+      .iter()
+      .filter(|p| {
+        p.mode == Recursive
+          || !new_patterns.contains(&WatchPattern {
+            path: p.path.clone(),
+            mode: Recursive,
+          })
+      })
+      .cloned()
+      .collect();
+    #[cfg(target_os = "linux")]
     let previous = std::mem::replace(&mut self.analyzer_patterns, new_patterns.clone());
     #[cfg(target_os = "linux")]
     self.dirty.retain(|p| new_patterns.contains(p));
