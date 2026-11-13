@@ -1,7 +1,10 @@
 #[cfg(target_os = "linux")]
-use std::sync::{Weak, atomic::Ordering};
+use std::sync::{
+  Weak,
+  atomic::{AtomicBool, Ordering},
+};
 use std::{
-  sync::{Arc, Mutex, atomic::AtomicBool},
+  sync::{Arc, Mutex},
   time::Duration,
 };
 
@@ -11,7 +14,7 @@ use notify::{
   Watcher,
   event::{ModifyKind, RenameMode},
 };
-use rspack_paths::{InternedPath, InternedPathMap};
+use rspack_paths::InternedPath;
 use rspack_util::fx_hash::FxHashSet as HashSet;
 
 use crate::{FsEventKind, WatchPattern, analyzer::Analyzer, trigger};
@@ -73,19 +76,11 @@ pub(crate) fn reclaim_and_retry_all() {
   }
 }
 
-#[derive(Default)]
-struct PathAliases {
-  native_paths: InternedPathMap<InternedPath>,
-  patterns: InternedPathMap<HashSet<WatchPattern>>,
-}
-
 /// `DiskWatcher` is responsible for managing the underlying file system watcher
 /// and keeping track of the currently watched paths.
 pub struct DiskWatcher {
   /// The actual file system watcher from the `notify` crate.
   inner: Option<RecommendedWatcher>,
-  aliases: Arc<Mutex<PathAliases>>,
-  has_aliases: Arc<AtomicBool>,
   /// A set of pattern that are currently being watched.
   watch_patterns: HashSet<WatchPattern>,
   /// Requirements from registered files, contexts and missing paths.
@@ -113,55 +108,9 @@ impl DiskWatcher {
       None => notify::Config::default().with_follow_symlinks(follow_symlinks),
     };
 
-    let aliases = Arc::new(Mutex::new(PathAliases::default()));
-    let event_aliases = Arc::clone(&aliases);
-    let has_aliases = Arc::new(AtomicBool::new(false));
-    let event_has_aliases = Arc::clone(&has_aliases);
     let inner = RecommendedWatcher::new(
       move |result: notify::Result<Event>| match result {
-        Ok(event) => {
-          let event = if event_has_aliases.load(std::sync::atomic::Ordering::Relaxed) {
-            let mut event = event;
-            let aliases = event_aliases.lock().expect("watch aliases lock poisoned");
-            event.paths = std::mem::take(&mut event.paths)
-              .into_iter()
-              .flat_map(|path| {
-                let mut paths = HashSet::default();
-                for ancestor in path.ancestors() {
-                  let key = InternedPath::from(ancestor);
-                  let native = aliases.native_paths.get(&key).unwrap_or(&key);
-                  // An event on a link itself is not an event on its target.
-                  if (ancestor != path || *native == key)
-                    && let Some(patterns) = aliases.patterns.get(native)
-                  {
-                    for pattern in patterns {
-                      if ancestor == path
-                        || Some(ancestor) == path.parent()
-                        || pattern.mode == Recursive
-                      {
-                        paths.insert(if ancestor == path {
-                          pattern.path.to_path_buf()
-                        } else {
-                          pattern
-                            .path
-                            .join(path.strip_prefix(ancestor).expect("watched ancestor"))
-                        });
-                      }
-                    }
-                  }
-                }
-                if paths.is_empty() {
-                  paths.insert(path);
-                }
-                paths
-              })
-              .collect();
-            event
-          } else {
-            event
-          };
-          handle_event(event, &trigger);
-        }
+        Ok(event) => handle_event(event, &trigger),
 
         Err(e) => {
           tracing::error!(target: "rspack_watcher::fs_event", "file watcher error: {e:?}");
@@ -174,8 +123,6 @@ impl DiskWatcher {
 
     DiskWatcher {
       inner: Some(inner),
-      aliases,
-      has_aliases,
       watch_patterns: HashSet::default(),
       analyzer_patterns: HashSet::default(),
       context_paths: HashSet::default(),
@@ -414,139 +361,18 @@ impl DiskWatcher {
     }
   }
 
-  // Keep each native watch under one physical spelling. Logical aliases
-  // hold references here, so removing one cannot release another's directory.
   fn watch_pattern(&mut self, pattern: &WatchPattern) -> notify::Result<()> {
-    let (path, mode) = {
-      let path =
-        InternedPath::from(std::fs::canonicalize(&pattern.path).map_err(notify::Error::io)?);
-      if pattern.path != path {
-        self
-          .has_aliases
-          .store(true, std::sync::atomic::Ordering::Relaxed);
-      }
-      let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
-      if aliases
-        .native_paths
-        .get(&pattern.path)
-        .is_some_and(|old| *old != path)
-      {
-        drop(aliases);
-        self.unwatch_path(&pattern.path)?;
-        aliases = self.aliases.lock().expect("watch aliases lock poisoned");
-      }
-      aliases
-        .patterns
-        .entry(path.clone())
-        .or_default()
-        .insert(pattern.clone());
-      aliases
-        .native_paths
-        .insert(pattern.path.clone(), path.clone());
-      // Retain covered spellings for event fan-out and later restoration, but
-      // do not add another OS watch below a canonical recursive requirement.
-      let covered = path
-        .ancestors()
-        .skip(usize::from(pattern.mode == Recursive))
-        .any(|ancestor| {
-          aliases
-            .patterns
-            .get(&InternedPath::from(ancestor))
-            .is_some_and(|patterns| patterns.iter().any(|p| p.mode == Recursive))
-        });
-      if covered {
-        return Ok(());
-      }
-      (path, pattern.mode)
-    };
-    if let Some(watcher) = &mut self.inner
-      && let Err(error) = watcher.watch(&path, mode)
-    {
-      if !self.watch_patterns.contains(pattern) {
-        if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
-          let _ = self.unwatch_patterns(&pattern.path, Some(pattern.mode));
-        } else {
-          let _ = self.unwatch_path(&pattern.path);
-        }
-      }
-      return Err(error);
-    }
-    Ok(())
+    self
+      .inner
+      .as_mut()
+      .map_or(Ok(()), |watcher| watcher.watch(&pattern.path, pattern.mode))
   }
 
   fn unwatch_path(&mut self, path: &InternedPath) -> notify::Result<()> {
-    self.unwatch_patterns(path, None)
-  }
-
-  fn unwatch_patterns(
-    &mut self,
-    path: &InternedPath,
-    mode: Option<notify::RecursiveMode>,
-  ) -> notify::Result<()> {
-    let (path, restore) = {
-      let mut aliases = self.aliases.lock().expect("watch aliases lock poisoned");
-      let Some(native) = aliases.native_paths.get(path).cloned() else {
-        return Ok(());
-      };
-      let patterns = aliases
-        .patterns
-        .get_mut(&native)
-        .expect("native watch aliases");
-      let recursive = patterns.iter().any(|p| p.mode == Recursive);
-      patterns.retain(|p| p.path != *path || mode.is_some_and(|mode| p.mode != mode));
-      let remaining_path = patterns.iter().any(|p| p.path == *path);
-      let remaining_recursive = patterns.iter().any(|p| p.mode == Recursive);
-      let remaining = !patterns.is_empty();
-      if !remaining {
-        aliases.patterns.remove(&native);
-      }
-      if !remaining_path {
-        aliases.native_paths.remove(path);
-      }
-      let covered = native.ancestors().skip(1).any(|ancestor| {
-        aliases
-          .patterns
-          .get(&InternedPath::from(ancestor))
-          .is_some_and(|patterns| patterns.iter().any(|p| p.mode == Recursive))
-      });
-      if covered || (remaining && recursive == remaining_recursive) {
-        return Ok(());
-      }
-      let restore: Vec<_> = if recursive {
-        aliases
-          .patterns
-          .iter()
-          .filter(|(p, _)| p.starts_with(&native))
-          .flat_map(|(_, patterns)| patterns.iter().cloned())
-          .collect()
-      } else {
-        Vec::new()
-      };
-      (native, restore)
-    };
-    let result = self
+    self
       .inner
       .as_mut()
-      .map_or(Ok(()), |watcher| watcher.unwatch(&path));
-    {
-      let mut restore_error = None;
-      for pattern in restore {
-        self.watch_patterns.remove(&pattern);
-        if let Err(error) = self.watch_pattern(&pattern) {
-          if self.analyzer_patterns.contains(&pattern) {
-            restore_error.get_or_insert(error);
-          } else {
-            self.context_watch_failed(&pattern, error);
-          }
-        } else {
-          self.watch_patterns.insert(pattern);
-        }
-      }
-      if let Some(error) = restore_error {
-        return Err(error);
-      }
-    }
-    result
+      .map_or(Ok(()), |watcher| watcher.unwatch(path))
   }
 
   pub fn close(&mut self) {

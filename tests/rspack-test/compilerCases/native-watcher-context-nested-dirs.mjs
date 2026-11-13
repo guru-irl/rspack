@@ -21,22 +21,20 @@ function exportsOf(bundle) {
 /** @type {import("@rspack/test-tools").TCompilerCaseConfig} */
 export default {
 	name: "nested-directories",
-	description: "should watch nested contexts and retain a real directory after alias removal",
+	description: "should watch ordinary nested contexts independently of file dependencies",
 	options(context) {
 		const source = context.getDist(NAME);
 		for (const [file, content] of Object.entries({
 			"index.js": 'const c = require.context("./ctx", true, /\\.js$/); module.exports = c.keys().sort().map(k => [k, c(k)]);',
 			"ctx/existing/seed.txt": "seed",
-			"ctx/real/sub/a.js": "module.exports = 1;",
 			"plugin/nested/seed.txt": "before",
 			"plugin/kept/deep/file.txt": "kept"
 		})) write(path.join(source, file), content, true);
-		fs.symlinkSync(process.platform === "win32" ? path.join(source, "ctx/real") : "real", path.join(source, "ctx/link"), "junction");
 		context.setValue("source", source);
 		context.setValue("outer", true);
 		return {
 			context: source, mode: "development", devtool: false, target: "node",
-			entry: "./index.js", resolve: { symlinks: false },
+			entry: "./index.js",
 			output: { path: path.join(source, "dist"), filename: "bundle.js", library: { type: "commonjs2" } },
 			experiments: { nativeWatcher: true },
 			plugins: [compiler => compiler.hooks.thisCompilation.tap(NAME, compilation => {
@@ -77,8 +75,6 @@ export default {
 			await step(() => write(path.join(source, "ctx/a/b/c/race.js"), "module.exports = 2;"));
 			await step(() => write(path.join(source, "plugin/nested/new.txt"), "new"));
 			await step(() => write(path.join(source, "plugin/nested/seed.txt"), "after"));
-			const stats = await step(() => write(path.join(source, "ctx/real/sub/a.js"), "module.exports = 2;"));
-			context.setValue("aliased", exportsOf(stats.compilation.assets["bundle.js"].source()));
 			context.setValue("outer", false);
 			await step(() => watching.invalidate());
 			await wait(300);
@@ -87,20 +83,15 @@ export default {
 			await wait(700);
 			expect(builds).toEqual(before);
 			await step(() => write(path.join(source, "plugin/kept/deep/file.txt"), "changed"));
-			await step(() => fs.unlinkSync(path.join(source, "ctx/link")));
-			await step(() => write(path.join(source, "ctx/real/sub/b.js"), "module.exports = 3;"));
 		} finally {
 			clearTimeout(timer);
 			await new Promise((resolve, reject) => watching.close(error => error ? reject(error) : resolve()));
 		}
 	},
 	async check({ context, files }) {
-		expect(context.getValue("aliased")).toEqual([
-			["./a/b/c/race.js", 2], ["./existing/new.js", 1], ["./link/sub/a.js", 2], ["./real/sub/a.js", 2]
-		]);
 		const bundle = Object.entries(files).find(([file]) => path.basename(file) === "bundle.js")[1];
 		expect(exportsOf(bundle)).toEqual([
-			["./a/b/c/race.js", 2], ["./existing/new.js", 1], ["./real/sub/a.js", 2], ["./real/sub/b.js", 3]
+			["./a/b/c/race.js", 2], ["./existing/new.js", 1]
 		]);
 	}
 };
