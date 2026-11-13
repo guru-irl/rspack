@@ -31,7 +31,7 @@ jobs:
           - { group: closing, cap: 30, root: real }
           - { group: instances, cap: 1, root: real }
           - { group: instances, cap: 8, root: real }
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 150
     defaults:
       run:
@@ -81,6 +81,12 @@ jobs:
           set -euo pipefail
           (cd t-main && pnpm install --frozen-lockfile && pnpm run build:js)
           (cd t-fix && pnpm install --frozen-lockfile && pnpm run build:js)
+      - name: Check producer ABI before namespace probes
+        run: |
+          set -euo pipefail
+          for arm in main fix; do
+            BINDING="$(realpath t-$arm/crates/node_binding/*.node)" node -e 'const fs=require("node:fs"),p=process.env.BINDING;require(p);console.log(JSON.stringify({binding:p,loaded:fs.readFileSync("/proc/self/maps","utf8").includes(p)}));' | tee ".c4b/results/abi-$arm.json"
+          done
       - name: Allow private user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Prove receipt negative controls
